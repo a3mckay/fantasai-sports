@@ -1,14 +1,24 @@
-import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import {
+  TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw,
+  Search, X, ChevronDown, ChevronUp, ArrowUp,
+} from 'lucide-react'
 import { getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
+import CategoryBar from '../components/CategoryBar'
 
 const POSITION_FILTERS = ['All', 'SP', 'RP', 'OF', 'SS', '2B', '3B', '1B', 'C']
+const PAGE_SIZES       = [50, 100, 250, 'All']
+const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
 
 function TrendIcon({ current, prior }) {
   if (prior == null) return <Minus size={12} className="text-slate-600" />
-  const diff = prior - current // lower rank = better, so positive diff = improved
+  const diff = prior - current // lower rank = better → positive diff = improved
   if (diff > 5)  return <TrendingUp   size={12} className="text-field-400"  />
   if (diff < -5) return <TrendingDown size={12} className="text-stitch-400" />
   return <Minus size={12} className="text-slate-500" />
@@ -26,16 +36,52 @@ function TrendBadge({ current, prior }) {
   )
 }
 
+function Blurb({ text }) {
+  const [open, setOpen] = useState(false)
+  if (!text) return null
+  const long = text.length > BLURB_TRUNCATE
+  return (
+    <div className="mt-1.5 text-xs text-slate-400 leading-relaxed">
+      {open || !long ? text : text.slice(0, BLURB_TRUNCATE) + '…'}
+      {long && (
+        <button
+          onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
+          className="ml-1.5 text-field-500 hover:text-field-300 transition-colors font-medium whitespace-nowrap"
+        >
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export default function Rankings() {
-  const [mode, setMode]             = useState('predictive')   // 'predictive' | 'lookback'
+  const [mode, setMode]             = useState('predictive')
   const [posFilter, setPosFilter]   = useState('All')
+  const [search, setSearch]         = useState('')
+  const [pageSize, setPageSize]     = useState(50)
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState(null)
   const [predictive, setPredictive] = useState(null)
   const [lookback, setLookback]     = useState(null)
+  const [expandedRows, setExpandedRows] = useState(new Set())
+  const [showBackTop, setShowBackTop]   = useState(false)
+  const searchRef = useRef(null)
 
+  useEffect(() => { fetchBoth() }, [])
+
+  // Reset to first page whenever filters change
+  useEffect(() => { setPageSize(50) }, [mode, posFilter, search])
+
+  // Back-to-top button
   useEffect(() => {
-    fetchBoth()
+    const onScroll = () => setShowBackTop(window.scrollY > 500)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
   async function fetchBoth() {
@@ -55,36 +101,47 @@ export default function Rankings() {
     }
   }
 
-  // Build rank-lookup maps for cross-reference (prior rank)
+  // Rank-lookup maps for cross-referencing
   const predMap = {}
   const lookMap = {}
   if (predictive) predictive.forEach(p => { predMap[p.player_id] = p.overall_rank })
   if (lookback)   lookback.forEach(p   => { lookMap[p.player_id] = p.overall_rank  })
 
-  // Active list is based on current mode
   const activeList = mode === 'predictive' ? predictive : lookback
 
-  // Cross-reference for prior rank:
-  // When viewing Projected (predictive) → prior rank = current (lookback)
-  // When viewing Current (lookback)     → prior rank = projected (predictive)
   function getPriorRank(player) {
-    if (mode === 'predictive') return lookMap[player.player_id]  ?? null
-    return predMap[player.player_id] ?? null
+    return mode === 'predictive'
+      ? (lookMap[player.player_id] ?? null)
+      : (predMap[player.player_id] ?? null)
   }
 
-  // Filter by position
-  const filtered = activeList
-    ? (posFilter === 'All'
-        ? activeList
-        : activeList.filter(p =>
-            p.positions?.some(pos => pos.toUpperCase() === posFilter.toUpperCase())
-          )
-      )
-    : []
+  function toggleRow(playerId) {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      next.has(playerId) ? next.delete(playerId) : next.add(playerId)
+      return next
+    })
+  }
+
+  // Filter by position + search
+  const filtered = (activeList ?? []).filter(p => {
+    const posOk = posFilter === 'All' ||
+      p.positions?.some(pos => pos.toUpperCase() === posFilter.toUpperCase())
+    const searchOk = !search.trim() ||
+      p.name.toLowerCase().includes(search.toLowerCase().trim())
+    return posOk && searchOk
+  })
+
+  // Pagination: show all when searching, otherwise slice
+  const isSearching = search.trim().length > 0
+  const displayed   = isSearching || pageSize === 'All'
+    ? filtered
+    : filtered.slice(0, pageSize)
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
+    <div className="space-y-5">
+
+      {/* ── Header ── */}
       <div>
         <div className="flex items-center gap-2 mb-1">
           <BarChart2 size={18} className="text-field-400" />
@@ -95,9 +152,9 @@ export default function Rankings() {
         </p>
       </div>
 
-      {/* Mode toggle + Refresh */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex gap-2">
+      {/* ── Mode toggle + Search + Refresh ── */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-2 shrink-0">
           {[
             { val: 'predictive', label: 'Projected' },
             { val: 'lookback',   label: 'Current'   },
@@ -115,17 +172,39 @@ export default function Rankings() {
             </button>
           ))}
         </div>
+
+        {/* Search */}
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          <input
+            ref={searchRef}
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search players…"
+            className="w-full bg-navy-800 border border-navy-700 rounded-lg text-sm text-white placeholder-slate-600 pl-9 pr-8 py-2 focus:outline-none focus:border-field-600 transition-colors"
+          />
+          {search && (
+            <button
+              onClick={() => { setSearch(''); searchRef.current?.focus() }}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+
         <button
           onClick={fetchBoth}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-200 transition-colors"
+          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-200 transition-colors shrink-0"
         >
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           Refresh
         </button>
       </div>
 
-      {/* Position filter pills */}
+      {/* ── Position filter pills ── */}
       <div className="flex flex-wrap gap-1.5">
         {POSITION_FILTERS.map(pos => (
           <button
@@ -145,9 +224,17 @@ export default function Rankings() {
       <ErrorBanner message={error} onClose={() => setError(null)} />
       {loading && <LoadingState message="Loading rankings…" />}
 
-      {/* Table */}
-      {filtered.length > 0 && (
-        <div className="card p-0 overflow-hidden">
+      {/* Result count when filtering */}
+      {!loading && (search || posFilter !== 'All') && filtered.length > 0 && (
+        <p className="text-xs text-slate-600">
+          {filtered.length} player{filtered.length !== 1 ? 's' : ''}
+          {isSearching && ` matching "${search}"`}
+        </p>
+      )}
+
+      {/* ── Table ── */}
+      {displayed.length > 0 && (
+        <div className="rounded-xl border border-navy-700 overflow-x-auto">
           <table className="w-full">
             <thead className="bg-navy-900">
               <tr className="text-[10px] text-slate-500 uppercase tracking-wider">
@@ -157,45 +244,53 @@ export default function Rankings() {
                 </th>
                 <th className="py-2.5 px-3 text-left">Player</th>
                 <th className="py-2.5 px-2 text-center w-16">Pos</th>
-                <th className="py-2.5 pr-4 pl-2 text-right w-20">Score</th>
+                <th className="py-2.5 pl-2 pr-2 text-right w-20">Score</th>
+                <th className="py-2.5 pr-3 w-8" />
               </tr>
             </thead>
             <tbody>
-              {filtered.map(player => {
-                const priorRank = getPriorRank(player)
+              {displayed.map(player => {
+                const priorRank  = getPriorRank(player)
+                const isExpanded = expandedRows.has(player.player_id)
+                const hasCats    = Object.keys(player.category_contributions || {}).length > 0
                 return (
+                  // React.Fragment so we can have two <tr>s per player with a shared key
                   <tr
                     key={player.player_id}
-                    className="border-t border-navy-800 hover:bg-navy-800/40 transition-colors"
+                    className={`border-t border-navy-800 transition-colors ${
+                      hasCats ? 'cursor-pointer hover:bg-navy-800/50' : 'hover:bg-navy-800/30'
+                    }`}
+                    onClick={() => hasCats && toggleRow(player.player_id)}
                   >
                     {/* Rank */}
-                    <td className="py-3 pl-4 pr-2 font-mono text-slate-400 text-sm text-right">
+                    <td className="py-3 pl-4 pr-2 font-mono text-slate-400 text-sm text-right align-top pt-3.5">
                       {player.overall_rank}
                     </td>
 
                     {/* Trend */}
-                    <td className="py-3 px-2 text-center hidden sm:table-cell">
+                    <td className="py-3 px-2 text-center hidden sm:table-cell align-top pt-3.5">
                       <div className="flex items-center justify-center gap-1">
                         <TrendIcon current={player.overall_rank} prior={priorRank} />
                         <TrendBadge current={player.overall_rank} prior={priorRank} />
                       </div>
                     </td>
 
-                    {/* Player info */}
+                    {/* Player name + blurb + (expanded) category bar */}
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-white text-sm">{player.name}</span>
                         <span className="text-xs text-slate-500 hidden sm:inline">{player.team}</span>
                       </div>
-                      {player.blurb && (
-                        <p className="text-xs text-slate-600 mt-0.5 line-clamp-1 max-w-xs">
-                          {player.blurb}
-                        </p>
+                      <Blurb text={player.blurb} />
+                      {isExpanded && hasCats && (
+                        <div className="mt-3 pr-2">
+                          <CategoryBar data={player.category_contributions} />
+                        </div>
                       )}
                     </td>
 
-                    {/* Positions */}
-                    <td className="py-3 px-2 text-center">
+                    {/* Position pills */}
+                    <td className="py-3 px-2 text-center align-top pt-3.5">
                       <div className="flex flex-wrap gap-0.5 justify-center">
                         {player.positions?.slice(0, 2).map(pos => (
                           <span
@@ -209,8 +304,17 @@ export default function Rankings() {
                     </td>
 
                     {/* Score */}
-                    <td className="py-3 pr-4 pl-2 text-right font-mono text-sm text-field-400">
+                    <td className="py-3 pr-2 pl-2 text-right font-mono text-sm text-field-400 align-top pt-3.5">
                       {player.score?.toFixed(2) ?? '—'}
+                    </td>
+
+                    {/* Expand chevron */}
+                    <td className="py-3 pr-3 text-right align-top pt-3.5">
+                      {hasCats && (
+                        <span className="text-slate-600">
+                          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 )
@@ -220,10 +324,49 @@ export default function Rankings() {
         </div>
       )}
 
-      {!loading && filtered.length === 0 && activeList?.length > 0 && (
+      {/* Empty state */}
+      {!loading && filtered.length === 0 && (activeList?.length ?? 0) > 0 && (
         <p className="text-center text-slate-600 text-sm py-8">
-          No players found for position "{posFilter}".
+          {search
+            ? `No players found matching "${search}".`
+            : `No players found for position "${posFilter}".`}
         </p>
+      )}
+
+      {/* ── Pagination ── */}
+      {!isSearching && filtered.length > 50 && (
+        <div className="flex items-center justify-between gap-4 text-xs text-slate-500">
+          <span>
+            Showing <span className="text-slate-300">{displayed.length}</span> of{' '}
+            <span className="text-slate-300">{filtered.length}</span> players
+          </span>
+          <div className="flex gap-1.5">
+            {PAGE_SIZES.map(size => (
+              <button
+                key={size}
+                onClick={() => setPageSize(size)}
+                className={`px-2.5 py-1 rounded border transition-colors ${
+                  pageSize === size
+                    ? 'bg-navy-600 border-navy-500 text-white'
+                    : 'bg-navy-900 border-navy-700 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {size}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Back to top ── */}
+      {showBackTop && (
+        <button
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="fixed bottom-6 right-6 z-50 p-2.5 rounded-full bg-navy-700 border border-navy-600 text-slate-300 hover:bg-navy-600 hover:text-white shadow-lg transition-all"
+          aria-label="Back to top"
+        >
+          <ArrowUp size={16} />
+        </button>
       )}
     </div>
   )
