@@ -1,4 +1,4 @@
-.PHONY: install server test lint format typecheck db-upgrade db-migrate db-downgrade refresh-data
+.PHONY: install server test lint format typecheck db-upgrade db-migrate db-downgrade refresh-data ui ui-install ui-build
 
 install:
 	pip install -e ".[dev]"
@@ -29,3 +29,12 @@ format:
 
 typecheck:
 	mypy src/
+
+ui-install:
+	npm install --prefix frontend
+
+ui:
+	npm run dev --prefix frontend
+
+ui-build:
+	npm run build --prefix frontend

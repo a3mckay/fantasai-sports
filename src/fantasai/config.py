@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     openweather_api_key: str = ""
     env: Literal["development", "staging", "production"] = "development"
     log_level: str = "INFO"
+    # Comma-separated list of allowed CORS origins.
+    # In production, set to your frontend domain, e.g. "https://fantasaisports.com"
+    cors_origins: str = "*"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

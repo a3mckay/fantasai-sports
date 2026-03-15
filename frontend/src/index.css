@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-navy-900 text-slate-100 font-sans;
+    min-height: 100vh;
+  }
+  * {
+    @apply box-border;
+  }
+}
+
+@layer components {
+  /* Baseball stitch border effect */
+  .stitch-border {
+    border: 1px solid theme('colors.field.700');
+    box-shadow: 0 0 0 1px theme('colors.field.800');
+  }
+
+  /* Card component */
+  .card {
+    @apply bg-navy-800 rounded-xl border border-navy-700 p-6;
+  }
+
+  /* Input fields */
+  .field-input {
+    @apply w-full bg-navy-900 border border-navy-600 rounded-lg px-4 py-2.5
+           text-slate-100 placeholder-slate-500 text-sm
+           focus:outline-none focus:border-field-500 focus:ring-1 focus:ring-field-500
+           transition-colors duration-150;
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-lg
+           bg-field-600 hover:bg-field-500 text-white font-medium text-sm
+           transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Secondary button */
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-5 py-2.5 rounded-lg
+           bg-navy-700 hover:bg-navy-600 text-slate-200 font-medium text-sm
+           border border-navy-600
+           transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Section label */
+  .section-label {
+    @apply text-xs font-semibold uppercase tracking-widest text-field-400 mb-2;
+  }
+
+  /* Grade badge */
+  .grade-badge {
+    @apply inline-flex items-center justify-center w-16 h-16 rounded-full
+           text-3xl font-bold border-2;
+  }
+
+  /* Verdict badge */
+  .verdict-good  { @apply bg-field-900 text-field-300 border border-field-700; }
+  .verdict-bad   { @apply bg-red-950 text-red-300 border border-red-800; }
+  .verdict-fair  { @apply bg-navy-700 text-slate-300 border border-navy-600; }
+
+  /* Stat pill */
+  .stat-pill {
+    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-navy-900; }
+  ::-webkit-scrollbar-thumb { @apply bg-navy-600 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-navy-500; }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+}

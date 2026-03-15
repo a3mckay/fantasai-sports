@@ -5,6 +5,7 @@ import logging
 import sys
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from fantasai.config import settings
 
@@ -36,6 +37,7 @@ from fantasai.api.v1.leagues import router as leagues_router  # noqa: E402
 from fantasai.api.v1.players import router as players_router  # noqa: E402
 from fantasai.api.v1.rankings import router as rankings_router  # noqa: E402
 from fantasai.api.v1.recommendations import router as recommendations_router  # noqa: E402
+from fantasai.api.v1.analysis import router as analysis_router  # noqa: E402
 
 app = FastAPI(
     title="FantasAI Sports",
@@ -46,8 +48,20 @@ app = FastAPI(
 
 register_error_handlers(app)
 
+# CORS — allow the frontend origin(s) to call the API.
+# Set CORS_ORIGINS in the environment (comma-separated) to restrict in production.
+_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(health_router)
 app.include_router(leagues_router, prefix="/api/v1")
 app.include_router(players_router, prefix="/api/v1")
 app.include_router(rankings_router, prefix="/api/v1")
 app.include_router(recommendations_router, prefix="/api/v1")
+app.include_router(analysis_router, prefix="/api/v1")
