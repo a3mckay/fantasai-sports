@@ -68,6 +68,17 @@ def list_rankings(
     else:
         rankings = engine.compute_lookback_rankings(season, players=players)
 
+    # Deduplicate: two-way players (e.g. Ohtani) have both batting and pitching
+    # rows in the DB and thus appear twice in rankings. Keep only the entry with
+    # the higher score per player_id, then re-sort so ranks stay contiguous.
+    seen: dict[int, object] = {}
+    for r in rankings:
+        if r.player_id not in seen or r.score > seen[r.player_id].score:
+            seen[r.player_id] = r
+    rankings = sorted(seen.values(), key=lambda r: r.score, reverse=True)
+    for i, r in enumerate(rankings):
+        r.overall_rank = i + 1
+
     # Apply filters
     if stat_type:
         rankings = [r for r in rankings if r.stat_type == stat_type]

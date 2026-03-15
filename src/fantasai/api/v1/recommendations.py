@@ -126,7 +126,21 @@ def _compute_rankings(db: Session, categories: list[str]) -> tuple:
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
     predictive = engine.compute_predictive_rankings(2025, players=players)
-    result = (lookback, predictive)
+
+    # Deduplicate: two-way players (e.g. Ohtani) have both batting and pitching
+    # rows, producing two ranking entries with the same player_id. Keep the
+    # higher-scoring entry and re-assign overall ranks.
+    def _dedup(rnks: list) -> list:
+        seen: dict = {}
+        for r in rnks:
+            if r.player_id not in seen or r.score > seen[r.player_id].score:
+                seen[r.player_id] = r
+        deduped = sorted(seen.values(), key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(deduped):
+            r.overall_rank = i + 1
+        return deduped
+
+    result = (_dedup(lookback), _dedup(predictive))
     _set_cached_rankings(categories, result)
     return result
 
