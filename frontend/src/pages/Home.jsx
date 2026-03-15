@@ -1,27 +1,28 @@
 import { Link } from 'react-router-dom'
-import { BarChart2, ArrowLeftRight, Search, Star, Users, Trophy, Zap, ChevronRight } from 'lucide-react'
+import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, ChevronRight } from 'lucide-react'
 
+// Order mirrors the left-hand nav
 const FEATURES = [
+  {
+    to: '/rankings',
+    icon: TrendingUp,
+    color: 'field',
+    title: 'Rankings',
+    description: 'Predictive and current-season player rankings powered by advanced metrics and FanGraphs data.',
+  },
   {
     to: '/compare',
     icon: BarChart2,
-    color: 'field',
+    color: 'leather',
     title: 'Compare Players',
     description: 'Rank 2+ players head-to-head. Factor in your category priorities with a quick note.',
   },
   {
     to: '/trade',
     icon: ArrowLeftRight,
-    color: 'leather',
+    color: 'stitch',
     title: 'Evaluate Trade',
     description: 'Get a fair / favor-receive / favor-give verdict. Accounts for talent density — one star beats five fillers.',
-  },
-  {
-    to: '/find-player',
-    icon: Search,
-    color: 'stitch',
-    title: 'Find a Player',
-    description: 'Tell us the slot you need to fill. We surface the best available pick and track history so you never get the same name twice.',
   },
   {
     to: '/team-eval',
@@ -31,23 +32,30 @@ const FEATURES = [
     description: 'Letter grade (A–F), position-by-position breakdown, and concrete improvement suggestions.',
   },
   {
-    to: '/keeper-eval',
-    icon: Trophy,
-    color: 'leather',
-    title: 'Keeper Planning',
-    description: 'Evaluate your keeper core or let the AI decide who to keep from your full roster. Includes draft target profiles.',
-  },
-  {
     to: '/compare-teams',
     icon: Users,
-    color: 'stitch',
+    color: 'leather',
     title: 'Compare Teams',
     description: 'Side-by-side power scores and category profiles for 2–6 teams, with trade opportunities automatically surfaced.',
   },
   {
+    to: '/keeper-eval',
+    icon: Trophy,
+    color: 'stitch',
+    title: 'Keeper Planning',
+    description: 'Evaluate your keeper core or let the AI decide who to keep from your full roster. Includes draft target profiles.',
+  },
+  {
+    to: '/find-player',
+    icon: Search,
+    color: 'field',
+    title: 'Find a Player',
+    description: 'Tell us the slot you need to fill. We surface the best available pick and track history so you never get the same name twice.',
+  },
+  {
     to: '/league-power',
     icon: Zap,
-    color: 'field',
+    color: 'leather',
     title: 'League Power Rankings',
     description: 'Full league standings by roster strength. Contenders, middle of the pack, and rebuilders — plus the top trade pairings.',
   },
@@ -66,7 +74,7 @@ export default function Home() {
       <div className="text-center space-y-4 pt-4">
         <div className="text-6xl mb-4">⚾</div>
         <h1 className="text-4xl font-bold text-white tracking-tight">
-          Fanta<span className="text-field-400">sAI</span> Sports
+          Fantas<span className="text-field-400">AI</span> Sports
         </h1>
         <p className="text-slate-400 text-lg max-w-xl mx-auto text-balance">
           AI-powered MLB fantasy baseball analysis. Every decision — trades, waivers,
