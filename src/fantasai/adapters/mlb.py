@@ -4,11 +4,88 @@ import logging
 from typing import Any
 
 import pandas as pd
+import requests
 from pybaseball import batting_stats, batting_stats_range, pitching_stats, pitching_stats_range
 
 from fantasai.adapters.base import NormalizedPlayerData, SportAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _build_fg_to_mlbam(fg_ids: list[int]) -> dict[int, int]:
+    """Return {fangraphs_id: mlbam_id} for the given FanGraphs IDs.
+
+    Uses the Chadwick Bureau register (downloaded by pybaseball) which maps
+    player IDs across all major baseball data systems.
+    """
+    try:
+        import pybaseball as pb
+        reg = pb.chadwick_register()
+        fg_ids_set = set(fg_ids)
+        subset = reg[reg["key_fangraphs"].isin(fg_ids_set)]
+        mapping: dict[int, int] = {}
+        for _, row in subset.iterrows():
+            fg = int(row["key_fangraphs"]) if not pd.isna(row["key_fangraphs"]) else None
+            mlbam = int(row["key_mlbam"]) if not pd.isna(row["key_mlbam"]) else None
+            if fg and mlbam and mlbam > 0:
+                mapping[fg] = mlbam
+        return mapping
+    except Exception as e:
+        logger.warning("Chadwick register lookup failed: %s", e)
+        return {}
+
+
+def _fetch_mlb_positions(mlbam_ids: list[int]) -> dict[int, str]:
+    """Return {mlbam_id: position_abbrev} by querying the MLB Stats API in batches."""
+    result: dict[int, str] = {}
+    batch_size = 100
+    for i in range(0, len(mlbam_ids), batch_size):
+        batch = mlbam_ids[i : i + batch_size]
+        try:
+            resp = requests.get(
+                "https://statsapi.mlb.com/api/v1/people",
+                params={
+                    "personIds": ",".join(str(x) for x in batch),
+                    "fields": "people,id,primaryPosition,abbreviation",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            for person in resp.json().get("people", []):
+                pid = person.get("id")
+                pos = person.get("primaryPosition", {}).get("abbreviation", "")
+                if pid and pos:
+                    result[pid] = pos
+        except Exception as e:
+            logger.warning("MLB API position fetch failed for batch: %s", e)
+    return result
+
+
+def _get_batter_positions(fg_ids: list[int]) -> dict[int, list[str]]:
+    """Fetch real position abbreviations for a list of FanGraphs batter IDs.
+
+    Returns {fangraphs_id: ["CF"], ...}.  Falls back to [] on any error.
+    Maps OF sub-positions (LF/RF) to the fantasy-standard "OF".
+    """
+    # FanGraphs ID → MLBAM ID
+    fg_to_mlbam = _build_fg_to_mlbam(fg_ids)
+    if not fg_to_mlbam:
+        return {}
+
+    # MLBAM ID → position string
+    mlbam_to_pos = _fetch_mlb_positions(list(fg_to_mlbam.values()))
+    if not mlbam_to_pos:
+        return {}
+
+    # Combine — map LF/RF → OF for fantasy purposes
+    _of_map = {"LF": "OF", "RF": "OF", "CF": "CF"}
+    result: dict[int, list[str]] = {}
+    for fg_id, mlbam_id in fg_to_mlbam.items():
+        raw = mlbam_to_pos.get(mlbam_id, "")
+        if raw:
+            canonical = _of_map.get(raw, raw)
+            result[fg_id] = [canonical]
+    return result
 
 # Mapping from FanGraphs column names to our normalized stat buckets
 BATTING_COUNTING = ["PA", "AB", "R", "H", "HR", "RBI", "SB", "BB", "SO", "1B", "2B", "3B"]
@@ -140,7 +217,11 @@ class MLBAdapter(SportAdapter):
         logger.info(f"Fetching {season} batting stats (min {min_pa} PA)...")
         try:
             batting_df = batting_stats(season, qual=min_pa)
-            players.extend(self.normalize_stats(batting_df, stat_type="batting"))
+            # Build real positions from MLB API (FanGraphs Pos col is a float adjustment)
+            fg_ids = [int(v) for v in batting_df["IDfg"].dropna() if int(v) != 0]
+            pos_map = _get_batter_positions(fg_ids)
+            logger.info("MLB API position lookup: resolved %d / %d batters", len(pos_map), len(fg_ids))
+            players.extend(self.normalize_stats(batting_df, stat_type="batting", positions_map=pos_map))
             logger.info(f"  Got {len(batting_df)} batters")
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.error(f"Network error fetching batting stats: {e}", exc_info=True)
@@ -164,9 +245,22 @@ class MLBAdapter(SportAdapter):
         return players
 
     def normalize_stats(
-        self, raw_data: Any, stat_type: str = "batting"
+        self,
+        raw_data: Any,
+        stat_type: str = "batting",
+        positions_map: dict[int, list[str]] | None = None,
     ) -> list[NormalizedPlayerData]:
-        """Convert FanGraphs DataFrame to NormalizedPlayerData list."""
+        """Convert FanGraphs DataFrame to NormalizedPlayerData list.
+
+        Args:
+            raw_data: FanGraphs DataFrame from pybaseball.
+            stat_type: "batting" or "pitching".
+            positions_map: Optional {fangraphs_id: [position_str, ...]} pre-fetched
+                from the MLB API.  When provided, overrides the FanGraphs Pos column
+                (which holds a WAR positional-adjustment float, not a position code).
+                Pass ``None`` to skip position resolution (useful in tests that supply
+                their own synthetic position data via the Pos column).
+        """
         if not isinstance(raw_data, pd.DataFrame):
             raise TypeError(f"Expected DataFrame, got {type(raw_data)}")
 
@@ -179,6 +273,11 @@ class MLBAdapter(SportAdapter):
             rate_cols = PITCHING_RATE
             advanced_cols = PITCHING_ADVANCED
 
+        # Resolve batter positions from MLB API when caller provides a map.
+        # fetch_player_data() builds this map; callers that skip it (tests, etc.)
+        # get positions from the Pos column via _parse_positions instead.
+        batter_positions: dict[int, list[str]] = positions_map or {}
+
         players = []
         for _, row in raw_data.iterrows():
             player_id = int(row.get("IDfg", 0))
@@ -187,7 +286,11 @@ class MLBAdapter(SportAdapter):
 
             if stat_type == "pitching":
                 positions = _infer_pitcher_position(row)
+            elif positions_map is not None:
+                # MLB API map provided — use it; unknown players get empty list
+                positions = batter_positions.get(player_id) or []
             else:
+                # No map supplied (e.g. tests) — fall back to Pos column
                 positions = _parse_positions(row.get("Pos", ""))
 
             players.append(
