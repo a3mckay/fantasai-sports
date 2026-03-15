@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, Plus, X } from 'lucide-react'
 import { evaluateTrade } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -7,14 +7,10 @@ import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
 import CategoryBar from '../components/CategoryBar'
+import PlayerSearch from '../components/PlayerSearch'
+import LeagueSettings from '../components/LeagueSettings'
 
-function parseIds(raw) {
-  return raw.split(/[\s,]+/).map(s => parseInt(s.trim())).filter(n => !isNaN(n))
-}
-
-function parsePicks(raw) {
-  return raw.split('\n').map(s => s.trim()).filter(Boolean)
-}
+// ── Verdict config ────────────────────────────────────────────────────────────
 
 const VERDICT_CONFIG = {
   favor_receive: {
@@ -48,40 +44,167 @@ function VerdictBadge({ verdict, confidence }) {
   )
 }
 
-function TradeSide({ title, color }) {
+// ── Player slot list component ────────────────────────────────────────────────
+
+function PlayerSlotList({ players, onChange, side }) {
+  const color = side === 'give' ? 'text-stitch-400' : 'text-field-400'
+  const label = side === 'give' ? "You're Giving" : "You're Receiving"
+
+  function addSlot() {
+    if (players.length < 6) onChange([...players, { name: '', playerId: null }])
+  }
+
+  function removeSlot(idx) {
+    onChange(players.filter((_, i) => i !== idx))
+  }
+
+  function updateSlot(idx, name, playerId) {
+    onChange(players.map((p, i) => i === idx ? { name, playerId } : p))
+  }
+
   return (
-    <div className={`text-xs font-semibold uppercase tracking-widest mb-2 ${color}`}>{title}</div>
+    <div className="space-y-3">
+      <div className={`text-xs font-semibold uppercase tracking-widest ${color}`}>{label}</div>
+
+      {players.map((p, idx) => (
+        <div key={idx} className="flex items-center gap-2">
+          <PlayerSearch
+            value={p.name}
+            playerId={p.playerId}
+            onChange={(name, playerId) => updateSlot(idx, name, playerId)}
+            placeholder={`Player ${idx + 1}…`}
+            className="flex-1"
+          />
+          {players.length > 0 && (
+            <button
+              type="button"
+              onClick={() => removeSlot(idx)}
+              className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
+      ))}
+
+      {players.length < 6 && (
+        <button
+          type="button"
+          onClick={addSlot}
+          className={`flex items-center gap-1.5 text-xs transition-colors ${
+            side === 'give'
+              ? 'text-stitch-500 hover:text-stitch-300'
+              : 'text-field-500 hover:text-field-300'
+          }`}
+        >
+          <Plus size={13} /> Add player
+        </button>
+      )}
+    </div>
   )
 }
 
+// ── Draft picks list component ────────────────────────────────────────────────
+
+function DraftPickList({ picks, onChange, side }) {
+  const color = side === 'give' ? 'text-stitch-400' : 'text-field-400'
+
+  function addPick() {
+    onChange([...picks, ''])
+  }
+
+  function removePick(idx) {
+    onChange(picks.filter((_, i) => i !== idx))
+  }
+
+  function updatePick(idx, val) {
+    onChange(picks.map((p, i) => i === idx ? val : p))
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="section-label">Draft picks</div>
+      {picks.map((pick, idx) => (
+        <div key={idx} className="flex items-center gap-2">
+          <input
+            className="field-input flex-1 text-sm"
+            placeholder="e.g. 2026 1st round"
+            value={pick}
+            onChange={e => updatePick(idx, e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => removePick(idx)}
+            className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={addPick}
+        className={`flex items-center gap-1.5 text-xs transition-colors ${
+          side === 'give'
+            ? 'text-stitch-500 hover:text-stitch-300'
+            : 'text-field-500 hover:text-field-300'
+        }`}
+      >
+        <Plus size={13} /> Add pick
+      </button>
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function EvaluateTrade() {
-  const [teamId,    setTeamId]    = useState('')
-  const [givingIds, setGivingIds] = useState('')
-  const [givingPicks, setGivingPicks] = useState('')
-  const [receivingIds, setReceivingIds] = useState('')
-  const [receivingPicks, setReceivingPicks] = useState('')
-  const [context, setContext]     = useState('')
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState(null)
-  const [result, setResult]       = useState(null)
+  const [givingPlayers,   setGivingPlayers]   = useState([{ name: '', playerId: null }])
+  const [receivingPlayers, setReceivingPlayers] = useState([{ name: '', playerId: null }])
+  const [givingPicks,     setGivingPicks]     = useState([])
+  const [receivingPicks,  setReceivingPicks]  = useState([])
+  const [myRosterPlayers, setMyRosterPlayers] = useState([])   // for team context
+  const [context, setContext]                 = useState('')
+  const [leagueSettings, setLeagueSettings]   = useState(null)
+  const [loading, setLoading]                 = useState(false)
+  const [error, setError]                     = useState(null)
+  const [result, setResult]                   = useState(null)
+  const [showMyRoster, setShowMyRoster]       = useState(false)
 
   async function submit(e) {
     e.preventDefault()
-    if (!teamId) { setError('Team ID is required.'); return }
+    const givingIds    = givingPlayers.filter(p => p.playerId).map(p => p.playerId)
+    const receivingIds = receivingPlayers.filter(p => p.playerId).map(p => p.playerId)
+    const filteredGivingPicks    = givingPicks.filter(Boolean)
+    const filteredReceivingPicks = receivingPicks.filter(Boolean)
+
+    if (givingIds.length + filteredGivingPicks.length === 0) {
+      setError('Add at least one player or pick to the "You\'re Giving" side.')
+      return
+    }
+    if (receivingIds.length + filteredReceivingPicks.length === 0) {
+      setError('Add at least one player or pick to the "You\'re Receiving" side.')
+      return
+    }
+
     setLoading(true); setError(null); setResult(null)
     try {
-      const res = await evaluateTrade({
-        team_id: parseInt(teamId),
-        giving: {
-          player_ids: parseIds(givingIds),
-          draft_picks: parsePicks(givingPicks),
-        },
-        receiving: {
-          player_ids: parseIds(receivingIds),
-          draft_picks: parsePicks(receivingPicks),
-        },
-        context: context || null,
-      })
+      const body = {
+        giving:    { player_ids: givingIds,    draft_picks: filteredGivingPicks    },
+        receiving: { player_ids: receivingIds, draft_picks: filteredReceivingPicks },
+        context:   context || null,
+      }
+
+      // Include roster context for better team-strength analysis
+      const rosterIds = myRosterPlayers.filter(p => p.playerId).map(p => p.playerId)
+      if (rosterIds.length > 0) body.roster_player_ids = rosterIds
+
+      if (leagueSettings) {
+        body.custom_categories  = leagueSettings.categories
+        body.custom_league_type = leagueSettings.leagueType
+      }
+
+      const res = await evaluateTrade(body)
       setResult(res)
     } catch (err) {
       setError(err.message)
@@ -102,68 +225,89 @@ export default function EvaluateTrade() {
         </p>
       </div>
 
-      <form onSubmit={submit} className="card space-y-5">
-        <div>
-          <label className="section-label">Your Team ID *</label>
-          <input
-            className="field-input font-mono w-40"
-            placeholder="e.g. 3"
-            value={teamId}
-            onChange={e => setTeamId(e.target.value)}
-          />
+      <form onSubmit={submit} className="card space-y-6">
+        {/* Give / Receive side-by-side */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          {/* Giving side */}
+          <div className="space-y-4 p-4 rounded-xl bg-stitch-500/5 border border-stitch-800/40">
+            <PlayerSlotList
+              players={givingPlayers}
+              onChange={setGivingPlayers}
+              side="give"
+            />
+            <DraftPickList
+              picks={givingPicks}
+              onChange={setGivingPicks}
+              side="give"
+            />
+          </div>
+
+          {/* Receiving side */}
+          <div className="space-y-4 p-4 rounded-xl bg-field-500/5 border border-field-800/40">
+            <PlayerSlotList
+              players={receivingPlayers}
+              onChange={setReceivingPlayers}
+              side="receive"
+            />
+            <DraftPickList
+              picks={receivingPicks}
+              onChange={setReceivingPicks}
+              side="receive"
+            />
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-          {/* Giving */}
-          <div className="space-y-3">
-            <TradeSide title="You're Giving" color="text-stitch-400" />
-            <div>
-              <label className="section-label">Player IDs</label>
-              <input
-                className="field-input font-mono"
-                placeholder="19755, 20123"
-                value={givingIds}
-                onChange={e => setGivingIds(e.target.value)}
-              />
+        {/* Optional: my roster for team context */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowMyRoster(!showMyRoster)}
+            className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            <Plus size={12} className={showMyRoster ? 'rotate-45 transition-transform' : 'transition-transform'} />
+            {showMyRoster ? 'Hide' : 'Add'} my roster (improves analysis)
+          </button>
+          {showMyRoster && (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-slate-500">
+                Adding your full roster helps calibrate team strength and category needs.
+              </p>
+              {myRosterPlayers.map((p, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <PlayerSearch
+                    value={p.name}
+                    onChange={(name, playerId) =>
+                      setMyRosterPlayers(prev =>
+                        prev.map((r, i) => i === idx ? { name, playerId } : r)
+                      )
+                    }
+                    placeholder={`Roster player ${idx + 1}…`}
+                    className="flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setMyRosterPlayers(prev => prev.filter((_, i) => i !== idx))}
+                    className="shrink-0 text-slate-600 hover:text-stitch-400 p-1"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              ))}
+              {myRosterPlayers.length < 30 && (
+                <button
+                  type="button"
+                  onClick={() => setMyRosterPlayers(prev => [...prev, { name: '', playerId: null }])}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  <Plus size={13} /> Add roster player
+                </button>
+              )}
             </div>
-            <div>
-              <label className="section-label">Draft picks (one per line)</label>
-              <textarea
-                className="field-input resize-none"
-                rows={2}
-                placeholder="2025 1st round"
-                value={givingPicks}
-                onChange={e => setGivingPicks(e.target.value)}
-              />
-            </div>
-          </div>
-
-          {/* Receiving */}
-          <div className="space-y-3">
-            <TradeSide title="You're Receiving" color="text-field-400" />
-            <div>
-              <label className="section-label">Player IDs</label>
-              <input
-                className="field-input font-mono"
-                placeholder="25764, 16285"
-                value={receivingIds}
-                onChange={e => setReceivingIds(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="section-label">Draft picks (one per line)</label>
-              <textarea
-                className="field-input resize-none"
-                rows={2}
-                placeholder="2025 2nd round pick"
-                value={receivingPicks}
-                onChange={e => setReceivingPicks(e.target.value)}
-              />
-            </div>
-          </div>
+          )}
         </div>
 
         <ContextInput value={context} onChange={setContext} />
+        <LeagueSettings onChange={setLeagueSettings} />
 
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} /> Evaluate Trade
@@ -204,7 +348,6 @@ export default function EvaluateTrade() {
             <div className="text-xs text-slate-500 italic px-1">{result.talent_density_note}</div>
           )}
 
-          {/* Category impact */}
           <div className="card">
             <div className="section-label">Category impact after trade</div>
             <CategoryBar data={result.category_impact} />

@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +33,14 @@ class CompareRequest(BaseModel):
     league_id: Optional[int] = Field(
         default=None,
         description="League ID for category context. Uses default categories if omitted.",
+    )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
     )
     ranking_type: str = Field(
         default="predictive",
@@ -85,14 +93,38 @@ class TradeSide(BaseModel):
 class TradeRequest(BaseModel):
     """Request body for the trade-evaluation endpoint."""
 
-    league_id: int
-    team_id: int = Field(description="The team making the trade (your team).")
+    league_id: Optional[int] = Field(
+        default=None,
+        description="League ID for category context. Uses default categories if omitted.",
+    )
+    team_id: Optional[int] = Field(
+        default=None,
+        description="The team making the trade (your team). Required if no roster_player_ids.",
+    )
+    roster_player_ids: Optional[list[int]] = Field(
+        default=None,
+        description="Your full roster player IDs (when no team_id in DB).",
+    )
     giving: TradeSide = Field(description="Assets your team is giving away.")
     receiving: TradeSide = Field(description="Assets your team is receiving.")
     context: Optional[str] = Field(
         default=None,
         description="Optional motivation context, e.g. 'need saves for the stretch run'.",
     )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
+    )
+
+    @model_validator(mode="after")
+    def require_team_or_roster(self) -> "TradeRequest":
+        if self.team_id is None and not self.roster_player_ids:
+            raise ValueError("Provide either team_id or roster_player_ids.")
+        return self
 
 
 class TradeResponse(BaseModel):
@@ -163,4 +195,27 @@ class FindPlayerResponse(BaseModel):
     suggestion: FindPlayerSuggestionRead
     all_suggestions: list[FindPlayerSuggestionRead] = Field(
         description="Full suggestion history for this team + position, newest first.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Feature 4 — Extract Players from Screenshot
+# ---------------------------------------------------------------------------
+
+
+class ExtractPlayersRequest(BaseModel):
+    """Request body for the extract-players endpoint."""
+
+    image_base64: str = Field(description="Base64-encoded image data.")
+    image_type: str = Field(
+        default="image/jpeg",
+        description="MIME type of the image.",
+    )
+
+
+class ExtractPlayersResponse(BaseModel):
+    """Response for the extract-players endpoint."""
+
+    player_names: list[str] = Field(
+        description="Extracted player names from the image.",
     )

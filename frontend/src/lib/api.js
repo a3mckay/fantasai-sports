@@ -40,10 +40,19 @@ export const getLeague   = (id) => get(`/leagues/${id}`)
 export const listTeams   = (leagueId) => get(`/leagues/${leagueId}/teams`)
 
 // ── Analysis ─────────────────────────────────────────────────────────────────
-export const comparePlayers = (body) => post('/analysis/compare', body)
-export const evaluateTrade  = (body) => post('/analysis/trade', body)
-export const findPlayer     = (body) => post('/analysis/find-player', body)
-export const teamEval       = (body) => post('/analysis/team-eval', body)
-export const keeperEval     = (body) => post('/analysis/keeper-eval', body)
-export const compareTeams   = (body) => post('/analysis/compare-teams', body)
-export const leaguePower    = (id)   => get(`/analysis/league-power/${id}`)
+export const comparePlayers  = (body) => post('/analysis/compare', body)
+export const evaluateTrade   = (body) => post('/analysis/trade', body)
+export const findPlayer      = (body) => post('/analysis/find-player', body)
+export const teamEval        = (body) => post('/analysis/team-eval', body)
+export const keeperEval      = (body) => post('/analysis/keeper-eval', body)
+export const compareTeams    = (body) => post('/analysis/compare-teams', body)
+export const leaguePower     = (id)   => get(`/analysis/league-power/${id}`)
+export const extractPlayers  = (body) => post('/analysis/extract-players', body)
+
+// ── Rankings ─────────────────────────────────────────────────────────────────
+export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, position } = {}) => {
+  const params = new URLSearchParams({ ranking_type, limit })
+  if (season)   params.set('season', season)
+  if (position) params.set('position', position)
+  return get(`/rankings?${params}`)
+}

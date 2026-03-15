@@ -41,6 +41,18 @@ class TeamEvalRequest(BaseModel):
         default="predictive",
         description='"predictive" (forward-looking) or "current" (season-to-date).',
     )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
+    )
+    custom_roster_positions: Optional[list[str]] = Field(
+        default=None,
+        description="Custom roster positions (used when no league_id).",
+    )
 
     @model_validator(mode="after")
     def require_team_or_players(self) -> "TeamEvalRequest":
@@ -113,6 +125,18 @@ class KeeperEvalRequest(BaseModel):
             "'targeting a championship this year'."
         ),
     )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
+    )
+    custom_roster_positions: Optional[list[str]] = Field(
+        default=None,
+        description="Custom roster positions (used when no league_id).",
+    )
 
     @model_validator(mode="after")
     def validate_mode_and_input(self) -> "KeeperEvalRequest":
@@ -169,13 +193,25 @@ class KeeperEvalResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ManualTeam(BaseModel):
+    """A manually specified team with a name and roster player IDs."""
+
+    name: str = Field(description="Team name for display.")
+    player_ids: list[int] = Field(
+        description="FanGraphs IDfg values for this team's roster.",
+    )
+
+
 class CompareTeamsRequest(BaseModel):
     """Request body for the compare-teams endpoint."""
 
-    team_ids: list[int] = Field(
-        ...,
-        min_length=2,
-        description="IDs of 2–6 teams to compare.",
+    team_ids: Optional[list[int]] = Field(
+        default=None,
+        description="IDs of 2-6 teams from DB.",
+    )
+    manual_teams: Optional[list[ManualTeam]] = Field(
+        default=None,
+        description="Manual team input with player_ids.",
     )
     league_id: Optional[int] = Field(
         default=None,
@@ -189,6 +225,24 @@ class CompareTeamsRequest(BaseModel):
         default=True,
         description="Whether to surface potential trade opportunities between the teams.",
     )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
+    )
+
+    @model_validator(mode="after")
+    def require_team_ids_or_manual_teams(self) -> "CompareTeamsRequest":
+        has_team_ids = self.team_ids is not None and len(self.team_ids) >= 2
+        has_manual = self.manual_teams is not None and len(self.manual_teams) >= 2
+        if not has_team_ids and not has_manual:
+            raise ValueError(
+                "Provide either team_ids (at least 2) or manual_teams (at least 2)."
+            )
+        return self
 
 
 class TeamSnapshotRead(BaseModel):

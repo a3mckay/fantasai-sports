@@ -1,19 +1,20 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   BarChart2, ArrowLeftRight, Search, Star, Users,
-  Trophy, Zap, Menu, X, Activity
+  Trophy, Zap, Menu, X, Activity, TrendingUp
 } from 'lucide-react'
 import { useState } from 'react'
 
 const NAV = [
-  { to: '/',              icon: Activity,       label: 'Home' },
+  { to: '/',              icon: Activity,       label: 'Home'            },
+  { to: '/rankings',      icon: TrendingUp,     label: 'Rankings'        },
   { to: '/compare',       icon: BarChart2,      label: 'Compare Players' },
-  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade' },
-  { to: '/find-player',   icon: Search,         label: 'Find a Player' },
-  { to: '/team-eval',     icon: Star,           label: 'Team Eval' },
+  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'  },
+  { to: '/team-eval',     icon: Star,           label: 'Team Eval'       },
+  { to: '/compare-teams', icon: Users,          label: 'Compare Teams'   },
   { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning' },
-  { to: '/compare-teams', icon: Users,          label: 'Compare Teams' },
-  { to: '/league-power',  icon: Zap,            label: 'League Power' },
+  { to: '/find-player',   icon: Search,         label: 'Find a Player'   },
+  { to: '/league-power',  icon: Zap,            label: 'League Power'    },
 ]
 
 function NavLink({ to, icon: Icon, label, onClick }) {

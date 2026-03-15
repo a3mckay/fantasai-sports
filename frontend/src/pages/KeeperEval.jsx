@@ -1,15 +1,13 @@
 import { useState } from 'react'
-import { Trophy, Play, Scissors, CheckCircle } from 'lucide-react'
+import { Trophy, Play, Scissors, CheckCircle, Plus, X } from 'lucide-react'
 import { keeperEval } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
-
-function parseIds(raw) {
-  return raw.split(/[\s,]+/).map(s => parseInt(s.trim())).filter(n => !isNaN(n))
-}
+import PlayerSearch from '../components/PlayerSearch'
+import LeagueSettings from '../components/LeagueSettings'
 
 const GRADE_STYLE = {
   A: 'text-field-300',
@@ -18,6 +16,19 @@ const GRADE_STYLE = {
   D: 'text-stitch-300',
   F: 'text-red-400',
 }
+
+const MODES = [
+  {
+    val: 'plan_keepers',
+    label: 'Plan My Keepers',
+    description: 'Enter your full roster → AI picks the best N players to keep and recommends who to cut.',
+  },
+  {
+    val: 'evaluate_keepers',
+    label: 'Evaluate My Keepers',
+    description: 'Enter your confirmed keeper list → AI grades the foundation and suggests draft targets.',
+  },
+]
 
 function PlayerList({ players, variant = 'keep' }) {
   if (!players.length) return <p className="text-xs text-slate-600 italic">None</p>
@@ -30,7 +41,9 @@ function PlayerList({ players, variant = 'keep' }) {
             ? <CheckCircle size={13} className="text-field-500 shrink-0" />
             : <Scissors size={13} className="text-stitch-500 shrink-0" />
           }
-          <span className={isKeep ? 'text-white' : 'text-slate-500 line-through'}>{p.player_name}</span>
+          <span className={isKeep ? 'text-white' : 'text-slate-500 line-through'}>
+            {p.player_name}
+          </span>
           {p.positions.map(pos => (
             <span key={pos} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{pos}</span>
           ))}
@@ -69,35 +82,59 @@ function DraftProfiles({ profiles }) {
   )
 }
 
+function emptyPlayer() {
+  return { name: '', playerId: null }
+}
+
 export default function KeeperEval() {
-  const [mode, setMode]           = useState('plan_keepers')
-  const [teamId, setTeamId]       = useState('')
-  const [playerIds, setPlayerIds] = useState('')
-  const [nKeepers, setNKeepers]   = useState('5')
-  const [leagueId, setLeagueId]   = useState('')
-  const [context, setContext]     = useState('')
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState(null)
-  const [result, setResult]       = useState(null)
+  const [mode, setMode]               = useState('plan_keepers')
+  const [players, setPlayers]         = useState([emptyPlayer()])
+  const [nKeepers, setNKeepers]       = useState('5')
+  const [context, setContext]         = useState('')
+  const [leagueSettings, setLeagueSettings] = useState(null)
+  const [loading, setLoading]         = useState(false)
+  const [error, setError]             = useState(null)
+  const [result, setResult]           = useState(null)
+
+  function addPlayer() {
+    if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
+  }
+
+  function removePlayer(idx) {
+    if (players.length > 1) setPlayers(prev => prev.filter((_, i) => i !== idx))
+  }
+
+  function updatePlayer(idx, name, playerId) {
+    setPlayers(prev => prev.map((p, i) => i === idx ? { name, playerId } : p))
+  }
+
+  // Reset player list when mode changes (different context)
+  function switchMode(m) {
+    setMode(m)
+    setPlayers([emptyPlayer()])
+    setResult(null)
+    setError(null)
+  }
 
   async function submit(e) {
     e.preventDefault()
-    if (!teamId && !playerIds.trim()) {
-      setError('Provide either a Team ID or a list of Player IDs.')
+    const resolved = players.filter(p => p.playerId != null).map(p => p.playerId)
+    if (resolved.length < 1) {
+      setError(`Add at least one player ${mode === 'plan_keepers' ? 'from your roster' : 'to your keeper list'}.`)
       return
     }
     setLoading(true); setError(null); setResult(null)
     try {
       const body = {
         mode,
+        player_ids: resolved,
         n_keepers:  parseInt(nKeepers) || 5,
-        league_id:  leagueId ? parseInt(leagueId) : null,
-        context:    context  || null,
+        context:    context || null,
       }
-      if (teamId) {
-        body.team_id = parseInt(teamId)
-      } else {
-        body.player_ids = parseIds(playerIds)
+      if (leagueSettings) {
+        body.custom_categories        = leagueSettings.categories
+        body.custom_league_type       = leagueSettings.leagueType
+        body.custom_roster_positions  = leagueSettings.rosterPositions
       }
       const res = await keeperEval(body)
       setResult(res)
@@ -108,91 +145,110 @@ export default function KeeperEval() {
     }
   }
 
+  const currentMode = MODES.find(m => m.val === mode)
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Header */}
       <div>
         <div className="flex items-center gap-2 mb-1">
           <Trophy size={18} className="text-field-400" />
           <h1 className="text-2xl font-bold text-white">Keeper Planning</h1>
         </div>
         <p className="text-slate-500 text-sm">
-          Evaluate your keeper core, or let the AI decide who to keep from your full roster.
+          Evaluate your keeper core or let AI decide who to keep from your full roster.
         </p>
       </div>
 
+      {/* Mode selector — outside the form card, prominent */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {MODES.map(m => (
+          <button
+            key={m.val}
+            type="button"
+            onClick={() => switchMode(m.val)}
+            className={`text-left p-4 rounded-xl border transition-all ${
+              mode === m.val
+                ? 'bg-field-900 border-field-600 shadow-lg'
+                : 'bg-navy-800 border-navy-600 hover:border-navy-500'
+            }`}
+          >
+            <div className={`font-semibold text-sm mb-1 ${mode === m.val ? 'text-field-300' : 'text-slate-300'}`}>
+              {m.label}
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">{m.description}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Form card */}
       <form onSubmit={submit} className="card space-y-5">
-        {/* Mode toggle */}
+        {/* Active mode reminder */}
+        <div className="flex items-center gap-2 px-3 py-2 bg-field-950 border border-field-800/50 rounded-lg">
+          <Trophy size={13} className="text-field-500 shrink-0" />
+          <span className="text-xs text-field-400">{currentMode?.label}</span>
+        </div>
+
+        {/* Player inputs */}
         <div>
-          <label className="section-label">Mode</label>
-          <div className="flex gap-2">
-            {[
-              { val: 'plan_keepers',     label: 'Plan keepers (full roster → recommend N to keep)' },
-              { val: 'evaluate_keepers', label: 'Evaluate keepers (input IS your keeper list)' },
-            ].map(({ val, label }) => (
-              <button
-                key={val}
-                type="button"
-                onClick={() => setMode(val)}
-                className={`flex-1 text-xs px-3 py-2.5 rounded-lg border transition-colors ${
-                  mode === val
-                    ? 'bg-field-700 border-field-600 text-white'
-                    : 'bg-navy-800 border-navy-600 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {label}
-              </button>
+          <label className="section-label mb-2">
+            {mode === 'plan_keepers'
+              ? 'Your Full Roster *'
+              : 'Your Confirmed Keepers *'
+            }
+          </label>
+          <div className="space-y-2">
+            {players.map((p, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <PlayerSearch
+                  value={p.name}
+                  playerId={p.playerId}
+                  onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                  placeholder={`Player ${idx + 1}…`}
+                  className="flex-1"
+                />
+                {players.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removePlayer(idx)}
+                    className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="section-label">Team ID</label>
-            <input
-              className="field-input font-mono"
-              placeholder="e.g. 3"
-              value={teamId}
-              onChange={e => { setTeamId(e.target.value); if (e.target.value) setPlayerIds('') }}
-            />
-          </div>
-          <div>
-            <label className="section-label">— or — Player IDs</label>
-            <input
-              className="field-input font-mono"
-              placeholder="19755, 20123, …"
-              value={playerIds}
-              onChange={e => { setPlayerIds(e.target.value); if (e.target.value) setTeamId('') }}
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          {mode === 'plan_keepers' && (
-            <div>
-              <label className="section-label">Keepers to keep (#)</label>
-              <input
-                className="field-input font-mono w-24"
-                type="number" min="1" max="20"
-                value={nKeepers}
-                onChange={e => setNKeepers(e.target.value)}
-              />
-            </div>
+          {players.length < 30 && (
+            <button
+              type="button"
+              onClick={addPlayer}
+              className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
+            >
+              <Plus size={13} /> Add player
+            </button>
           )}
+        </div>
+
+        {/* Keepers to keep (plan mode only) */}
+        {mode === 'plan_keepers' && (
           <div>
-            <label className="section-label">League ID (optional)</label>
+            <label className="section-label">How many keepers to keep</label>
             <input
-              className="field-input font-mono"
-              placeholder="e.g. 1"
-              value={leagueId}
-              onChange={e => setLeagueId(e.target.value)}
+              className="field-input font-mono w-24"
+              type="number" min="1" max="20"
+              value={nKeepers}
+              onChange={e => setNKeepers(e.target.value)}
             />
           </div>
-        </div>
+        )}
 
         <ContextInput value={context} onChange={setContext} />
+        <LeagueSettings onChange={setLeagueSettings} />
 
         <button type="submit" className="btn-primary" disabled={loading}>
-          <Play size={14} /> {mode === 'plan_keepers' ? 'Plan My Keepers' : 'Evaluate Keepers'}
+          <Play size={14} />
+          {mode === 'plan_keepers' ? 'Plan My Keepers' : 'Evaluate Keepers'}
         </button>
       </form>
 
@@ -213,7 +269,8 @@ export default function KeeperEval() {
               <div className="text-sm text-slate-400 mb-2">
                 {result.category_gaps.length > 0
                   ? `Draft targets needed: ${result.category_gaps.slice(0, 4).join(', ')}`
-                  : 'No major category gaps'}
+                  : 'No major category gaps'
+                }
               </div>
               {result.position_gaps.length > 0 && (
                 <div className="flex flex-wrap gap-1">

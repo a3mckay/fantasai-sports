@@ -1,6 +1,6 @@
 """Analysis API endpoints.
 
-Seven features:
+Eight features:
   1. POST /compare        — head-to-head player comparison with optional context
   2. POST /trade          — trade evaluation with talent-density-aware verdict
   3. POST /find-player    — suggest an available player for a specific roster slot
@@ -13,6 +13,7 @@ Seven features:
                             opportunity surfacing.
   7. GET  /league-power/{league_id} — full league power rankings, tier groupings,
                             and top cross-league trade pairs.
+  8. POST /extract-players — extract player names from a screenshot using Claude vision.
 
 All endpoints compute fresh rankings from stored PlayerStats and call the
 brain layer for algorithmic analysis. LLM blurbs are generated via direct
@@ -64,6 +65,8 @@ from fantasai.schemas.analysis import (
     ComparePlayerResultRead,
     CompareRequest,
     CompareResponse,
+    ExtractPlayersRequest,
+    ExtractPlayersResponse,
     FindPlayerRequest,
     FindPlayerResponse,
     FindPlayerSuggestionRead,
@@ -77,6 +80,7 @@ from fantasai.schemas.team_analysis import (
     KeeperEvalRequest,
     KeeperEvalResponse,
     LeaguePowerResponse,
+    ManualTeam,  # noqa: F401 — re-exported for consumers
     PlayerSummaryRead,
     PositionGroupRead,
     TeamEvalRequest,
@@ -349,6 +353,8 @@ def compare_players_endpoint(
         league = db.get(League, body.league_id)
         if league and league.scoring_categories:
             categories = league.scoring_categories
+    if body.custom_categories:
+        categories = body.custom_categories
 
     lookback, predictive = _compute_rankings(db, categories)
     if not lookback and not predictive:
@@ -439,9 +445,26 @@ def evaluate_trade_endpoint(
     In keeper leagues (detected from league settings), younger players
     receive a future-value bonus when age data is available.
     """
-    team, league = _fetch_team_and_league(body.team_id, db)
-    categories = league.scoring_categories or DEFAULT_CATEGORIES
-    has_keepers = (league.settings or {}).get("keepers", 0) > 0
+    # Resolve categories, league_type, and has_keepers
+    if body.team_id:
+        team, league = _fetch_team_and_league(body.team_id, db)
+        categories = league.scoring_categories or DEFAULT_CATEGORIES
+        league_type = league.league_type or "h2h_categories"
+        has_keepers = (league.settings or {}).get("keepers", 0) > 0
+        roster_ids: set[int] = set(team.roster or [])
+    else:
+        team = None
+        league = None
+        categories = body.custom_categories or DEFAULT_CATEGORIES
+        league_type = body.custom_league_type or "h2h_categories"
+        has_keepers = False
+        roster_ids = set(body.roster_player_ids or [])
+
+    # Override categories with custom if provided alongside team_id
+    if body.custom_categories:
+        categories = body.custom_categories
+    if body.custom_league_type:
+        league_type = body.custom_league_type
 
     lookback, predictive = _compute_rankings(db, categories)
     if not lookback:
@@ -476,7 +499,6 @@ def evaluate_trade_endpoint(
         )
 
     # Compute team strengths for context
-    roster_ids = set(team.roster or [])
     roster_rankings = [r for r in lookback if r.player_id in roster_ids]
     team_strengths = _compute_team_strengths(roster_rankings, categories)
 
@@ -487,7 +509,7 @@ def evaluate_trade_endpoint(
         receiving_picks=body.receiving.draft_picks,
         team_strengths=team_strengths,
         scoring_categories=categories,
-        league_type=league.league_type,
+        league_type=league_type,
         has_keepers=has_keepers,
         context=body.context,
         player_ages={},  # Future: populate from Player.birth_date when available
@@ -963,6 +985,13 @@ def team_eval_endpoint(
             league_type = league.league_type or "h2h_categories"
             roster_positions = league.roster_positions or []
 
+    if body.custom_categories:
+        categories = body.custom_categories
+    if body.custom_league_type:
+        league_type = body.custom_league_type
+    if body.custom_roster_positions:
+        roster_positions = body.custom_roster_positions
+
     # Compute rankings
     lookback, predictive = _compute_rankings(db, categories)
     source = predictive if body.ranking_type == "predictive" else lookback
@@ -1063,6 +1092,13 @@ def keeper_eval_endpoint(
             categories = league.scoring_categories or DEFAULT_CATEGORIES
             league_type = league.league_type or "h2h_categories"
             roster_positions = league.roster_positions or []
+
+    if body.custom_categories:
+        categories = body.custom_categories
+    if body.custom_league_type:
+        league_type = body.custom_league_type
+    if body.custom_roster_positions:
+        roster_positions = body.custom_roster_positions
 
     # Compute rankings
     lookback, predictive = _compute_rankings(db, categories)
@@ -1197,6 +1233,11 @@ def compare_teams_endpoint(
             categories = league.scoring_categories or DEFAULT_CATEGORIES
             league_type = league.league_type or "h2h_categories"
 
+    if body.custom_categories:
+        categories = body.custom_categories
+    if body.custom_league_type:
+        league_type = body.custom_league_type
+
     lookback, predictive = _compute_rankings(db, categories)
     source = predictive or lookback
     if not source:
@@ -1206,12 +1247,20 @@ def compare_teams_endpoint(
 
     # Build team data tuples
     team_data: list[tuple[int, str, list[PlayerRanking]]] = []
-    for tid in body.team_ids:
-        team = db.get(Team, tid)
-        if not team:
-            raise HTTPException(status_code=404, detail=f"Team {tid} not found.")
-        roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
-        team_data.append((tid, team.name or f"Team {tid}", roster_rankings))
+
+    if body.manual_teams:
+        # Build from manual teams using sequential negative fake IDs
+        for i, mt in enumerate(body.manual_teams):
+            fake_id = -(i + 1)
+            roster_rankings = [ranking_map[pid] for pid in mt.player_ids if pid in ranking_map]
+            team_data.append((fake_id, mt.name, roster_rankings))
+    else:
+        for tid in (body.team_ids or []):
+            team = db.get(Team, tid)
+            if not team:
+                raise HTTPException(status_code=404, detail=f"Team {tid} not found.")
+            roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
+            team_data.append((tid, team.name or f"Team {tid}", roster_rankings))
 
     if len(team_data) < 2:
         raise HTTPException(status_code=422, detail="At least 2 valid teams are required.")
@@ -1296,3 +1345,99 @@ def league_power_endpoint(
         trade_opportunities=[_trade_opp_to_read(o) for o in report.trade_opportunities],
         analysis_blurb=blurb,
     )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 8 — Extract Players from Screenshot
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/extract-players",
+    response_model=ExtractPlayersResponse,
+    summary="Extract player names from a screenshot using Claude vision",
+)
+def extract_players_endpoint(
+    body: ExtractPlayersRequest,
+) -> ExtractPlayersResponse:
+    """Extract fantasy baseball player names from a screenshot image.
+
+    Accepts a base64-encoded image (JPEG, PNG, GIF, or WEBP) and uses
+    Claude's vision capability to identify player names visible in the image.
+    Returns a list of extracted player name strings.
+    """
+    import base64
+
+    client = _llm_client()
+    if not client:
+        raise HTTPException(
+            status_code=503,
+            detail="AI service not configured. Set ANTHROPIC_API_KEY.",
+        )
+
+    try:
+        # Validate and decode base64
+        image_data = body.image_base64
+        # Strip data URL prefix if present
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+
+        # Validate it's valid base64
+        base64.b64decode(image_data)
+
+        response = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=500,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": body.image_type,
+                                "data": image_data,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "This is a fantasy sports roster screenshot. "
+                                "Extract all player names you can see. "
+                                "Return ONLY a JSON array of strings with the player names, nothing else. "
+                                'Example: ["Mike Trout", "Shohei Ohtani", "Aaron Judge"]. '
+                                "Include only actual player names (First Last format). "
+                                "Exclude team names, positions, stats, and column headers."
+                            ),
+                        },
+                    ],
+                }
+            ],
+        )
+
+        text_blocks = [b for b in response.content if b.type == "text"]
+        if not text_blocks:
+            return ExtractPlayersResponse(player_names=[])
+
+        raw = text_blocks[0].text.strip()
+
+        # Parse JSON array from response
+        import json
+        import re
+        # Find JSON array in the response
+        match = re.search(r'\[.*?\]', raw, re.DOTALL)
+        if match:
+            names = json.loads(match.group())
+            player_names = [str(n).strip() for n in names if n and str(n).strip()]
+        else:
+            player_names = []
+
+        return ExtractPlayersResponse(player_names=player_names)
+
+    except Exception as exc:
+        logger.warning("Extract players failed: %s", exc)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to extract players from image: {exc}",
+        )

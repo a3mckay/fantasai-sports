@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Star, Play } from 'lucide-react'
+import { Star, Play, Plus, X } from 'lucide-react'
 import { teamEval } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -7,10 +7,8 @@ import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
 import CategoryBar from '../components/CategoryBar'
-
-function parseIds(raw) {
-  return raw.split(/[\s,]+/).map(s => parseInt(s.trim())).filter(n => !isNaN(n))
-}
+import PlayerSearch from '../components/PlayerSearch'
+import LeagueSettings from '../components/LeagueSettings'
 
 const GRADE_STYLE = {
   A: 'border-field-500 text-field-300 bg-field-950',
@@ -28,33 +26,49 @@ const ASSESSMENT_PILL = {
   empty:   'bg-navy-800 text-slate-600',
 }
 
+function emptyPlayer() {
+  return { name: '', playerId: null }
+}
+
 export default function TeamEval() {
-  const [teamId, setTeamId]       = useState('')
-  const [playerIds, setPlayerIds] = useState('')
-  const [leagueId, setLeagueId]   = useState('')
-  const [context, setContext]     = useState('')
-  const [rankingType, setRankingType] = useState('predictive')
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState(null)
-  const [result, setResult]       = useState(null)
+  const [players, setPlayers]           = useState([emptyPlayer()])
+  const [rankingType, setRankingType]   = useState('predictive')
+  const [context, setContext]           = useState('')
+  const [leagueSettings, setLeagueSettings] = useState(null)
+  const [loading, setLoading]           = useState(false)
+  const [error, setError]               = useState(null)
+  const [result, setResult]             = useState(null)
+
+  function addPlayer() {
+    if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
+  }
+
+  function removePlayer(idx) {
+    if (players.length > 1) setPlayers(prev => prev.filter((_, i) => i !== idx))
+  }
+
+  function updatePlayer(idx, name, playerId) {
+    setPlayers(prev => prev.map((p, i) => i === idx ? { name, playerId } : p))
+  }
 
   async function submit(e) {
     e.preventDefault()
-    if (!teamId && !playerIds.trim()) {
-      setError('Provide either a Team ID or a list of Player IDs.')
+    const resolved = players.filter(p => p.playerId != null).map(p => p.playerId)
+    if (resolved.length < 1) {
+      setError('Add at least one player to evaluate your team.')
       return
     }
     setLoading(true); setError(null); setResult(null)
     try {
       const body = {
-        league_id:    leagueId   ? parseInt(leagueId)   : null,
-        context:      context    || null,
+        player_ids:   resolved,
+        context:      context || null,
         ranking_type: rankingType,
       }
-      if (teamId) {
-        body.team_id = parseInt(teamId)
-      } else {
-        body.player_ids = parseIds(playerIds)
+      if (leagueSettings) {
+        body.custom_categories        = leagueSettings.categories
+        body.custom_league_type       = leagueSettings.leagueType
+        body.custom_roster_positions  = leagueSettings.rosterPositions
       }
       const res = await teamEval(body)
       setResult(res)
@@ -80,47 +94,57 @@ export default function TeamEval() {
       </div>
 
       <form onSubmit={submit} className="card space-y-5">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="section-label">Team ID</label>
-            <input
-              className="field-input font-mono"
-              placeholder="e.g. 3"
-              value={teamId}
-              onChange={e => { setTeamId(e.target.value); if (e.target.value) setPlayerIds('') }}
-            />
+        {/* Player list */}
+        <div>
+          <label className="section-label mb-2">Your Roster *</label>
+          <div className="space-y-2">
+            {players.map((p, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <PlayerSearch
+                  value={p.name}
+                  playerId={p.playerId}
+                  onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                  placeholder={`Player ${idx + 1}…`}
+                  className="flex-1"
+                />
+                {players.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => removePlayer(idx)}
+                    className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
-          <div>
-            <label className="section-label">— or — Player IDs</label>
-            <input
-              className="field-input font-mono"
-              placeholder="19755, 20123, …"
-              value={playerIds}
-              onChange={e => { setPlayerIds(e.target.value); if (e.target.value) setTeamId('') }}
-            />
-          </div>
+          {players.length < 30 && (
+            <button
+              type="button"
+              onClick={addPlayer}
+              className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
+            >
+              <Plus size={13} /> Add player
+            </button>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="section-label">League ID (optional)</label>
-            <input
-              className="field-input font-mono"
-              placeholder="e.g. 1"
-              value={leagueId}
-              onChange={e => setLeagueId(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="section-label">Ranking type</label>
-            <select className="field-input" value={rankingType} onChange={e => setRankingType(e.target.value)}>
-              <option value="predictive">Predictive</option>
-              <option value="lookback">Current</option>
-            </select>
-          </div>
+        {/* Ranking type */}
+        <div>
+          <label className="section-label">Ranking type</label>
+          <select
+            className="field-input"
+            value={rankingType}
+            onChange={e => setRankingType(e.target.value)}
+          >
+            <option value="predictive">Projected (forward-looking)</option>
+            <option value="lookback">Current (season-to-date)</option>
+          </select>
         </div>
 
         <ContextInput value={context} onChange={setContext} />
+        <LeagueSettings onChange={setLeagueSettings} />
 
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} /> Evaluate Team

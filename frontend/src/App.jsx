@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import Home          from './pages/Home'
+import Home           from './pages/Home'
+import Rankings       from './pages/Rankings'
 import ComparePlayers from './pages/ComparePlayers'
 import EvaluateTrade  from './pages/EvaluateTrade'
 import FindPlayer     from './pages/FindPlayer'
@@ -15,6 +16,7 @@ export default function App() {
       <Layout>
         <Routes>
           <Route path="/"              element={<Home />} />
+          <Route path="/rankings"      element={<Rankings />} />
           <Route path="/compare"       element={<ComparePlayers />} />
           <Route path="/trade"         element={<EvaluateTrade />} />
           <Route path="/find-player"   element={<FindPlayer />} />
