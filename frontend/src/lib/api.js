@@ -1,11 +1,13 @@
 /**
  * API client for the FantasAI Sports backend.
  * All calls go to /api/v1/ — in dev the Vite proxy forwards them to localhost:8000.
- * In production, set VITE_API_URL to the absolute backend URL.
+ * In production the Vercel rewrite proxies /api/* to Railway, so VITE_API_URL is
+ * not required. If set, it MUST include the protocol (https://...) — bare hostnames
+ * without a protocol are treated the same as unset to avoid relative-URL breakage.
  */
-
-const BASE = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api/v1`
+const _rawUrl = import.meta.env.VITE_API_URL || ''
+const BASE = _rawUrl.startsWith('http')
+  ? `${_rawUrl}/api/v1`
   : '/api/v1'
 
 async function req(method, path, body) {
