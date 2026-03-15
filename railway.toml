@@ -1,5 +1,5 @@
 [build]
-builder = "nixpacks"
+builder = "dockerfile"
 
 [deploy]
 # Run DB migration then start the API server.
