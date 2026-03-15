@@ -64,17 +64,25 @@ export default function Layout({ children }) {
       </aside>
 
       {/* ── Mobile header ── */}
-      <div className="md:hidden fixed top-0 inset-x-0 z-50 bg-navy-950 border-b border-navy-700 flex items-center justify-between px-4 h-14">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">⚾</span>
-          <span className="font-bold text-white text-sm">FantasAI Sports</span>
-        </div>
+      <div className="md:hidden fixed top-0 inset-x-0 z-50 bg-navy-950 border-b border-navy-700 flex items-center px-4 h-14">
         <button
           onClick={() => setOpen(!open)}
-          className="text-slate-400 hover:text-white p-1"
+          className="text-slate-400 hover:text-white p-1 shrink-0"
         >
           {open ? <X size={20} /> : <Menu size={20} />}
         </button>
+        <Link
+          to="/"
+          onClick={() => setOpen(false)}
+          className="flex items-center gap-2 flex-1 justify-center"
+        >
+          <span className="text-lg">⚾</span>
+          <span className="font-bold text-white text-sm">
+            Fantas<span className="text-field-400">AI</span> Sports
+          </span>
+        </Link>
+        {/* Spacer to keep title visually centered */}
+        <div className="w-8 shrink-0" />
       </div>
 
       {/* ── Mobile nav drawer ── */}
