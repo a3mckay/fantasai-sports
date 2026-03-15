@@ -75,7 +75,11 @@ export default function ComparePlayers() {
         </p>
       </div>
 
-      <form onSubmit={submit} className="card space-y-5">
+      <form
+        onSubmit={submit}
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
+        className="card space-y-5"
+      >
         {/* Player search list */}
         <div>
           <label className="section-label mb-2">Players *</label>
@@ -86,6 +90,7 @@ export default function ComparePlayers() {
                   value={p.name}
                   playerId={p.playerId}
                   onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                  onEnterKey={addPlayer}
                   placeholder={`Player ${idx + 1}…`}
                   className="flex-1"
                 />

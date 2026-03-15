@@ -202,16 +202,20 @@ class ScoringEngine:
         ]
 
         batter_rankings = self._score_predictive(
-            batters, PREDICTIVE_HITTING_WEIGHTS, "batting"
+            batters, PREDICTIVE_HITTING_WEIGHTS, "batting",
+            categories=self.hitting_cats,
         )
         sp_rankings = self._score_predictive(
-            starters, PREDICTIVE_PITCHING_WEIGHTS, "pitching"
+            starters, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
+            categories=self.pitching_cats,
         )
         rp_rankings = self._score_predictive(
-            relievers, PREDICTIVE_PITCHING_WEIGHTS, "pitching"
+            relievers, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
+            categories=self.pitching_cats,
         )
         unknown_rankings = self._score_predictive(
-            unknown_pitchers, PREDICTIVE_PITCHING_WEIGHTS, "pitching"
+            unknown_pitchers, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
+            categories=self.pitching_cats,
         )
 
         all_rankings = batter_rankings + sp_rankings + rp_rankings + unknown_rankings
@@ -409,8 +413,19 @@ class ScoringEngine:
         players: list[NormalizedPlayerData],
         weights: dict[tuple[str, str], float],
         stat_type: str,
+        categories: list[str] | None = None,
     ) -> list[PlayerRanking]:
-        """Compute weighted z-score rankings using predictive stats."""
+        """Compute weighted z-score rankings using predictive stats.
+
+        The composite *score* is derived from advanced/predictive metrics
+        (xERA, Stuff+, xwOBA, etc.) so ranking order reflects true talent.
+
+        *category_contributions* is keyed by **fantasy category name** (R, HR,
+        SV, ERA …) so the comparator and UI can display a meaningful per-cat
+        breakdown and apply context boosts (e.g. "I need saves").  When
+        `categories` is provided, these z-scores are computed from the same
+        counting/rate stats as the lookback model; otherwise the dict is empty.
+        """
         if not players:
             return []
 
@@ -443,18 +458,57 @@ class ScoringEngine:
                     zscores.append(float((v - mean) / std))
             stat_zscores[key] = zscores
 
-        # Step 3: Weighted combination
-        rankings = []
-        for i, player in enumerate(players):
-            contributions: dict[str, float] = {}
+        # Step 3: Weighted combination → composite score (advanced-stats based)
+        adv_scores: list[float] = []
+        for i, _player in enumerate(players):
             raw_score = 0.0
             for key, weight in weights.items():
-                bucket, stat_name = key
                 z = stat_zscores.get(key, [0.0] * len(players))[i]
-                weighted_z = z * weight
-                contributions[stat_name] = float(round(weighted_z, 3))
-                raw_score += weighted_z
+                raw_score += z * weight
+            adv_scores.append(raw_score)
 
+        # Step 4: Per-fantasy-category z-scores for display / context boosting
+        # (same logic as _score_lookback; uses counting/rate stats)
+        cat_contributions: list[dict[str, float]] = [{} for _ in players]
+        if categories:
+            cat_values: dict[str, list[Optional[float]]] = {}
+            for cat in categories:
+                mapping = CATEGORY_STAT_MAP.get(cat)
+                if mapping is None:
+                    continue
+                bucket, stat_name = mapping
+                cat_values[cat] = [_get_stat_value(p, bucket, stat_name) for p in players]
+
+            cat_zscores: dict[str, list[float]] = {}
+            for cat, values in cat_values.items():
+                clean = [v for v in values if v is not None]
+                if len(clean) < 2:
+                    cat_zscores[cat] = [0.0] * len(players)
+                    continue
+                mean = np.mean(clean)
+                std = np.std(clean)
+                if std == 0:
+                    cat_zscores[cat] = [0.0] * len(players)
+                    continue
+                zs: list[float] = []
+                for v in values:
+                    if v is None:
+                        zs.append(0.0)
+                    else:
+                        z = float((v - mean) / std)
+                        if cat in LOWER_IS_BETTER:
+                            z = -z
+                        zs.append(z)
+                cat_zscores[cat] = zs
+
+            for i in range(len(players)):
+                for cat in cat_zscores:
+                    cat_contributions[i][cat] = float(round(cat_zscores[cat][i], 3))
+
+        # Step 5: Build PlayerRanking objects
+        rankings = []
+        for i, player in enumerate(players):
+            raw_score = adv_scores[i]
             scarcity_mult = _get_scarcity_multiplier(player.positions)
             score = raw_score * scarcity_mult
 
@@ -467,7 +521,7 @@ class ScoringEngine:
                     stat_type=stat_type,
                     score=round(score, 3),
                     raw_score=round(raw_score, 3),
-                    category_contributions=contributions,
+                    category_contributions=cat_contributions[i],
                 )
             )
 
