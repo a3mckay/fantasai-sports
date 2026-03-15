@@ -6,6 +6,7 @@ Recommender, and returns results. The Recommender itself is pure
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,33 @@ from fantasai.schemas.recommendation import (
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
+# ---------------------------------------------------------------------------
+# Rankings cache — avoid re-querying 935 PlayerStats on every request
+# ---------------------------------------------------------------------------
+
+_RANKINGS_CACHE: dict[str, tuple[float, tuple]] = {}
+_RANKINGS_TTL = 300  # 5 minutes
+
+
+def _rankings_cache_key(categories: list[str]) -> str:
+    return ",".join(sorted(categories))
+
+
+def _get_cached_rankings(categories: list[str]) -> tuple | None:
+    key = _rankings_cache_key(categories)
+    entry = _RANKINGS_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > _RANKINGS_TTL:
+        del _RANKINGS_CACHE[key]
+        return None
+    return value
+
+
+def _set_cached_rankings(categories: list[str], value: tuple) -> None:
+    _RANKINGS_CACHE[_rankings_cache_key(categories)] = (time.monotonic(), value)
+
 
 # ---------------------------------------------------------------------------
 # Helpers — shared DB → rankings pipeline
@@ -51,8 +79,16 @@ def _fetch_team_and_league(team_id: int, db: Session) -> tuple:
 def _compute_rankings(db: Session, categories: list[str]) -> tuple:
     """Compute lookback + predictive rankings from stored PlayerStats.
 
+    Results are cached in-process for 5 minutes (keyed by category set)
+    so that the expensive DB query + z-score computation only runs once
+    per warm period instead of on every request.
+
     Returns (lookback, predictive) or ([], []) if no data.
     """
+    cached = _get_cached_rankings(categories)
+    if cached is not None:
+        return cached
+
     from fantasai.adapters.base import NormalizedPlayerData
     from fantasai.adapters.mlb import MLBAdapter
     from fantasai.models.player import Player
@@ -90,7 +126,9 @@ def _compute_rankings(db: Session, categories: list[str]) -> tuple:
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
     predictive = engine.compute_predictive_rankings(2025, players=players)
-    return lookback, predictive
+    result = (lookback, predictive)
+    _set_cached_rankings(categories, result)
+    return result
 
 
 def _fetch_rolling_windows_map(
