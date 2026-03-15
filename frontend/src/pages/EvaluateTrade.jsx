@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, Plus, X } from 'lucide-react'
+import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, Plus, X, ChevronDown } from 'lucide-react'
 import { evaluateTrade } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -55,7 +55,7 @@ function PlayerSlotList({ players, onChange, side }) {
   }
 
   function removeSlot(idx) {
-    onChange(players.filter((_, i) => i !== idx))
+    if (players.length > 1) onChange(players.filter((_, i) => i !== idx))
   }
 
   function updateSlot(idx, name, playerId) {
@@ -72,10 +72,11 @@ function PlayerSlotList({ players, onChange, side }) {
             value={p.name}
             playerId={p.playerId}
             onChange={(name, playerId) => updateSlot(idx, name, playerId)}
+            onEnterKey={addSlot}
             placeholder={`Player ${idx + 1}…`}
             className="flex-1"
           />
-          {players.length > 0 && (
+          {players.length > 1 && (
             <button
               type="button"
               onClick={() => removeSlot(idx)}
@@ -104,21 +105,27 @@ function PlayerSlotList({ players, onChange, side }) {
   )
 }
 
-// ── Draft picks list component ────────────────────────────────────────────────
+// ── Draft picks list component — year + round dropdowns ───────────────────────
+
+const currentYear = new Date().getFullYear()
+const PICK_YEARS  = [currentYear, currentYear + 1, currentYear + 2]
+const PICK_ROUNDS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th']
 
 function DraftPickList({ picks, onChange, side }) {
-  const color = side === 'give' ? 'text-stitch-400' : 'text-field-400'
+  const addColor = side === 'give'
+    ? 'text-stitch-500 hover:text-stitch-300'
+    : 'text-field-500 hover:text-field-300'
 
   function addPick() {
-    onChange([...picks, ''])
+    onChange([...picks, { year: String(currentYear + 1), round: '1st' }])
   }
 
   function removePick(idx) {
     onChange(picks.filter((_, i) => i !== idx))
   }
 
-  function updatePick(idx, val) {
-    onChange(picks.map((p, i) => i === idx ? val : p))
+  function updatePick(idx, field, val) {
+    onChange(picks.map((p, i) => i === idx ? { ...p, [field]: val } : p))
   }
 
   return (
@@ -126,12 +133,32 @@ function DraftPickList({ picks, onChange, side }) {
       <div className="section-label">Draft picks</div>
       {picks.map((pick, idx) => (
         <div key={idx} className="flex items-center gap-2">
-          <input
-            className="field-input flex-1 text-sm"
-            placeholder="e.g. 2026 1st round"
-            value={pick}
-            onChange={e => updatePick(idx, e.target.value)}
-          />
+          {/* Year */}
+          <div className="relative flex-1">
+            <select
+              className="field-input appearance-none pr-7 text-sm"
+              value={pick.year}
+              onChange={e => updatePick(idx, 'year', e.target.value)}
+            >
+              {PICK_YEARS.map(y => (
+                <option key={y} value={String(y)}>{y}</option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          </div>
+          {/* Round */}
+          <div className="relative flex-1">
+            <select
+              className="field-input appearance-none pr-7 text-sm"
+              value={pick.round}
+              onChange={e => updatePick(idx, 'round', e.target.value)}
+            >
+              {PICK_ROUNDS.map(r => (
+                <option key={r} value={r}>{r} round</option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          </div>
           <button
             type="button"
             onClick={() => removePick(idx)}
@@ -144,11 +171,7 @@ function DraftPickList({ picks, onChange, side }) {
       <button
         type="button"
         onClick={addPick}
-        className={`flex items-center gap-1.5 text-xs transition-colors ${
-          side === 'give'
-            ? 'text-stitch-500 hover:text-stitch-300'
-            : 'text-field-500 hover:text-field-300'
-        }`}
+        className={`flex items-center gap-1.5 text-xs transition-colors ${addColor}`}
       >
         <Plus size={13} /> Add pick
       </button>
@@ -159,30 +182,36 @@ function DraftPickList({ picks, onChange, side }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EvaluateTrade() {
-  const [givingPlayers,   setGivingPlayers]   = useState([{ name: '', playerId: null }])
+  const [givingPlayers,    setGivingPlayers]   = useState([{ name: '', playerId: null }])
   const [receivingPlayers, setReceivingPlayers] = useState([{ name: '', playerId: null }])
-  const [givingPicks,     setGivingPicks]     = useState([])
-  const [receivingPicks,  setReceivingPicks]  = useState([])
-  const [myRosterPlayers, setMyRosterPlayers] = useState([])   // for team context
-  const [context, setContext]                 = useState('')
-  const [leagueSettings, setLeagueSettings]   = useState(null)
-  const [loading, setLoading]                 = useState(false)
-  const [error, setError]                     = useState(null)
-  const [result, setResult]                   = useState(null)
-  const [showMyRoster, setShowMyRoster]       = useState(false)
+  // picks are {year: string, round: string} objects
+  const [givingPicks,      setGivingPicks]     = useState([])
+  const [receivingPicks,   setReceivingPicks]  = useState([])
+  const [myRosterPlayers,  setMyRosterPlayers] = useState([])
+  const [context,          setContext]         = useState('')
+  const [leagueSettings,   setLeagueSettings] = useState(null)
+  const [loading,          setLoading]         = useState(false)
+  const [error,            setError]           = useState(null)
+  const [result,           setResult]          = useState(null)
+  const [showMyRoster,     setShowMyRoster]    = useState(false)
+
+  // Convert pick objects to "YYYY Nth round pick" strings for the API
+  function picksToStrings(picks) {
+    return picks.map(p => `${p.year} ${p.round} round pick`)
+  }
 
   async function submit(e) {
     e.preventDefault()
     const givingIds    = givingPlayers.filter(p => p.playerId).map(p => p.playerId)
     const receivingIds = receivingPlayers.filter(p => p.playerId).map(p => p.playerId)
-    const filteredGivingPicks    = givingPicks.filter(Boolean)
-    const filteredReceivingPicks = receivingPicks.filter(Boolean)
+    const givingPickStrs    = picksToStrings(givingPicks)
+    const receivingPickStrs = picksToStrings(receivingPicks)
 
-    if (givingIds.length + filteredGivingPicks.length === 0) {
+    if (givingIds.length + givingPickStrs.length === 0) {
       setError('Add at least one player or pick to the "You\'re Giving" side.')
       return
     }
-    if (receivingIds.length + filteredReceivingPicks.length === 0) {
+    if (receivingIds.length + receivingPickStrs.length === 0) {
       setError('Add at least one player or pick to the "You\'re Receiving" side.')
       return
     }
@@ -190,12 +219,11 @@ export default function EvaluateTrade() {
     setLoading(true); setError(null); setResult(null)
     try {
       const body = {
-        giving:    { player_ids: givingIds,    draft_picks: filteredGivingPicks    },
-        receiving: { player_ids: receivingIds, draft_picks: filteredReceivingPicks },
+        giving:    { player_ids: givingIds,    draft_picks: givingPickStrs    },
+        receiving: { player_ids: receivingIds, draft_picks: receivingPickStrs },
         context:   context || null,
       }
 
-      // Include roster context for better team-strength analysis
       const rosterIds = myRosterPlayers.filter(p => p.playerId).map(p => p.playerId)
       if (rosterIds.length > 0) body.roster_player_ids = rosterIds
 
@@ -225,7 +253,12 @@ export default function EvaluateTrade() {
         </p>
       </div>
 
-      <form onSubmit={submit} className="card space-y-6">
+      {/* Prevent Enter from submitting while in player inputs */}
+      <form
+        onSubmit={submit}
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
+        className="card space-y-6"
+      >
         {/* Give / Receive side-by-side */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
           {/* Giving side */}
@@ -280,6 +313,9 @@ export default function EvaluateTrade() {
                       setMyRosterPlayers(prev =>
                         prev.map((r, i) => i === idx ? { name, playerId } : r)
                       )
+                    }
+                    onEnterKey={() =>
+                      setMyRosterPlayers(prev => [...prev, { name: '', playerId: null }])
                     }
                     placeholder={`Roster player ${idx + 1}…`}
                     className="flex-1"

@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { Star, Play, Plus, X } from 'lucide-react'
-import { teamEval } from '../lib/api'
+import { useState, useRef } from 'react'
+import { Star, Play, Plus, X, Upload, ImageIcon, Loader2, AlertCircle } from 'lucide-react'
+import { teamEval, extractPlayers, searchPlayers } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
@@ -31,13 +31,19 @@ function emptyPlayer() {
 }
 
 export default function TeamEval() {
-  const [players, setPlayers]           = useState([emptyPlayer()])
-  const [rankingType, setRankingType]   = useState('predictive')
-  const [context, setContext]           = useState('')
+  const [players, setPlayers]               = useState([emptyPlayer()])
+  const [rankingType, setRankingType]       = useState('predictive')
+  const [context, setContext]               = useState('')
   const [leagueSettings, setLeagueSettings] = useState(null)
-  const [loading, setLoading]           = useState(false)
-  const [error, setError]               = useState(null)
-  const [result, setResult]             = useState(null)
+  const [loading, setLoading]               = useState(false)
+  const [error, setError]                   = useState(null)
+  const [result, setResult]                 = useState(null)
+
+  // Screenshot upload state
+  const [showUpload, setShowUpload]         = useState(false)
+  const [extracting, setExtracting]         = useState(false)
+  const [extractError, setExtractError]     = useState(null)
+  const fileRef                             = useRef(null)
 
   function addPlayer() {
     if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
@@ -51,11 +57,58 @@ export default function TeamEval() {
     setPlayers(prev => prev.map((p, i) => i === idx ? { name, playerId } : p))
   }
 
+  async function handleFiles(files) {
+    if (!files.length) return
+    setExtracting(true)
+    setExtractError(null)
+
+    const allNames = []
+    for (const file of Array.from(files)) {
+      try {
+        const b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader()
+          r.onload  = e => resolve(e.target.result)
+          r.onerror = reject
+          r.readAsDataURL(file)
+        })
+        const res = await extractPlayers({ image_base64: b64, image_type: file.type || 'image/jpeg' })
+        allNames.push(...(res.player_names || []))
+      } catch (err) {
+        setExtractError(err.message)
+      }
+    }
+
+    if (allNames.length === 0) {
+      setExtracting(false)
+      if (!extractError) setExtractError('No player names found. Try a clearer screenshot.')
+      return
+    }
+
+    // Auto-resolve each extracted name via search
+    const resolved = await Promise.all(
+      allNames.map(async name => {
+        try {
+          const results = await searchPlayers(name, 1)
+          const list = Array.isArray(results) ? results : (results.players || [])
+          if (list.length > 0) return { name: list[0].name, playerId: list[0].player_id }
+        } catch {}
+        return { name, playerId: null }
+      })
+    )
+
+    // Merge with existing non-empty players
+    const existing = players.filter(p => p.name || p.playerId)
+    const merged   = [...existing, ...resolved]
+    setPlayers(merged.length > 0 ? merged : [emptyPlayer()])
+    setExtracting(false)
+    setShowUpload(false)
+  }
+
   async function submit(e) {
     e.preventDefault()
     const resolved = players.filter(p => p.playerId != null).map(p => p.playerId)
     if (resolved.length < 1) {
-      setError('Add at least one player to evaluate your team.')
+      setError('Add at least one player to evaluate your team. Search by name and select from the dropdown.')
       return
     }
     setLoading(true); setError(null); setResult(null)
@@ -93,10 +146,63 @@ export default function TeamEval() {
         </p>
       </div>
 
-      <form onSubmit={submit} className="card space-y-5">
+      {/* Prevent Enter from submitting while typing in player search inputs */}
+      <form
+        onSubmit={submit}
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
+        className="card space-y-5"
+      >
         {/* Player list */}
         <div>
-          <label className="section-label mb-2">Your Roster *</label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="section-label">Your Roster *</label>
+            <button
+              type="button"
+              onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              <Upload size={12} />
+              {showUpload ? 'Hide upload' : 'Upload screenshots'}
+            </button>
+          </div>
+
+          {/* Screenshot upload area */}
+          {showUpload && (
+            <div className="mb-3 space-y-2">
+              <div
+                className="border-2 border-dashed border-navy-600 rounded-xl p-5 text-center cursor-pointer hover:border-field-600 transition-colors"
+                onClick={() => fileRef.current?.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
+              >
+                <ImageIcon size={28} className="mx-auto text-slate-600 mb-2" />
+                <p className="text-sm text-slate-400">Upload roster screenshots</p>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Drag & drop or click · Select multiple files to cover the full roster
+                </p>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={e => handleFiles(e.target.files)}
+                />
+              </div>
+              {extracting && (
+                <div className="flex items-center gap-2 text-xs text-field-400">
+                  <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
+                </div>
+              )}
+              {extractError && (
+                <div className="flex items-center gap-2 text-xs text-stitch-400">
+                  <AlertCircle size={13} /> {extractError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Manual player entries */}
           <div className="space-y-2">
             {players.map((p, idx) => (
               <div key={idx} className="flex items-center gap-2">
@@ -104,6 +210,7 @@ export default function TeamEval() {
                   value={p.name}
                   playerId={p.playerId}
                   onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                  onEnterKey={addPlayer}
                   placeholder={`Player ${idx + 1}…`}
                   className="flex-1"
                 />

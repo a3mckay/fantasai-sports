@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +120,7 @@ class TradeRequest(BaseModel):
         description="Custom league type: h2h_categories, roto, or points.",
     )
 
-    @model_validator(mode="after")
-    def require_team_or_roster(self) -> "TradeRequest":
-        if self.team_id is None and not self.roster_player_ids:
-            raise ValueError("Provide either team_id or roster_player_ids.")
-        return self
+
 
 
 class TradeResponse(BaseModel):

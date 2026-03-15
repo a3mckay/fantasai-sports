@@ -72,7 +72,7 @@ function TradeOpp({ opp, snapshots }) {
   )
 }
 
-// ── Team input block ──────────────────────────────────────────────────────────
+// ── Team input block (with per-team screenshot upload) ────────────────────────
 
 const TEAM_COLORS = [
   'border-field-700 bg-field-950/30',
@@ -84,6 +84,11 @@ const TEAM_COLORS = [
 ]
 
 function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
+  const [showUpload, setShowUpload]     = useState(false)
+  const [extracting, setExtracting]     = useState(false)
+  const [extractError, setExtractError] = useState(null)
+  const fileRef                         = useRef(null)
+
   function addPlayer() {
     if (team.players.length < 30) {
       onChange({ ...team, players: [...team.players, { name: '', playerId: null }] })
@@ -98,14 +103,62 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
     onChange({ ...team, players: team.players.map((p, i) => i === idx ? { name, playerId } : p) })
   }
 
+  async function handleFiles(files) {
+    if (!files.length) return
+    setExtracting(true)
+    setExtractError(null)
+
+    const allNames = []
+    for (const file of Array.from(files)) {
+      try {
+        const b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader()
+          r.onload  = e => resolve(e.target.result)
+          r.onerror = reject
+          r.readAsDataURL(file)
+        })
+        const res = await extractPlayers({ image_base64: b64, image_type: file.type || 'image/jpeg' })
+        allNames.push(...(res.player_names || []))
+      } catch (err) {
+        setExtractError(err.message)
+      }
+    }
+
+    if (allNames.length === 0) {
+      setExtracting(false)
+      if (!extractError) setExtractError('No player names found. Try a clearer screenshot.')
+      return
+    }
+
+    // Auto-resolve each name
+    const resolved = await Promise.all(
+      allNames.map(async name => {
+        try {
+          const results = await searchPlayers(name, 1)
+          const list = Array.isArray(results) ? results : (results.players || [])
+          if (list.length > 0) return { name: list[0].name, playerId: list[0].player_id }
+        } catch {}
+        return { name, playerId: null }
+      })
+    )
+
+    // Merge with existing non-empty players
+    const existing = team.players.filter(p => p.name || p.playerId)
+    const merged   = [...existing, ...resolved]
+    onChange({ ...team, players: merged.length > 0 ? merged : [{ name: '', playerId: null }] })
+    setExtracting(false)
+    setShowUpload(false)
+  }
+
   const colorCls = TEAM_COLORS[teamIdx % TEAM_COLORS.length]
 
   return (
-    <div className={"rounded-xl border p-4 space-y-3 " + colorCls}>
+    <div className={'rounded-xl border p-4 space-y-3 ' + colorCls}>
+      {/* Team name + remove */}
       <div className="flex items-center gap-2">
         <input
           className="field-input flex-1 font-medium"
-          placeholder={"Team " + (teamIdx + 1) + " name…"}
+          placeholder={'Team ' + (teamIdx + 1) + ' name…'}
           value={team.name}
           onChange={e => onChange({ ...team, name: e.target.value })}
         />
@@ -116,6 +169,8 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
           </button>
         )}
       </div>
+
+      {/* Player list */}
       <div className="space-y-2">
         {team.players.map((p, idx) => (
           <div key={idx} className="flex items-center gap-2">
@@ -123,7 +178,8 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
               value={p.name}
               playerId={p.playerId}
               onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-              placeholder={"Player " + (idx + 1) + "…"}
+              onEnterKey={addPlayer}
+              placeholder={'Player ' + (idx + 1) + '…'}
               className="flex-1"
             />
             {team.players.length > 1 && (
@@ -135,125 +191,58 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
           </div>
         ))}
       </div>
-      <button type="button" onClick={addPlayer}
-        className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors">
-        <Plus size={12} /> Add player
-      </button>
-    </div>
-  )
-}
 
-// ── Screenshot upload panel ───────────────────────────────────────────────────
-
-function ScreenshotUpload({ onExtracted }) {
-  const fileRef = useRef(null)
-  const [extracting, setExtracting]   = useState(false)
-  const [extractError, setExtractError] = useState(null)
-  const [preview, setPreview]         = useState(null)
-
-  async function handleFile(file) {
-    if (!file) return
-    setExtractError(null)
-    const previewReader = new FileReader()
-    previewReader.onload = e => setPreview(e.target.result)
-    previewReader.readAsDataURL(file)
-
-    setExtracting(true)
-    const b64Reader = new FileReader()
-    b64Reader.onload = async e => {
-      try {
-        const res = await extractPlayers({ image_base64: e.target.result, image_type: file.type || 'image/jpeg' })
-        onExtracted(res.player_names || [])
-      } catch (err) {
-        setExtractError(err.message)
-      } finally {
-        setExtracting(false)
-      }
-    }
-    b64Reader.readAsDataURL(file)
-  }
-
-  return (
-    <div className="space-y-3">
-      <div
-        className="border-2 border-dashed border-navy-600 rounded-xl p-6 text-center cursor-pointer hover:border-field-600 transition-colors"
-        onClick={() => fileRef.current?.click()}
-        onDragOver={e => e.preventDefault()}
-        onDrop={e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]) }}
-      >
-        {preview ? (
-          <div className="space-y-2">
-            <img src={preview} alt="Roster" className="max-h-40 mx-auto rounded-lg object-contain" />
-            <p className="text-xs text-slate-500">Click to upload a different image</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <ImageIcon size={32} className="mx-auto text-slate-600" />
-            <p className="text-sm text-slate-400">Upload a roster screenshot</p>
-            <p className="text-xs text-slate-600">Drag & drop or click · JPEG, PNG, WebP</p>
-          </div>
-        )}
-        <input ref={fileRef} type="file" accept="image/*" className="hidden"
-          onChange={e => handleFile(e.target.files[0])} />
+      {/* Actions row */}
+      <div className="flex items-center gap-4">
+        <button type="button" onClick={addPlayer}
+          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+          <Plus size={12} /> Add player
+        </button>
+        <button
+          type="button"
+          onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
+          className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        >
+          <Upload size={12} />
+          {showUpload ? 'Hide upload' : 'Upload screenshots'}
+        </button>
       </div>
-      {extracting && (
-        <div className="flex items-center gap-2 text-xs text-field-400">
-          <Loader2 size={13} className="animate-spin" /> Analyzing screenshot…
-        </div>
-      )}
-      {extractError && (
-        <div className="flex items-center gap-2 text-xs text-stitch-400">
-          <AlertCircle size={13} /> {extractError}
-        </div>
-      )}
-    </div>
-  )
-}
 
-// ── Extracted names assignment panel ─────────────────────────────────────────
-
-function ExtractedNamesPanel({ names, teams, onAssign, onDismiss }) {
-  const [assignments, setAssignments] = useState(() =>
-    Object.fromEntries(names.map(n => [n, '0']))
-  )
-
-  function applyAssignments() {
-    const teamPlayers = teams.map(() => [])
-    names.forEach(name => {
-      const idx = parseInt(assignments[name] ?? '0')
-      if (idx >= 0 && idx < teams.length) teamPlayers[idx].push(name)
-    })
-    onAssign(teamPlayers)
-  }
-
-  return (
-    <div className="card space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="section-label">Assign extracted players to teams</div>
-        <button type="button" onClick={onDismiss} className="text-xs text-slate-600 hover:text-slate-300">dismiss</button>
-      </div>
-      <p className="text-xs text-slate-500">{names.length} player{names.length !== 1 ? 's' : ''} found. Assign each to a team.</p>
-      <div className="space-y-1.5 max-h-48 overflow-y-auto">
-        {names.map(name => (
-          <div key={name} className="flex items-center gap-3">
-            <span className="flex-1 text-sm text-white truncate">{name}</span>
-            <div className="flex gap-1.5">
-              {teams.map((_, i) => (
-                <button key={i} type="button"
-                  onClick={() => setAssignments(prev => ({ ...prev, [name]: String(i) }))}
-                  className={"px-2 py-0.5 rounded text-[10px] font-medium border transition-colors " + (
-                    assignments[name] === String(i)
-                      ? 'bg-field-700 border-field-600 text-white'
-                      : 'bg-navy-800 border-navy-600 text-slate-500'
-                  )}>
-                  T{i + 1}
-                </button>
-              ))}
+      {/* Screenshot upload area (per-team) */}
+      {showUpload && (
+        <div className="space-y-2">
+          <div
+            className="border-2 border-dashed border-navy-600 rounded-xl p-4 text-center cursor-pointer hover:border-field-600 transition-colors"
+            onClick={() => fileRef.current?.click()}
+            onDragOver={e => e.preventDefault()}
+            onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
+          >
+            <ImageIcon size={24} className="mx-auto text-slate-600 mb-1" />
+            <p className="text-xs text-slate-400">Upload roster screenshots for this team</p>
+            <p className="text-xs text-slate-600 mt-0.5">
+              Drag & drop or click · Select multiple files if roster doesn't fit in one image
+            </p>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={e => handleFiles(e.target.files)}
+            />
+          </div>
+          {extracting && (
+            <div className="flex items-center gap-2 text-xs text-field-400">
+              <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
             </div>
-          </div>
-        ))}
-      </div>
-      <button type="button" onClick={applyAssignments} className="btn-primary text-sm">Apply to Teams</button>
+          )}
+          {extractError && (
+            <div className="flex items-center gap-2 text-xs text-stitch-400">
+              <AlertCircle size={13} /> {extractError}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -265,39 +254,16 @@ function newTeam(idx) {
 }
 
 export default function CompareTeams() {
-  const [inputMode, setInputMode]           = useState('manual')
-  const [teams, setTeams]                   = useState([newTeam(0), newTeam(1)])
-  const [extractedNames, setExtractedNames] = useState(null)
-  const [context, setContext]               = useState('')
+  const [teams, setTeams]               = useState([newTeam(0), newTeam(1)])
+  const [context, setContext]           = useState('')
   const [leagueSettings, setLeagueSettings] = useState(null)
-  const [loading, setLoading]               = useState(false)
-  const [tradeLoading, setTradeLoading]     = useState(false)
-  const [error, setError]                   = useState(null)
-  const [result, setResult]                 = useState(null)
+  const [loading, setLoading]           = useState(false)
+  const [tradeLoading, setTradeLoading] = useState(false)
+  const [error, setError]               = useState(null)
+  const [result, setResult]             = useState(null)
 
   function updateTeam(idx, team) {
     setTeams(prev => prev.map((t, i) => i === idx ? team : t))
-  }
-
-  async function applyExtractedAssignments(teamPlayerNames) {
-    setExtractedNames(null)
-    const updatedTeams = await Promise.all(
-      teams.map(async (team, i) => {
-        const names = teamPlayerNames[i] || []
-        const players = await Promise.all(
-          names.map(async name => {
-            try {
-              const results = await searchPlayers(name, 1)
-              const list = Array.isArray(results) ? results : (results.players || [])
-              if (list.length > 0) return { name: list[0].name, playerId: list[0].player_id }
-            } catch {}
-            return { name, playerId: null }
-          })
-        )
-        return { ...team, players: players.length > 0 ? players : [{ name: '', playerId: null }] }
-      })
-    )
-    setTeams(updatedTeams)
   }
 
   function buildBody(includeTrades) {
@@ -362,49 +328,12 @@ export default function CompareTeams() {
         </p>
       </div>
 
-      {/* Input mode toggle */}
-      <div className="flex gap-2">
-        {[
-          { val: 'manual',     label: 'Manual Entry'      },
-          { val: 'screenshot', label: 'Screenshot Upload' },
-        ].map(({ val, label }) => (
-          <button key={val} type="button" onClick={() => setInputMode(val)}
-            className={"px-4 py-2 rounded-lg text-sm font-medium border transition-colors " + (
-              inputMode === val
-                ? 'bg-field-700 border-field-600 text-white'
-                : 'bg-navy-800 border-navy-700 text-slate-400 hover:text-slate-200'
-            )}>
-            {val === 'screenshot' && <Upload size={12} className="inline mr-1.5 mb-0.5" />}
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <form onSubmit={submit} className="space-y-5">
-        {inputMode === 'screenshot' && (
-          <div className="card space-y-4">
-            <p className="text-sm text-slate-400">
-              Upload a roster screenshot and we'll extract player names automatically.
-              Then assign players to teams and make any corrections needed.
-            </p>
-            <ScreenshotUpload
-              onExtracted={names => {
-                if (names.length > 0) setExtractedNames(names)
-                else setError('No player names found in the image. Try a clearer screenshot.')
-              }}
-            />
-          </div>
-        )}
-
-        {extractedNames && (
-          <ExtractedNamesPanel
-            names={extractedNames}
-            teams={teams}
-            onAssign={applyExtractedAssignments}
-            onDismiss={() => setExtractedNames(null)}
-          />
-        )}
-
+      {/* Prevent Enter from submitting while in player or team-name inputs */}
+      <form
+        onSubmit={submit}
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
+        className="space-y-5"
+      >
         <div className="space-y-4">
           {teams.map((team, idx) => (
             <TeamInputBlock
@@ -458,10 +387,8 @@ export default function CompareTeams() {
           )}
 
           {result.trade_opportunities.length > 0 && (
-            <div className="space-y-3">
-              <div className="section-label flex items-center gap-1.5">
-                <ArrowLeftRight size={11} /> Trade opportunities
-              </div>
+            <div className="card space-y-3">
+              <div className="section-label">Trade opportunities</div>
               {result.trade_opportunities.map((opp, i) => (
                 <TradeOpp key={i} opp={opp} snapshots={result.snapshots} />
               ))}
