@@ -11,4 +11,6 @@ COPY . .
 
 RUN pip install --no-cache-dir -e .
 
-CMD alembic upgrade head && uvicorn fantasai.main:app --host 0.0.0.0 --port ${PORT:-8000}
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+CMD ["/entrypoint.sh"]
