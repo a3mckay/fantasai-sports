@@ -10,6 +10,11 @@ lower raw values produce higher z-scores.
 Positional scarcity is applied as a bonus: positions with fewer quality
 options get a boost so that e.g. a good catcher ranks higher than a
 comparably-performing first baseman.
+
+Predictive rankings use category-projection rather than direct advanced-metric
+z-scores.  See ``engine/projection.py`` for the projection formulas.  This
+ensures that volume (IP/PA) bounds reliever upside and that category
+contributions are on the same scale as lookback rankings.
 """
 from __future__ import annotations
 
@@ -20,6 +25,13 @@ from typing import Optional
 import numpy as np
 
 from fantasai.adapters.base import NormalizedPlayerData, SportAdapter
+from fantasai.engine.projection import (
+    HorizonConfig,
+    ProjectionHorizon,
+    HORIZON_CONFIGS,
+    project_hitter_stats,
+    project_pitcher_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,41 +193,47 @@ class ScoringEngine:
         season: int,
         week: Optional[int] = None,
         players: Optional[list[NormalizedPlayerData]] = None,
+        horizon: ProjectionHorizon = ProjectionHorizon.SEASON,
     ) -> list[PlayerRanking]:
-        """Rank players by expected future performance using predictive stats.
+        """Rank players by expected future performance using category projection.
 
-        SP and RP are scored in separate pools to prevent reliever rate-stat
-        dominance (relievers have inherently better K-BB%, SwStr% because they
-        throw max effort for 1 inning). Z-scores are computed within each pool
-        so an elite SP is compared to other SPs, not to closers.
+        Instead of z-scoring advanced metrics directly, this method:
+          1. Projects each player's expected fantasy category stats (HR, SB, K, ERA…)
+             using their advanced metrics as talent signals blended with YTD actuals.
+          2. Scales projected counting stats to the horizon's PA/IP volume — this
+             naturally bounds reliever upside (62 IP season vs 170 IP for SPs).
+          3. Z-scores the *projected category stats* through the same pipeline as
+             the lookback model, making the two ranking modes directly comparable.
+
+        This fixes the core problem with the old direct-advanced-metric approach:
+        a closer's elite K-BB% z-score no longer competes with an elite hitter's
+        xwOBA z-score on the same scale, because both are now measured by their
+        expected contribution to the categories you actually score in.
         """
         if players is None:
             players = self.adapter.fetch_player_data(season, week)
 
+        config = HORIZON_CONFIGS[horizon]
+
         batters = [p for p in players if p.stat_type == "batting"]
         starters = [p for p in players if p.stat_type == "pitching" and "SP" in p.positions]
         relievers = [p for p in players if p.stat_type == "pitching" and "RP" in p.positions]
-        # Pitchers with no position (shouldn't happen after fix, but defensive)
         unknown_pitchers = [
             p for p in players
             if p.stat_type == "pitching" and "SP" not in p.positions and "RP" not in p.positions
         ]
 
-        batter_rankings = self._score_predictive(
-            batters, PREDICTIVE_HITTING_WEIGHTS, "batting",
-            categories=self.hitting_cats,
+        batter_rankings = self._score_category_projection(
+            batters, config, self.hitting_cats, is_sp=None,
         )
-        sp_rankings = self._score_predictive(
-            starters, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
-            categories=self.pitching_cats,
+        sp_rankings = self._score_category_projection(
+            starters, config, self.pitching_cats, is_sp=True,
         )
-        rp_rankings = self._score_predictive(
-            relievers, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
-            categories=self.pitching_cats,
+        rp_rankings = self._score_category_projection(
+            relievers, config, self.pitching_cats, is_sp=False,
         )
-        unknown_rankings = self._score_predictive(
-            unknown_pitchers, PREDICTIVE_PITCHING_WEIGHTS, "pitching",
-            categories=self.pitching_cats,
+        unknown_rankings = self._score_category_projection(
+            unknown_pitchers, config, self.pitching_cats, is_sp=False,
         )
 
         all_rankings = batter_rankings + sp_rankings + rp_rankings + unknown_rankings
@@ -334,6 +352,102 @@ class ScoringEngine:
                 )
             )
 
+        return rankings
+
+    def _score_category_projection(
+        self,
+        players: list[NormalizedPlayerData],
+        config: HorizonConfig,
+        categories: list[str],
+        is_sp: Optional[bool],
+    ) -> list[PlayerRanking]:
+        """Score players by projecting category stats then z-scoring those projections.
+
+        This is the engine behind ``compute_predictive_rankings``.  The flow is:
+          1. Call projection module to get expected counting/rate stats per player.
+          2. Run the same z-score loop as ``_score_lookback`` on the projected values.
+          3. Return PlayerRanking objects with category_contributions keyed by
+             fantasy category name — directly comparable to lookback contributions.
+
+        ``is_sp``:
+          None  → hitter projection
+          True  → starting pitcher projection
+          False → reliever projection
+        """
+        if not players or not categories:
+            return []
+
+        # Step 1: Project stats for each player into flat dicts
+        projected: list[dict[str, float]] = []
+        for p in players:
+            if is_sp is None:
+                projected.append(project_hitter_stats(p, config))
+            else:
+                projected.append(project_pitcher_stats(p, config, is_sp=is_sp))
+
+        # Step 2: Extract per-category raw values from projected dicts
+        cat_values: dict[str, list[Optional[float]]] = {}
+        for cat in categories:
+            mapping = CATEGORY_STAT_MAP.get(cat)
+            if mapping is None:
+                logger.warning("Unknown category in projection: %s", cat)
+                continue
+            _bucket, stat_name = mapping
+            vals: list[Optional[float]] = []
+            for proj in projected:
+                v = proj.get(stat_name)
+                # Handle K → SO alias (CATEGORY_STAT_MAP uses "SO" as the stat name for "K")
+                if v is None and stat_name == "SO":
+                    v = proj.get("K")
+                vals.append(v)
+            cat_values[cat] = vals
+
+        # Step 3: Z-score each category (same logic as _score_lookback)
+        cat_zscores: dict[str, list[float]] = {}
+        for cat, values in cat_values.items():
+            clean = [v for v in values if v is not None]
+            if len(clean) < 2:
+                cat_zscores[cat] = [0.0] * len(players)
+                continue
+            mean = float(np.mean(clean))
+            std = float(np.std(clean))
+            if std == 0:
+                cat_zscores[cat] = [0.0] * len(players)
+                continue
+            zscores: list[float] = []
+            for v in values:
+                if v is None:
+                    zscores.append(0.0)
+                else:
+                    z = float((v - mean) / std)
+                    if cat in LOWER_IS_BETTER:
+                        z = -z
+                    zscores.append(z)
+            cat_zscores[cat] = zscores
+
+        # Step 4: Build PlayerRanking objects
+        rankings: list[PlayerRanking] = []
+        for i, player in enumerate(players):
+            contributions = {
+                cat: float(round(cat_zscores[cat][i], 3))
+                for cat in cat_zscores
+            }
+            raw_score = sum(contributions.values())
+            scarcity_mult = _get_scarcity_multiplier(player.positions)
+            rankings.append(
+                PlayerRanking(
+                    player_id=player.player_id,
+                    name=player.name,
+                    team=player.team,
+                    positions=player.positions,
+                    stat_type=player.stat_type,
+                    score=round(raw_score * scarcity_mult, 3),
+                    raw_score=round(raw_score, 3),
+                    category_contributions=contributions,
+                )
+            )
+
+        rankings.sort(key=lambda r: r.score, reverse=True)
         return rankings
 
     def _score_lookback(

@@ -17,6 +17,7 @@ from fantasai.brain.blurb_generator import get_blurb_generator
 from fantasai.brain.recommender import BuildPreferences, Recommender, WaiverContext
 from fantasai.brain.strategy import suggest_strategy
 from fantasai.config import settings
+from fantasai.engine.projection import ProjectionHorizon
 from fantasai.engine.scoring import (
     ScoringEngine,
 )
@@ -38,12 +39,14 @@ _RANKINGS_CACHE: dict[str, tuple[float, tuple]] = {}
 _RANKINGS_TTL = 300  # 5 minutes
 
 
-def _rankings_cache_key(categories: list[str]) -> str:
-    return ",".join(sorted(categories))
+def _rankings_cache_key(categories: list[str], horizon: ProjectionHorizon) -> str:
+    return f"{','.join(sorted(categories))}|{horizon.value}"
 
 
-def _get_cached_rankings(categories: list[str]) -> tuple | None:
-    key = _rankings_cache_key(categories)
+def _get_cached_rankings(
+    categories: list[str], horizon: ProjectionHorizon
+) -> tuple | None:
+    key = _rankings_cache_key(categories, horizon)
     entry = _RANKINGS_CACHE.get(key)
     if entry is None:
         return None
@@ -54,8 +57,10 @@ def _get_cached_rankings(categories: list[str]) -> tuple | None:
     return value
 
 
-def _set_cached_rankings(categories: list[str], value: tuple) -> None:
-    _RANKINGS_CACHE[_rankings_cache_key(categories)] = (time.monotonic(), value)
+def _set_cached_rankings(
+    categories: list[str], horizon: ProjectionHorizon, value: tuple
+) -> None:
+    _RANKINGS_CACHE[_rankings_cache_key(categories, horizon)] = (time.monotonic(), value)
 
 
 # ---------------------------------------------------------------------------
@@ -76,16 +81,19 @@ def _fetch_team_and_league(team_id: int, db: Session) -> tuple:
     return team, league
 
 
-def _compute_rankings(db: Session, categories: list[str]) -> tuple:
+def _compute_rankings(
+    db: Session,
+    categories: list[str],
+    horizon: ProjectionHorizon = ProjectionHorizon.SEASON,
+) -> tuple:
     """Compute lookback + predictive rankings from stored PlayerStats.
 
-    Results are cached in-process for 5 minutes (keyed by category set)
-    so that the expensive DB query + z-score computation only runs once
-    per warm period instead of on every request.
+    Results are cached in-process for 5 minutes, keyed by both category set
+    and horizon so that different horizon requests are cached independently.
 
     Returns (lookback, predictive) or ([], []) if no data.
     """
-    cached = _get_cached_rankings(categories)
+    cached = _get_cached_rankings(categories, horizon)
     if cached is not None:
         return cached
 
@@ -125,7 +133,7 @@ def _compute_rankings(db: Session, categories: list[str]) -> tuple:
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
-    predictive = engine.compute_predictive_rankings(2025, players=players)
+    predictive = engine.compute_predictive_rankings(2025, players=players, horizon=horizon)
 
     # Deduplicate: two-way players (e.g. Ohtani) have both batting and pitching
     # rows, producing two ranking entries with the same player_id. Keep the
@@ -141,7 +149,7 @@ def _compute_rankings(db: Session, categories: list[str]) -> tuple:
         return deduped
 
     result = (_dedup(lookback), _dedup(predictive))
-    _set_cached_rankings(categories, result)
+    _set_cached_rankings(categories, horizon, result)
     return result
 
 

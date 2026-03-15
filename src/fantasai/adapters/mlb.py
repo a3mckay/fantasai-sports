@@ -77,8 +77,8 @@ def _get_batter_positions(fg_ids: list[int]) -> dict[int, list[str]]:
     if not mlbam_to_pos:
         return {}
 
-    # Combine — map LF/RF → OF for fantasy purposes
-    _of_map = {"LF": "OF", "RF": "OF", "CF": "CF"}
+    # Combine — map all OF sub-positions (LF/CF/RF) to fantasy-standard "OF"
+    _of_map = {"LF": "OF", "CF": "OF", "RF": "OF"}
     result: dict[int, list[str]] = {}
     for fg_id, mlbam_id in fg_to_mlbam.items():
         raw = mlbam_to_pos.get(mlbam_id, "")

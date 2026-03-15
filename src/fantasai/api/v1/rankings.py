@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from fantasai.api.deps import get_db
+from fantasai.engine.projection import ProjectionHorizon
 from fantasai.schemas.ranking import PlayerRankingRead
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
@@ -25,6 +26,11 @@ CURRENT_PERIOD = "2025-season"
 def list_rankings(
     ranking_type: Optional[str] = Query(default="lookback", pattern="^(lookback|predictive)$"),
     season: int = Query(default=2025),
+    horizon: str = Query(
+        default="season",
+        pattern="^(week|month|season)$",
+        description="Projection horizon for predictive rankings: week, month, or season. Ignored for lookback.",
+    ),
     position: Optional[str] = Query(default=None, description="Filter by position, e.g. 'OF'"),
     stat_type: Optional[str] = Query(default=None, pattern="^(batting|pitching)$"),
     limit: int = Query(default=50, ge=1, le=500),
@@ -36,8 +42,15 @@ def list_rankings(
     Rankings are computed on-demand from the most recent PlayerStats in the DB,
     using a 5-minute in-process cache shared with the analysis endpoints.
     Returns pre-generated blurbs from the Ranking table when available.
+
+    The ``horizon`` parameter only affects predictive rankings:
+    - ``week``  — projects ~26 PA / 6 IP; 35% talent signal
+    - ``month`` — projects ~100 PA / 28 IP; 65% talent signal
+    - ``season`` — projects full-season volume; 85% talent signal (default)
     """
     from fantasai.models.ranking import Ranking
+
+    proj_horizon = ProjectionHorizon(horizon)
 
     # Re-use the shared cache for the current season (fast path).
     # For historical seasons the cache is keyed on 2025, so fall through to a
@@ -45,7 +58,9 @@ def list_rankings(
     _CACHED_SEASON = 2025
     if season == _CACHED_SEASON:
         from fantasai.api.v1.recommendations import _compute_rankings
-        lookback, predictive = _compute_rankings(db, RANKINGS_DEFAULT_CATEGORIES)
+        lookback, predictive = _compute_rankings(
+            db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon
+        )
     else:
         from fantasai.adapters.base import NormalizedPlayerData
         from fantasai.adapters.mlb import MLBAdapter
@@ -78,7 +93,9 @@ def list_rankings(
         adapter = MLBAdapter()
         eng = ScoringEngine(adapter, RANKINGS_DEFAULT_CATEGORIES)
         lookback_raw = eng.compute_lookback_rankings(season, players=players)
-        predictive_raw = eng.compute_predictive_rankings(season, players=players)
+        predictive_raw = eng.compute_predictive_rankings(
+            season, players=players, horizon=proj_horizon
+        )
 
         def _dedup(rnks: list) -> list:
             seen: dict = {}

@@ -8,7 +8,7 @@ import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import CategoryBar from '../components/CategoryBar'
 
-const POSITION_FILTERS = ['All', 'SP', 'RP', 'OF', 'SS', '2B', '3B', '1B', 'C']
+const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 'Batters', 'Pitchers']
 const PAGE_SIZES       = [50, 100, 250, 'All']
 const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
 
@@ -59,8 +59,15 @@ function Blurb({ text }) {
 // Main component
 // ---------------------------------------------------------------------------
 
+const HORIZON_OPTIONS = [
+  { val: 'week',   label: 'This Week'    },
+  { val: 'month',  label: 'This Month'   },
+  { val: 'season', label: 'Full Season'  },
+]
+
 export default function Rankings() {
   const [mode, setMode]             = useState('predictive')
+  const [horizon, setHorizon]       = useState('season')
   const [posFilter, setPosFilter]   = useState('All')
   const [search, setSearch]         = useState('')
   const [pageSize, setPageSize]     = useState(50)
@@ -70,12 +77,20 @@ export default function Rankings() {
   const [lookback, setLookback]     = useState(null)
   const [expandedRows, setExpandedRows] = useState(new Set())
   const [showBackTop, setShowBackTop]   = useState(false)
-  const searchRef = useRef(null)
+  const searchRef     = useRef(null)
+  const initialRender = useRef(true)
 
   useEffect(() => { fetchBoth() }, [])
 
+  // Re-fetch predictive when horizon changes; skip the initial render since
+  // fetchBoth already fetches the default horizon on mount.
+  useEffect(() => {
+    if (initialRender.current) { initialRender.current = false; return }
+    fetchPredictive(horizon)
+  }, [horizon])
+
   // Reset to first page whenever filters change
-  useEffect(() => { setPageSize(50) }, [mode, posFilter, search])
+  useEffect(() => { setPageSize(50) }, [mode, posFilter, search, horizon])
 
   // Back-to-top button
   useEffect(() => {
@@ -84,12 +99,25 @@ export default function Rankings() {
     return () => window.removeEventListener('scroll', onScroll)
   }, [])
 
+  async function fetchPredictive(h) {
+    setLoading(true)
+    setError(null)
+    try {
+      const pred = await getRankings({ ranking_type: 'predictive', limit: 400, horizon: h })
+      setPredictive(Array.isArray(pred) ? pred : (pred.rankings || pred))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function fetchBoth() {
     setLoading(true)
     setError(null)
     try {
       const [pred, look] = await Promise.all([
-        getRankings({ ranking_type: 'predictive', limit: 400 }),
+        getRankings({ ranking_type: 'predictive', limit: 400, horizon }),
         getRankings({ ranking_type: 'lookback',   limit: 400 }),
       ])
       setPredictive(Array.isArray(pred) ? pred : (pred.rankings || pred))
@@ -125,8 +153,11 @@ export default function Rankings() {
 
   // Filter by position + search
   const filtered = (activeList ?? []).filter(p => {
-    const posOk = posFilter === 'All' ||
-      p.positions?.some(pos => pos.toUpperCase() === posFilter.toUpperCase())
+    const posOk =
+      posFilter === 'All'                                                        ? true
+      : posFilter === 'Batters'                                                  ? p.stat_type === 'batting'
+      : posFilter === 'Pitchers'                                                 ? p.stat_type === 'pitching'
+      : p.positions?.some(pos => pos.toUpperCase() === posFilter.toUpperCase())
     const searchOk = !search.trim() ||
       p.name.toLowerCase().includes(search.toLowerCase().trim())
     return posOk && searchOk
@@ -203,6 +234,28 @@ export default function Rankings() {
           Refresh
         </button>
       </div>
+
+      {/* ── Horizon selector (Projected mode only) ── */}
+      {mode === 'predictive' && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500 shrink-0">Horizon:</span>
+          <div className="flex gap-1.5">
+            {HORIZON_OPTIONS.map(({ val, label }) => (
+              <button
+                key={val}
+                onClick={() => setHorizon(val)}
+                className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
+                  horizon === val
+                    ? 'bg-field-800 border-field-600 text-field-300'
+                    : 'bg-navy-900 border-navy-700 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Position filter pills ── */}
       <div className="flex flex-wrap gap-1.5">

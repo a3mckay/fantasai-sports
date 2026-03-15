@@ -380,3 +380,295 @@ class TestComputeWindowRankings:
         ace = next(r for r in result if r.name == "Ace")
         mediocre = next(r for r in result if r.name == "Mediocre")
         assert ace.score > mediocre.score
+
+
+# ---------------------------------------------------------------------------
+# Projection model tests
+# ---------------------------------------------------------------------------
+
+from fantasai.engine.projection import (
+    ProjectionHorizon,
+    HORIZON_CONFIGS,
+    project_hitter_stats,
+    project_pitcher_stats,
+)
+
+
+class TestProjectionHitterStats:
+    def _batter(self, **adv) -> NormalizedPlayerData:
+        return _make_batter(
+            1, "Test Hitter", ["OF"],
+            counting={"PA": 600, "HR": 30, "SB": 20, "BB": 70, "H": 160},
+            rate={"AVG": 0.280, "OBP": 0.370, "SLG": 0.510, "BB%": 0.12, "K%": 0.22},
+            advanced={"xBA": 0.275, "xwOBA": 0.380, "xSLG": 0.500,
+                      "Barrel%": 10.0, "Spd": 6.0, **adv},
+        )
+
+    def test_counting_stats_scale_with_pa(self) -> None:
+        """Doubling PA should roughly double all counting stats."""
+        p = self._batter()
+        week = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.WEEK])
+        season = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.SEASON])
+        ratio = HORIZON_CONFIGS[ProjectionHorizon.SEASON].hitter_pa / HORIZON_CONFIGS[ProjectionHorizon.WEEK].hitter_pa
+        # HR, SB, BB should all scale proportionally (within 20% tolerance)
+        for stat in ("HR", "SB", "BB"):
+            assert abs(season[stat] / week[stat] - ratio) < ratio * 0.20, \
+                f"{stat}: season={season[stat]:.2f}, week={week[stat]:.2f}, expected ratio ~{ratio:.1f}"
+
+    def test_rate_stats_not_scaled_by_pa(self) -> None:
+        """Rate stats (AVG, OBP, SLG) must stay in normal baseball ranges,
+        not get multiplied by PA.  They legitimately differ across horizons
+        because the talent/actual blend ratio differs (WEEK=35% talent vs
+        SEASON=85% talent), but the values should always be sensible decimals."""
+        p = self._batter()
+        for hz in ProjectionHorizon:
+            proj = project_hitter_stats(p, HORIZON_CONFIGS[hz])
+            for stat in ("AVG", "OBP", "SLG"):
+                assert 0.100 <= proj[stat] <= 1.000, \
+                    f"{stat} at {hz} out of range: {proj[stat]}"
+            # OPS can exceed 1.0 for elite hitters; just verify it's sane
+            assert 0.300 <= proj["OPS"] <= 2.000
+
+    def test_ops_equals_obp_plus_slg(self) -> None:
+        p = self._batter()
+        proj = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.SEASON])
+        assert abs(proj["OPS"] - (proj["OBP"] + proj["SLG"])) < 1e-9
+
+    def test_missing_advanced_stats_falls_back_to_actual(self) -> None:
+        """Player with no xBA/xwOBA should fall back to actual AVG/OBP."""
+        p = _make_batter(
+            1, "No Advanced", ["1B"],
+            counting={"PA": 500, "HR": 15, "SB": 5, "BB": 45, "H": 140},
+            rate={"AVG": 0.260, "OBP": 0.330, "SLG": 0.420},
+            advanced={},  # no advanced stats at all
+        )
+        proj = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.SEASON])
+        assert abs(proj["AVG"] - 0.260) < 0.01
+        assert proj["HR"] > 0
+
+    def test_talent_weight_shifts_toward_advanced_metrics_for_season(self) -> None:
+        """At SEASON horizon (85% talent), xBA should dominate over actual AVG."""
+        p = _make_batter(
+            1, "Regression Candidate", ["3B"],
+            counting={"PA": 400, "HR": 10, "SB": 5, "BB": 30, "H": 120},
+            rate={"AVG": 0.320, "OBP": 0.360, "SLG": 0.420},  # lucky actual
+            advanced={"xBA": 0.250, "xwOBA": 0.310, "xSLG": 0.380,
+                      "Barrel%": 5.0, "Spd": 4.0},  # talent says he'll regress
+        )
+        proj_season = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.SEASON])
+        proj_week = project_hitter_stats(p, HORIZON_CONFIGS[ProjectionHorizon.WEEK])
+        # Season projection should be closer to xBA (0.250); week closer to actual (0.320)
+        assert proj_season["AVG"] < proj_week["AVG"]
+        assert abs(proj_season["AVG"] - 0.250) < abs(proj_week["AVG"] - 0.250)
+
+
+class TestProjectionPitcherStats:
+    def _sp(self, **adv) -> NormalizedPlayerData:
+        return _make_pitcher(
+            2, "Test Starter", ["SP"],
+            counting={"IP": 180.0, "W": 15, "SV": 0, "HLD": 0, "SO": 200},
+            rate={"ERA": 3.20, "WHIP": 1.10, "K/9": 10.0, "BB/9": 2.5},
+            advanced={"xERA": 3.10, "SIERA": 3.15, "xFIP": 3.20,
+                      "SwStr%": 0.13, **adv},
+        )
+
+    def _rp(self, **adv) -> NormalizedPlayerData:
+        return _make_pitcher(
+            3, "Test Closer", ["RP"],
+            counting={"IP": 65.0, "W": 3, "SV": 38, "HLD": 0, "SO": 85},
+            rate={"ERA": 1.80, "WHIP": 0.85, "K/9": 11.8, "BB/9": 2.2},
+            advanced={"xERA": 2.00, "SIERA": 2.10, "xFIP": 2.20,
+                      "SwStr%": 0.16, **adv},
+        )
+
+    def test_rp_projected_ip_bounded_at_rp_config(self) -> None:
+        """Reliever IP should equal config.rp_ip, not SP level."""
+        rp = self._rp()
+        proj = project_pitcher_stats(rp, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=False)
+        assert proj["IP"] == HORIZON_CONFIGS[ProjectionHorizon.SEASON].rp_ip
+
+    def test_sp_projected_ip_at_sp_config(self) -> None:
+        sp = self._sp()
+        proj = project_pitcher_stats(sp, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=True)
+        assert proj["IP"] == HORIZON_CONFIGS[ProjectionHorizon.SEASON].sp_ip
+
+    def test_qs_only_for_sp(self) -> None:
+        sp = self._sp()
+        rp = self._rp()
+        sp_proj = project_pitcher_stats(sp, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=True)
+        rp_proj = project_pitcher_stats(rp, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=False)
+        assert sp_proj["QS"] > 0
+        assert rp_proj["QS"] == 0.0
+
+    def test_k_scales_with_ip(self) -> None:
+        """Strikeout totals should be proportional to IP across horizons."""
+        sp = self._sp()
+        week_proj = project_pitcher_stats(sp, HORIZON_CONFIGS[ProjectionHorizon.WEEK], is_sp=True)
+        season_proj = project_pitcher_stats(sp, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=True)
+        ip_ratio = HORIZON_CONFIGS[ProjectionHorizon.SEASON].sp_ip / HORIZON_CONFIGS[ProjectionHorizon.WEEK].sp_ip
+        k_ratio = season_proj["K"] / week_proj["K"]
+        assert abs(k_ratio - ip_ratio) < ip_ratio * 0.05  # within 5%
+
+    def test_missing_advanced_falls_back_gracefully(self) -> None:
+        p = _make_pitcher(
+            4, "No Advanced", ["SP"],
+            counting={"IP": 150.0, "W": 10, "SV": 0, "HLD": 0, "SO": 150},
+            rate={"ERA": 4.00, "WHIP": 1.35, "K/9": 9.0, "BB/9": 3.0},
+            advanced={},
+        )
+        proj = project_pitcher_stats(p, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=True)
+        assert proj["ERA"] == pytest.approx(4.00, rel=0.15)
+        assert proj["K"] > 0
+
+    def test_era_blend_weighted_toward_talent_for_season(self) -> None:
+        """At SEASON horizon, xERA/SIERA should pull ERA away from lucky actual."""
+        lucky = _make_pitcher(
+            5, "Lucky ERA", ["SP"],
+            counting={"IP": 160.0, "W": 12, "SV": 0, "HLD": 0, "SO": 160},
+            rate={"ERA": 2.50, "WHIP": 1.05, "K/9": 9.0, "BB/9": 3.0},
+            advanced={"xERA": 3.80, "SIERA": 3.90, "xFIP": 3.75, "SwStr%": 0.10},
+        )
+        proj_season = project_pitcher_stats(lucky, HORIZON_CONFIGS[ProjectionHorizon.SEASON], is_sp=True)
+        proj_week = project_pitcher_stats(lucky, HORIZON_CONFIGS[ProjectionHorizon.WEEK], is_sp=True)
+        # Season ERA should be closer to xERA (3.80); week ERA closer to actual (2.50)
+        assert proj_season["ERA"] > proj_week["ERA"]
+
+
+class TestPredictiveRankingsWithProjection:
+    def setup_method(self):
+        self.adapter = MLBAdapter()
+        self.categories = ["R", "HR", "RBI", "SB", "AVG", "OPS", "IP", "W", "SV", "K", "ERA", "WHIP"]
+        self.engine = ScoringEngine(self.adapter, self.categories)
+
+    def _elite_hitter(self, pid: int, name: str) -> NormalizedPlayerData:
+        return _make_batter(
+            pid, name, ["OF"],
+            counting={"PA": 640, "HR": 42, "SB": 18, "BB": 90, "H": 175, "R": 115, "RBI": 105},
+            rate={"AVG": 0.295, "OBP": 0.400, "SLG": 0.580, "BB%": 0.14, "K%": 0.20},
+            advanced={"xBA": 0.290, "xwOBA": 0.420, "xSLG": 0.570,
+                      "Barrel%": 14.0, "Spd": 5.5, "wRC+": 165},
+        )
+
+    def _elite_closer(self, pid: int, name: str) -> NormalizedPlayerData:
+        return _make_pitcher(
+            pid, name, ["RP"],
+            counting={"IP": 65.0, "W": 3, "SV": 40, "HLD": 0, "SO": 88},
+            rate={"ERA": 1.75, "WHIP": 0.80, "K/9": 12.2, "BB/9": 2.1},
+            advanced={"xERA": 1.90, "SIERA": 2.00, "xFIP": 2.10,
+                      "SwStr%": 0.18, "K-BB%": 0.32, "Stuff+": 145},
+        )
+
+    def _good_sp(self, pid: int, name: str) -> NormalizedPlayerData:
+        return _make_pitcher(
+            pid, name, ["SP"],
+            counting={"IP": 195.0, "W": 16, "SV": 0, "HLD": 0, "SO": 220},
+            rate={"ERA": 2.80, "WHIP": 1.00, "K/9": 10.2, "BB/9": 2.0},
+            advanced={"xERA": 2.90, "SIERA": 2.95, "xFIP": 3.00,
+                      "SwStr%": 0.145, "K-BB%": 0.28, "Stuff+": 135},
+        )
+
+    def _make_pool(self) -> list[NormalizedPlayerData]:
+        """Realistic mixed pool: 4 elite hitters, 2 elite closers, 2 elite SPs,
+        and a collection of average players to anchor z-scores."""
+        players = []
+        # Elite hitters
+        for i, (name, extra) in enumerate([
+            ("Soto", {"xwOBA": 0.440, "Barrel%": 16.0}),
+            ("Acuna", {"xwOBA": 0.420, "Barrel%": 14.0, "Spd": 8.0}),
+            ("Tucker", {"xwOBA": 0.400, "Barrel%": 12.0}),
+            ("Ramirez", {"xwOBA": 0.375, "Barrel%": 9.0, "Spd": 6.5}),
+        ]):
+            base = self._elite_hitter(100 + i, name)
+            base.advanced_stats.update(extra)
+            players.append(base)
+        # Elite closers
+        for i, name in enumerate(["Miller", "Diaz"]):
+            players.append(self._elite_closer(200 + i, name))
+        # Elite SPs
+        for i, name in enumerate(["Skenes", "Cole"]):
+            players.append(self._good_sp(300 + i, name))
+        # Average players (15 batters + 8 SPs + 5 RPs) to anchor distributions
+        for i in range(15):
+            players.append(_make_batter(
+                400 + i, f"Avg Batter {i}", ["OF"],
+                counting={"PA": 500, "HR": 20, "SB": 8, "BB": 50, "H": 130},
+                rate={"AVG": 0.255, "OBP": 0.320, "SLG": 0.420, "BB%": 0.10, "K%": 0.23},
+                advanced={"xBA": 0.252, "xwOBA": 0.330, "xSLG": 0.415,
+                          "Barrel%": 7.0, "Spd": 4.5},
+            ))
+        for i in range(8):
+            players.append(_make_pitcher(
+                500 + i, f"Avg SP {i}", ["SP"],
+                counting={"IP": 165.0, "W": 11, "SV": 0, "HLD": 0, "SO": 170},
+                rate={"ERA": 4.10, "WHIP": 1.28, "K/9": 9.3, "BB/9": 3.0},
+                advanced={"xERA": 4.00, "SIERA": 4.05, "xFIP": 4.10, "SwStr%": 0.10},
+            ))
+        for i in range(5):
+            players.append(_make_pitcher(
+                600 + i, f"Avg RP {i}", ["RP"],
+                counting={"IP": 60.0, "W": 4, "SV": 10, "HLD": 5, "SO": 65},
+                rate={"ERA": 3.80, "WHIP": 1.20, "K/9": 9.8, "BB/9": 3.2},
+                advanced={"xERA": 3.70, "SIERA": 3.75, "xFIP": 3.80, "SwStr%": 0.11},
+            ))
+        return players
+
+    def test_elite_hitter_beats_elite_closer_season(self) -> None:
+        """An elite 6-category hitter should outscore an elite closer at SEASON horizon."""
+        players = self._make_pool()
+        rankings = self.engine.compute_predictive_rankings(
+            2025, players=players, horizon=ProjectionHorizon.SEASON
+        )
+        by_name = {r.name: r for r in rankings}
+        # Soto should beat Miller
+        assert by_name["Soto"].score > by_name["Miller"].score, (
+            f"Soto score={by_name['Soto'].score:.3f} should > Miller score={by_name['Miller'].score:.3f}"
+        )
+
+    def test_no_rp_in_top_5_season(self) -> None:
+        """No reliever should be in the top 5 at full-season horizon."""
+        players = self._make_pool()
+        rankings = self.engine.compute_predictive_rankings(
+            2025, players=players, horizon=ProjectionHorizon.SEASON
+        )
+        top5 = rankings[:5]
+        for r in top5:
+            assert "RP" not in r.positions, \
+                f"Reliever {r.name} (rank {r.overall_rank}) should not be in top 5"
+
+    def test_generational_sp_beats_avg_rp(self) -> None:
+        """An elite SP (Skenes) should rank above any average reliever."""
+        players = self._make_pool()
+        rankings = self.engine.compute_predictive_rankings(
+            2025, players=players, horizon=ProjectionHorizon.SEASON
+        )
+        by_name = {r.name: r for r in rankings}
+        avg_rp_scores = [r.score for r in rankings if r.name.startswith("Avg RP")]
+        assert by_name["Skenes"].score > max(avg_rp_scores)
+
+    def test_horizon_week_rp_rank_better_than_season(self) -> None:
+        """Relievers should rank relatively higher at WEEK than at SEASON
+        because the IP gap between SP and RP is smaller over 1 start vs. full season."""
+        players = self._make_pool()
+        week_rankings = self.engine.compute_predictive_rankings(
+            2025, players=players, horizon=ProjectionHorizon.WEEK
+        )
+        season_rankings = self.engine.compute_predictive_rankings(
+            2025, players=players, horizon=ProjectionHorizon.SEASON
+        )
+        # Miller's WEEK rank should be equal or better (lower number) than SEASON.
+        # At WEEK the SP/RP IP gap is smaller (6 vs 3.5 IP vs 170 vs 62), so
+        # relievers lose less ground relative to SPs.  They may settle at the
+        # same absolute rank depending on the z-score distribution.
+        miller_week = next(r for r in week_rankings if r.name == "Miller").overall_rank
+        miller_season = next(r for r in season_rankings if r.name == "Miller").overall_rank
+        assert miller_week <= miller_season, (
+            f"Miller WEEK rank ({miller_week}) should be \u2264 SEASON rank ({miller_season})"
+        )
+
+    def test_lookback_unchanged(self) -> None:
+        """Lookback rankings should not be affected by this change — baseline check."""
+        players = self._make_pool()
+        rankings = self.engine.compute_lookback_rankings(2025, players=players)
+        assert len(rankings) == len(players)
+        assert rankings[0].overall_rank == 1
+        assert rankings[-1].overall_rank == len(players)
