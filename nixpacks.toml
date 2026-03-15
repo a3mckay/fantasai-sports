@@ -1,0 +1,5 @@
+[phases.install]
+cmds = ["pip install -e ."]
+
+[start]
+cmd = "alembic upgrade head && uvicorn fantasai.main:app --host 0.0.0.0 --port $PORT"

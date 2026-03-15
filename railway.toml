@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+# Run DB migration then start the API server.
+# $PORT is injected by Railway at runtime.
+startCommand = "alembic upgrade head && uvicorn fantasai.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
