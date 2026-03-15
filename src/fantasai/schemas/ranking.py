@@ -31,3 +31,4 @@ class PlayerRankingRead(BaseModel):
     score: float
     raw_score: float
     category_contributions: dict[str, float]
+    blurb: Optional[str] = None
