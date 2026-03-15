@@ -326,9 +326,11 @@ export default function Rankings() {
 
                     {/* Player name + blurb + (expanded) category bar */}
                     <td className="py-3 px-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-medium text-white text-sm">{player.name}</span>
-                        <span className="text-xs text-slate-500 hidden sm:inline">{player.team}</span>
+                        {player.team && (
+                          <span className="text-xs text-slate-500 hidden sm:inline">({player.team})</span>
+                        )}
                       </div>
                       <Blurb text={player.blurb} />
                       {isExpanded && hasCats && (
@@ -419,7 +421,7 @@ export default function Rankings() {
       {showBackTop && (
         <button
           onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="fixed bottom-6 right-6 z-50 p-2.5 rounded-full bg-navy-700 border border-navy-600 text-slate-300 hover:bg-navy-600 hover:text-white shadow-lg transition-all"
+          className="fixed bottom-20 right-5 z-50 p-2.5 rounded-full bg-navy-700 border border-navy-600 text-slate-300 hover:bg-navy-600 hover:text-white shadow-lg transition-all"
           aria-label="Back to top"
         >
           <ArrowUp size={16} />
