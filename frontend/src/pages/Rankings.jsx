@@ -254,13 +254,9 @@ export default function Rankings() {
                 const isExpanded = expandedRows.has(player.player_id)
                 const hasCats    = Object.keys(player.category_contributions || {}).length > 0
                 return (
-                  // React.Fragment so we can have two <tr>s per player with a shared key
                   <tr
                     key={player.player_id}
-                    className={`border-t border-navy-800 transition-colors ${
-                      hasCats ? 'cursor-pointer hover:bg-navy-800/50' : 'hover:bg-navy-800/30'
-                    }`}
-                    onClick={() => hasCats && toggleRow(player.player_id)}
+                    className="border-t border-navy-800 transition-colors hover:bg-navy-800/30"
                   >
                     {/* Rank */}
                     <td className="py-3 pl-4 pr-2 font-mono text-slate-400 text-sm text-right align-top pt-3.5">
@@ -308,12 +304,20 @@ export default function Rankings() {
                       {player.score?.toFixed(2) ?? '—'}
                     </td>
 
-                    {/* Expand chevron */}
-                    <td className="py-3 pr-3 text-right align-top pt-3.5">
+                    {/* Expand button */}
+                    <td className="py-3 pr-3 text-right align-top pt-2.5">
                       {hasCats && (
-                        <span className="text-slate-600">
-                          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                        </span>
+                        <button
+                          onClick={() => toggleRow(player.player_id)}
+                          className={`p-1 rounded transition-colors ${
+                            isExpanded
+                              ? 'text-field-400 bg-field-900/40 hover:bg-field-900/60'
+                              : 'text-slate-500 hover:text-slate-200 hover:bg-navy-700'
+                          }`}
+                          aria-label={isExpanded ? 'Collapse' : 'Expand category breakdown'}
+                        >
+                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
                       )}
                     </td>
                   </tr>
