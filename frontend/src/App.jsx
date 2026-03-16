@@ -16,7 +16,7 @@ const KEEPALIVE_MS = 4 * 60 * 1000 // 4 minutes — keeps Railway from sleeping
 
 export default function App() {
   useEffect(() => {
-    const ping = () => fetch(`${API_BASE_URL}/api/v1/health`, { method: 'HEAD' }).catch(() => {})
+    const ping = () => fetch(`${API_BASE_URL}/health`).catch(() => {})
     ping()
     const id = setInterval(ping, KEEPALIVE_MS)
     return () => clearInterval(id)
