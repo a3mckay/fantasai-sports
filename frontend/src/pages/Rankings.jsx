@@ -12,6 +12,16 @@ const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 
 const PAGE_SIZES       = [50, 100, 250, 'All']
 const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
 
+const PITCHING_POS = new Set(['SP', 'RP'])
+
+// For two-way players (e.g. Ohtani): show DH when appearing in a batting row.
+function displayPositions(player) {
+  if (player.stat_type === 'batting' && player.positions?.every(p => PITCHING_POS.has(p))) {
+    return ['DH']
+  }
+  return player.positions ?? []
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -157,7 +167,7 @@ export default function Rankings() {
       posFilter === 'All'                                                        ? true
       : posFilter === 'Batters'                                                  ? p.stat_type === 'batting'
       : posFilter === 'Pitchers'                                                 ? p.stat_type === 'pitching'
-      : p.positions?.some(pos => pos.toUpperCase() === posFilter.toUpperCase())
+      : displayPositions(p).some(pos => pos.toUpperCase() === posFilter.toUpperCase())
     const searchOk = !search.trim() ||
       p.name.toLowerCase().includes(search.toLowerCase().trim())
     return posOk && searchOk
@@ -343,7 +353,7 @@ export default function Rankings() {
                     {/* Position pills */}
                     <td className="py-3 px-2 text-center align-top pt-3.5">
                       <div className="flex flex-wrap gap-0.5 justify-center">
-                        {player.positions?.slice(0, 2).map(pos => (
+                        {displayPositions(player).slice(0, 2).map(pos => (
                           <span
                             key={pos}
                             className="stat-pill bg-navy-700 text-slate-400 text-[10px] px-1.5 py-0.5"

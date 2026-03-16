@@ -216,8 +216,15 @@ class ScoringEngine:
         config = HORIZON_CONFIGS[horizon]
 
         batters = [p for p in players if p.stat_type == "batting"]
+        # SP takes priority: a player with both SP+RP in their positions (e.g. a
+        # two-way arm like Bubba Chandler) is treated as a starter, not a closer.
+        # This prevents double-counting a player in both pools, which would let
+        # dedup select the inflated RP/saves score over the correct SP score.
         starters = [p for p in players if p.stat_type == "pitching" and "SP" in p.positions]
-        relievers = [p for p in players if p.stat_type == "pitching" and "RP" in p.positions]
+        relievers = [
+            p for p in players
+            if p.stat_type == "pitching" and "RP" in p.positions and "SP" not in p.positions
+        ]
         unknown_pitchers = [
             p for p in players
             if p.stat_type == "pitching" and "SP" not in p.positions and "RP" not in p.positions
