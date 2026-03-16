@@ -1,14 +1,24 @@
 /**
  * API client for the FantasAI Sports backend.
- * All calls go to /api/v1/ — in dev the Vite proxy forwards them to localhost:8000.
- * In production the Vercel rewrite proxies /api/* to Railway, so VITE_API_URL is
- * not required. If set, it MUST include the protocol (https://...) — bare hostnames
- * without a protocol are treated the same as unset to avoid relative-URL breakage.
+ *
+ * Resolution order:
+ *   1. VITE_API_URL env var (must include protocol, e.g. https://...)
+ *   2. In production builds, call Railway directly to bypass Vercel's 25-second
+ *      edge-proxy timeout (LLM endpoints can take 30-60 s).
+ *   3. In dev, use /api/v1 — Vite proxies it to localhost:8000.
+ *
+ * CORS is open ("*") on the backend so direct browser→Railway calls work fine.
  */
+const RAILWAY_URL = 'https://fantasai-sports-production.up.railway.app'
+
 const _rawUrl = import.meta.env.VITE_API_URL || ''
 const BASE = _rawUrl.startsWith('http')
   ? `${_rawUrl}/api/v1`
-  : '/api/v1'
+  : import.meta.env.PROD
+    ? `${RAILWAY_URL}/api/v1`   // production: call Railway directly, no Vercel proxy
+    : '/api/v1'                  // dev: Vite proxy → localhost:8000
+
+export const API_BASE_URL = BASE.replace('/api/v1', '') // used by keepalive
 
 async function req(method, path, body) {
   const opts = {
@@ -52,9 +62,10 @@ export const leaguePower     = (id)   => get(`/analysis/league-power/${id}`)
 export const extractPlayers  = (body) => post('/analysis/extract-players', body)
 
 // ── Rankings ─────────────────────────────────────────────────────────────────
-export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, position } = {}) => {
+export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, position, horizon } = {}) => {
   const params = new URLSearchParams({ ranking_type, limit })
   if (season)   params.set('season', season)
   if (position) params.set('position', position)
+  if (horizon)  params.set('horizon', horizon)
   return get(`/rankings?${params}`)
 }

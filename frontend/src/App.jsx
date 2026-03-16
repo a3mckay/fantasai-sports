@@ -1,5 +1,7 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
+import { API_BASE_URL } from './lib/api'
 import Home           from './pages/Home'
 import Rankings       from './pages/Rankings'
 import ComparePlayers from './pages/ComparePlayers'
@@ -10,7 +12,16 @@ import KeeperEval     from './pages/KeeperEval'
 import CompareTeams   from './pages/CompareTeams'
 import LeaguePower    from './pages/LeaguePower'
 
+const KEEPALIVE_MS = 4 * 60 * 1000 // 4 minutes — keeps Railway from sleeping
+
 export default function App() {
+  useEffect(() => {
+    const ping = () => fetch(`${API_BASE_URL}/api/v1/health`, { method: 'HEAD' }).catch(() => {})
+    ping()
+    const id = setInterval(ping, KEEPALIVE_MS)
+    return () => clearInterval(id)
+  }, [])
+
   return (
     <BrowserRouter>
       <Layout>
