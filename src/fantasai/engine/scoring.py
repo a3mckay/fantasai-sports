@@ -233,17 +233,16 @@ class ScoringEngine:
         batter_rankings = self._score_category_projection(
             batters, config, self.hitting_cats, is_sp=None,
         )
-        sp_rankings = self._score_category_projection(
-            starters, config, self.pitching_cats, is_sp=True,
-        )
-        rp_rankings = self._score_category_projection(
-            relievers, config, self.pitching_cats, is_sp=False,
-        )
-        unknown_rankings = self._score_category_projection(
-            unknown_pitchers, config, self.pitching_cats, is_sp=False,
+        # Score all pitchers in ONE combined pool so that volume differences
+        # (SP 170 IP vs RP 62 IP) create real z-score variance in IP and K.
+        # In separate pools every SP projects 170 IP → std(IP)=0 → IP z-score=0
+        # for everyone, erasing the starter volume advantage entirely.
+        all_pitchers = starters + relievers + unknown_pitchers
+        pitcher_rankings = self._score_category_projection(
+            all_pitchers, config, self.pitching_cats, is_sp=None, detect_pitcher_role=True,
         )
 
-        all_rankings = batter_rankings + sp_rankings + rp_rankings + unknown_rankings
+        all_rankings = batter_rankings + pitcher_rankings
         all_rankings.sort(key=lambda r: r.score, reverse=True)
         for i, r in enumerate(all_rankings):
             r.overall_rank = i + 1
@@ -367,6 +366,7 @@ class ScoringEngine:
         config: HorizonConfig,
         categories: list[str],
         is_sp: Optional[bool],
+        detect_pitcher_role: bool = False,
     ) -> list[PlayerRanking]:
         """Score players by projecting category stats then z-scoring those projections.
 
@@ -387,8 +387,12 @@ class ScoringEngine:
         # Step 1: Project stats for each player into flat dicts
         projected: list[dict[str, float]] = []
         for p in players:
-            if is_sp is None:
+            if is_sp is None and not detect_pitcher_role:
                 projected.append(project_hitter_stats(p, config))
+            elif detect_pitcher_role:
+                # Combined pitcher pool: each player uses their own role's IP volume
+                player_is_sp = "SP" in p.positions
+                projected.append(project_pitcher_stats(p, config, is_sp=player_is_sp))
             else:
                 projected.append(project_pitcher_stats(p, config, is_sp=is_sp))
 
