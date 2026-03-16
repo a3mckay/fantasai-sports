@@ -277,10 +277,12 @@ def project_pitcher_stats(
 
     proj_k = proj_k9 / 9.0 * ip
 
-    # W/SV/HLD: role- and team-context-dependent; scale from actual rates
+    # W/SV/HLD: role- and team-context-dependent; scale from actual rates.
+    # SPs never accumulate saves or holds — zero them out even if they had a
+    # bullpen stint earlier in the season (e.g. Bubba Chandler with early saves).
     proj_w   = (_safe(cnt, "W")   / season_ip) * ip
-    proj_sv  = (_safe(cnt, "SV")  / season_ip) * ip
-    proj_hld = (_safe(cnt, "HLD") / season_ip) * ip
+    proj_sv  = 0.0 if is_sp else (_safe(cnt, "SV")  / season_ip) * ip
+    proj_hld = 0.0 if is_sp else (_safe(cnt, "HLD") / season_ip) * ip
 
     # QS: SP only; tiered by projected ERA
     if is_sp:
