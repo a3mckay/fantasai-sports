@@ -29,6 +29,7 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
   const [busy, setBusy]         = useState(false)
   const [apiError, setApiError] = useState(false)
   const containerRef            = useRef(null)
+  const justSelectedRef         = useRef(false)  // suppress search after a selection
   const debouncedQuery          = useDebounce(query, 280)
 
   // Keep query in sync when parent resets value
@@ -38,6 +39,11 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
 
   // Fetch autocomplete results
   useEffect(() => {
+    // Query changed because we just selected a player — don't re-search
+    if (justSelectedRef.current) {
+      justSelectedRef.current = false
+      return
+    }
     if (debouncedQuery.length < 2) {
       setResults([])
       setOpen(false)
@@ -73,6 +79,7 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
   }, [])
 
   function selectPlayer(player) {
+    justSelectedRef.current = true   // tell the search effect to skip next fire
     setQuery(player.name)
     setResults([])
     setOpen(false)
