@@ -18,6 +18,9 @@ class NormalizedPlayerData:
     counting_stats: dict[str, float] = field(default_factory=dict)
     rate_stats: dict[str, float] = field(default_factory=dict)
     advanced_stats: dict[str, float] = field(default_factory=dict)
+    # Birth year derived from the Age column in source data (season - age).
+    # Used for keeper-league future-value multipliers.
+    birth_year: int | None = None
 
 
 class SportAdapter(ABC):

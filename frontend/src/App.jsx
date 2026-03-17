@@ -12,7 +12,7 @@ import KeeperEval     from './pages/KeeperEval'
 import CompareTeams   from './pages/CompareTeams'
 import LeaguePower    from './pages/LeaguePower'
 
-const KEEPALIVE_MS = 4 * 60 * 1000 // 4 minutes — keeps Railway from sleeping
+const KEEPALIVE_MS = 2 * 60 * 1000 // 2 minutes — keeps Railway from sleeping
 
 export default function App() {
   useEffect(() => {

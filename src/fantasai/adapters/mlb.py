@@ -181,6 +181,39 @@ def _infer_pitcher_position(row: pd.Series) -> list[str]:
     return ["RP"]
 
 
+def _stamp_birth_years(
+    players: list,
+    df: "pd.DataFrame",
+    season: int,
+) -> None:
+    """Set birth_year on NormalizedPlayerData using the pybaseball Age column.
+
+    Modifies players in-place.  birth_year = season − age so the value is
+    season-agnostic and stable across re-ingest.  Players whose age is
+    missing or non-numeric are left with birth_year=None.
+    """
+    # Build {IDfg: age} lookup from the DataFrame
+    age_map: dict[int, int] = {}
+    for _, row in df.iterrows():
+        player_id = int(row.get("IDfg", 0))
+        if player_id == 0:
+            continue
+        age_raw = row.get("Age")
+        if age_raw is None:
+            continue
+        try:
+            age = int(float(age_raw))
+            if 15 <= age <= 50:  # sanity range
+                age_map[player_id] = age
+        except (TypeError, ValueError):
+            pass
+
+    for p in players:
+        age = age_map.get(p.player_id)
+        if age is not None:
+            p.birth_year = season - age
+
+
 class MLBAdapter(SportAdapter):
     """MLB sport adapter using pybaseball for data."""
 
@@ -221,7 +254,9 @@ class MLBAdapter(SportAdapter):
             fg_ids = [int(v) for v in batting_df["IDfg"].dropna() if int(v) != 0]
             pos_map = _get_batter_positions(fg_ids)
             logger.info("MLB API position lookup: resolved %d / %d batters", len(pos_map), len(fg_ids))
-            players.extend(self.normalize_stats(batting_df, stat_type="batting", positions_map=pos_map))
+            batter_players = self.normalize_stats(batting_df, stat_type="batting", positions_map=pos_map)
+            _stamp_birth_years(batter_players, batting_df, season)
+            players.extend(batter_players)
             logger.info(f"  Got {len(batting_df)} batters")
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.error(f"Network error fetching batting stats: {e}", exc_info=True)
@@ -233,7 +268,9 @@ class MLBAdapter(SportAdapter):
         logger.info(f"Fetching {season} pitching stats (min {min_ip} IP)...")
         try:
             pitching_df = pitching_stats(season, qual=min_ip)
-            players.extend(self.normalize_stats(pitching_df, stat_type="pitching"))
+            pitcher_players = self.normalize_stats(pitching_df, stat_type="pitching")
+            _stamp_birth_years(pitcher_players, pitching_df, season)
+            players.extend(pitcher_players)
             logger.info(f"  Got {len(pitching_df)} pitchers")
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.error(f"Network error fetching pitching stats: {e}", exc_info=True)

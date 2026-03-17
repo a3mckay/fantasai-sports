@@ -48,11 +48,19 @@ VERDICT_THRESHOLD = 1.5  # |adj_diff| > this → clear winner
 
 # Age → future value multiplier table for keeper leagues.
 # (min_age, max_age, multiplier)
+#
+# The multipliers are intentionally steep — keeper value is about future
+# seasons, not just this year.  A 22-year-old with 4.0 composite is worth
+# more than a 33-year-old with 5.0 in a multi-year keeper context:
+#   22-yr: 4.0 × 1.7 = 6.8  vs  33-yr: 5.0 × 0.7 = 3.5
 KEEPER_AGE_BONUS: list[tuple[int, int, float]] = [
-    (0, 24, 1.3),
-    (25, 27, 1.1),
-    (28, 30, 1.0),
-    (31, 99, 0.85),
+    (0,  22, 1.7),   # elite prospect / young star
+    (23, 24, 1.5),   # entering prime
+    (25, 26, 1.25),  # early prime
+    (27, 28, 1.1),   # peak prime
+    (29, 30, 1.0),   # late prime baseline
+    (31, 32, 0.85),  # slight decline risk
+    (33, 99, 0.70),  # meaningful aging curve
 ]
 
 

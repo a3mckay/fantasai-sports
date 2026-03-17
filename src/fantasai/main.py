@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,14 +38,47 @@ from fantasai.api.health import router as health_router  # noqa: E402
 from fantasai.api.v1.leagues import router as leagues_router  # noqa: E402
 from fantasai.api.v1.players import router as players_router  # noqa: E402
 from fantasai.api.v1.rankings import router as rankings_router  # noqa: E402
-from fantasai.api.v1.recommendations import router as recommendations_router  # noqa: E402
+from fantasai.api.v1.recommendations import router as recommendations_router, _compute_rankings  # noqa: E402
+from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES  # noqa: E402
 from fantasai.api.v1.analysis import router as analysis_router  # noqa: E402
+
+_log = logging.getLogger(__name__)
+
+
+def _warm_rankings_cache() -> None:
+    """Pre-compute SEASON rankings on startup so the first user request is fast.
+
+    Only warms the SEASON horizon (most commonly used).  Other horizons are
+    computed on-demand and cached for 30 minutes on first hit.
+    """
+    try:
+        from fantasai.api.deps import get_db
+        from fantasai.engine.projection import ProjectionHorizon
+
+        db = next(get_db())
+        try:
+            _compute_rankings(db, RANKINGS_DEFAULT_CATEGORIES, horizon=ProjectionHorizon.SEASON)
+            _log.info("Rankings cache warmed: horizon=season")
+        finally:
+            db.close()
+    except Exception:
+        _log.warning("Rankings cache warm-up failed (non-fatal)", exc_info=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the rankings cache in a background thread so startup is non-blocking
+    t = threading.Thread(target=_warm_rankings_cache, daemon=True, name="cache-warmer")
+    t.start()
+    yield
+
 
 app = FastAPI(
     title="FantasAI Sports",
     version="0.1.0",
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 register_error_handlers(app)

@@ -1136,6 +1136,23 @@ def keeper_eval_endpoint(
     else:
         available_pool = None
 
+    # Build player_ages from stored birth_year — used by plan_keepers for
+    # age-based future-value multipliers.  current_year − birth_year gives
+    # age for the current season.
+    import datetime as _dt
+    _current_year = _dt.datetime.now().year
+    _roster_player_ids = [r.player_id for r in input_rankings]
+    _players_with_ages = (
+        db.query(Player)
+        .filter(Player.player_id.in_(_roster_player_ids))
+        .all()
+    )
+    player_ages: dict[int, int] = {
+        p.player_id: _current_year - p.birth_year
+        for p in _players_with_ages
+        if p.birth_year is not None
+    }
+
     # Run the appropriate brain function
     if body.mode == "plan_keepers":
         evaluation = plan_keepers(
@@ -1145,7 +1162,7 @@ def keeper_eval_endpoint(
             roster_positions=roster_positions,
             league_type=league_type,
             available_pool=available_pool,
-            player_ages={},  # future: populate from Player.birth_date
+            player_ages=player_ages,
             context=body.context,
         )
     else:

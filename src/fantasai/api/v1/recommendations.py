@@ -36,7 +36,7 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 # ---------------------------------------------------------------------------
 
 _RANKINGS_CACHE: dict[str, tuple[float, tuple]] = {}
-_RANKINGS_TTL = 300  # 5 minutes
+_RANKINGS_TTL = 1800  # 30 minutes — rankings change at most once per pipeline run
 
 
 def _rankings_cache_key(categories: list[str], horizon: ProjectionHorizon) -> str:
@@ -109,9 +109,16 @@ def _compute_rankings(
     if not stats_rows:
         return [], []
 
+    # Batch-load all players in one query (avoids N+1 round trips)
+    stat_player_ids = [s.player_id for s in stats_rows]
+    player_map = {
+        p.player_id: p
+        for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
+    }
+
     players = []
     for stats in stats_rows:
-        player = db.get(Player, stats.player_id)
+        player = player_map.get(stats.player_id)
         if not player:
             continue
         players.append(

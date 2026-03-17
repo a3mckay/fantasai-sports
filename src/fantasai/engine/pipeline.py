@@ -333,12 +333,16 @@ def _upsert_player(db: Session, data: NormalizedPlayerData) -> None:
             name=data.name,
             team=data.team,
             positions=data.positions,
+            birth_year=data.birth_year,
         )
         db.add(player)
     else:
         player.name = data.name
         player.team = data.team
         player.positions = data.positions
+        # Update birth_year if we have it — never overwrite a known value with None
+        if data.birth_year is not None:
+            player.birth_year = data.birth_year
 
 
 def _upsert_player_stats(

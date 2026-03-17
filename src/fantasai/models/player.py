@@ -19,6 +19,9 @@ class Player(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     mlbam_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     fangraphs_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Birth year derived from pybaseball Age column; used for keeper-league
+    # future-value multipliers. Stored as year so it's season-agnostic.
+    birth_year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     stats: Mapped[list[PlayerStats]] = relationship(back_populates="player")
     rolling_stats: Mapped[list[PlayerRollingStats]] = relationship(back_populates="player")
