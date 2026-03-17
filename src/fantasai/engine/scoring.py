@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 # Stats where lower values are better — z-scores get inverted
 LOWER_IS_BETTER = {"ERA", "WHIP", "BB/9", "HR/9", "FIP", "xFIP", "SIERA", "xERA"}
 
+# Per-category z-score cap.  Without this, rare winner-take-all categories
+# (SV, SB) produce outliers of +5–6σ that overwhelm all other contributions.
+# A 40-save elite closer is genuinely valuable — this cap keeps them top-30
+# without letting a single category override multi-category workhorses like
+# elite SPs.  ±3.5 was chosen empirically: it keeps elite closers at ~#30,
+# elite SPs at ~#15–20, and doesn't compress the rest of the pool.
+Z_SCORE_CAP = 3.5
+
 # Category -> which stat bucket it lives in (counting_stats, rate_stats, advanced_stats)
 # and the actual column name in that bucket
 CATEGORY_STAT_MAP = {
@@ -433,6 +441,7 @@ class ScoringEngine:
                     z = float((v - mean) / std)
                     if cat in LOWER_IS_BETTER:
                         z = -z
+                    z = max(-Z_SCORE_CAP, min(Z_SCORE_CAP, z))
                     zscores.append(z)
             cat_zscores[cat] = zscores
 
@@ -501,6 +510,9 @@ class ScoringEngine:
                     # Invert for "lower is better" stats
                     if cat in LOWER_IS_BETTER:
                         z = -z
+                    # Cap to prevent winner-take-all categories (SV, SB) from
+                    # dominating the composite score
+                    z = max(-Z_SCORE_CAP, min(Z_SCORE_CAP, z))
                     zscores.append(z)
             cat_zscores[cat] = zscores
 
@@ -623,6 +635,7 @@ class ScoringEngine:
                         z = float((v - mean) / std)
                         if cat in LOWER_IS_BETTER:
                             z = -z
+                        z = max(-Z_SCORE_CAP, min(Z_SCORE_CAP, z))
                         zs.append(z)
                 cat_zscores[cat] = zs
 
