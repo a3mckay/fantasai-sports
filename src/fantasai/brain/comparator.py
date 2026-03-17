@@ -66,6 +66,8 @@ class ComparePlayerResult:
     composite_score: float
     category_scores: dict[str, float]  # adjusted z-scores per category
     stat_type: str
+    overall_rank: int = 0    # rank among all ranked players (for percentile display)
+    total_players: int = 0   # denominator for percentile
 
 
 @dataclass
@@ -161,6 +163,8 @@ def compare_players(ctx: CompareContext) -> list[ComparePlayerResult]:
     # Sort descending by adjusted composite score
     scored.sort(key=lambda x: x[1], reverse=True)
 
+    total = len(ctx.player_rankings)
+
     results: list[ComparePlayerResult] = []
     for rank, (ranking, score, cats) in enumerate(scored, start=1):
         results.append(
@@ -173,6 +177,8 @@ def compare_players(ctx: CompareContext) -> list[ComparePlayerResult]:
                 composite_score=score,
                 category_scores=cats,
                 stat_type=ranking.stat_type,
+                overall_rank=ranking.overall_rank,
+                total_players=total,
             )
         )
 

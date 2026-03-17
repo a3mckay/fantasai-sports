@@ -6,7 +6,7 @@ import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
-import CategoryBar from '../components/CategoryBar'
+import PercentileBar from '../components/PercentileBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -178,11 +178,13 @@ export default function ComparePlayers() {
                       {p.positions.map(pos => (
                         <span key={pos} className="stat-pill bg-navy-700 text-slate-400">{pos}</span>
                       ))}
-                      <span className="stat-pill bg-field-900 text-field-300 font-mono ml-auto">
-                        {p.composite_score.toFixed(2)}
-                      </span>
+                      {p.overall_rank > 0 && (
+                        <span className="stat-pill bg-field-900 text-field-300 font-mono ml-auto text-xs">
+                          Overall #{p.overall_rank}
+                        </span>
+                      )}
                     </div>
-                    <CategoryBar data={filterCategoryScores(p.category_scores, p.stat_type)} />
+                    <PercentileBar data={filterCategoryScores(p.category_scores, p.stat_type)} />
                   </div>
                 </div>
               </div>

@@ -59,6 +59,7 @@ class ComparePlayerResultRead(BaseModel):
     composite_score: float
     category_scores: dict[str, float]
     stat_type: str
+    overall_rank: int = 0   # rank among all players — used for percentile display
 
 
 class CompareResponse(BaseModel):

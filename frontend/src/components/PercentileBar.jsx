@@ -1,0 +1,60 @@
+/**
+ * Category bar that displays z-scores as percentile ranks (1–99).
+ *
+ * z → percentile via the standard normal CDF approximation so that:
+ *   z = 0    → 50th percentile
+ *   z = +2   → ~97th percentile
+ *   z = -2   → ~3rd percentile
+ *
+ * Bar width is proportional to percentile (100% = 99th, 0% = 1st).
+ * Values at/above 75th are green; below 40th are red; in-between are slate.
+ */
+
+/** Abramowitz & Stegun approximation of the standard normal CDF (error < 7.5e-8). */
+function normCdf(z) {
+  const sign = z < 0 ? -1 : 1
+  const x = Math.abs(z) / Math.SQRT2
+  const t = 1 / (1 + 0.3275911 * x)
+  const poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+  const erf = 1 - poly * Math.exp(-x * x)
+  return 0.5 * (1 + sign * erf)
+}
+
+function zToPercentile(z) {
+  return Math.round(Math.min(99, Math.max(1, normCdf(z) * 100)))
+}
+
+export default function PercentileBar({ data = {} }) {
+  if (!Object.keys(data).length) return null
+
+  // Sort by absolute z-score so the most impactful categories appear first
+  const entries = Object.entries(data)
+    .map(([cat, z]) => [cat, z, zToPercentile(z)])
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([cat, _z, pct]) => {
+        const isStrong = pct >= 75
+        const isWeak   = pct < 40
+        const barColor = isStrong ? 'bg-field-500' : isWeak ? 'bg-stitch-500' : 'bg-slate-600'
+        const textColor = isStrong ? 'text-field-400' : isWeak ? 'text-stitch-400' : 'text-slate-400'
+
+        return (
+          <div key={cat} className="flex items-center gap-2 text-xs">
+            <span className="w-10 text-right text-slate-500 font-mono shrink-0">{cat}</span>
+            <div className="flex-1 h-2 bg-navy-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <span className={`w-14 font-mono text-right ${textColor}`}>
+              {pct}th
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}

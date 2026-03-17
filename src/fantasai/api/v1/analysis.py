@@ -105,12 +105,10 @@ DEFAULT_CATEGORIES = ["R", "HR", "RBI", "SB", "AVG", "W", "SV", "K", "ERA", "WHI
 # System prompt for analysis-type LLM calls (compare, trade verdict).
 # Different persona from per-player blurbs — this is the "analyst making
 # a call" rather than "writer describing a player's stats".
-_ANALYSIS_SYSTEM_PROMPT = (
-    "You are a sharp, concise fantasy baseball analyst. "
-    "Write 3–5 sentences max. Be direct — give a verdict and reasoning. "
-    "Only reference facts from the DATA BLOCK provided. "
-    "Do not hedge excessively. Sound like a confident expert."
-)
+# Import the shared writer persona so all LLM calls share one voice.
+from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
+
+_ANALYSIS_SYSTEM_PROMPT = _WRITER_PERSONA
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +132,12 @@ def _generate_compare_blurb(
     ranked_players: list,  # list[ComparePlayerResult]
     categories: list[str],
     context: Optional[str],
+    raw_stats_map: Optional[dict[int, dict]] = None,  # player_id → {stat: value}
 ) -> str:
     """Generate a comparison blurb via Anthropic API.
+
+    Uses the shared writer persona. The data block exposes real stats and
+    overall rank percentile — no internal z-scores or "adjusted score" jargon.
 
     Returns empty string on failure — never raises.
     """
@@ -143,37 +145,72 @@ def _generate_compare_blurb(
     if not client:
         return ""
 
-    try:
+    # Category → human label for the prompt
+    _CAT_LABELS = {
+        "R": "Runs", "HR": "HR", "RBI": "RBI", "SB": "SB", "AVG": "AVG",
+        "OPS": "OPS", "OBP": "OBP", "W": "Wins", "SV": "Saves", "K": "K",
+        "ERA": "ERA", "WHIP": "WHIP", "HLD": "Holds", "IP": "IP",
+    }
 
+    try:
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
         if context:
             lines.append(f"User context: {context}")
-        lines.append(f"Scoring categories: {', '.join(categories)}")
+        lines.append(f"League scoring categories: {', '.join(categories)}")
         lines.append("")
 
         for p in ranked_players:
-            signals = ", ".join(
-                f"{cat}: {score:+.1f}"
-                for cat, score in sorted(
-                    p.category_scores.items(), key=lambda x: -abs(x[1])
-                )[:5]
+            header = (
+                f"#{p.rank} in this matchup  |  {p.player_name} "
+                f"({'/'.join(p.positions)}, {p.team})  |  "
+                f"Overall rank: #{p.overall_rank} of {p.total_players} ranked players"
             )
-            lines.append(
-                f"#{p.rank} {p.player_name} ({'/'.join(p.positions)}, "
-                f"{p.team}) — adjusted score: {p.composite_score:.2f} | {signals}"
-            )
+            lines.append(header)
+
+            # Real stats block
+            raw = (raw_stats_map or {}).get(p.player_id, {})
+            if raw:
+                stat_line = "  Stats: " + "  |  ".join(
+                    f"{_CAT_LABELS.get(k, k)} {v}"
+                    for k, v in raw.items()
+                    if v is not None
+                )
+                lines.append(stat_line)
+
+            # Tier signals — readable words, NOT z-scores
+            _TIERS = [(2.0, "elite"), (1.0, "strong"), (0.3, "average"),
+                      (-0.3, "below average"), (-1.0, "weak"), (float("-inf"), "drag")]
+
+            def _tier(z: float) -> str:
+                for threshold, label in _TIERS:
+                    if z >= threshold:
+                        return label
+                return "drag"
+
+            relevant_cats = [c for c in categories if c in p.category_scores]
+            tier_parts = [
+                f"{_CAT_LABELS.get(c, c)}: {_tier(p.category_scores[c])}"
+                for c in sorted(relevant_cats, key=lambda c: -abs(p.category_scores.get(c, 0)))[:5]
+            ]
+            if tier_parts:
+                lines.append("  Category tiers: " + ", ".join(tier_parts))
+            lines.append("")
 
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
-            "Write a head-to-head comparison blurb. "
-            "Clearly state who wins and why, referencing the stats."
+            "This is a head-to-head fantasy baseball player comparison. "
+            "Write 3–4 sentences in your voice. "
+            "State clearly who wins and why, using actual stats from the DATA BLOCK — "
+            "not internal scores, z-scores, or any numeric rating you invented. "
+            "Reference real numbers (HR totals, AVG, ERA, etc.) and category tiers. "
+            "If the result is close, say so honestly."
             + (f" Address the user's context: {context}" if context else "")
         )
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=300,
+            max_tokens=350,
             system=[
                 {
                     "type": "text",
@@ -394,6 +431,36 @@ def compare_players_endpoint(
 
     results = compare_players(ctx)
 
+    # Patch total_players onto each result using the full source pool size
+    total_ranked = len(source)
+    for r in results:
+        r.total_players = total_ranked
+
+    # Fetch real stats for the compared players so the blurb can cite them
+    from fantasai.models.player import PlayerStats
+    stats_rows = (
+        db.query(PlayerStats)
+        .filter(
+            PlayerStats.player_id.in_(body.player_ids),
+            PlayerStats.season == 2025,
+        )
+        .all()
+    )
+    # Build {player_id: flat_stats_dict} — prefer the matching stat_type per player
+    result_stat_type = {r.player_id: r.stat_type for r in results}
+    raw_stats_map: dict[int, dict] = {}
+    for row in stats_rows:
+        pid = row.player_id
+        expected_type = result_stat_type.get(pid, row.stat_type)
+        if row.stat_type != expected_type:
+            continue
+        flat: dict = {}
+        flat.update(row.counting_stats or {})
+        flat.update(row.rate_stats or {})
+        # Keep only the categories used in scoring + a few useful extras
+        _KEEP = {*categories, "AVG", "OPS", "OBP", "ERA", "WHIP", "IP"}
+        raw_stats_map[pid] = {k: v for k, v in flat.items() if k in _KEEP and v is not None}
+
     # Determine which categories were boosted by context (for transparency)
     context_applied: Optional[str] = None
     if body.context:
@@ -402,8 +469,8 @@ def compare_players_endpoint(
         if boosted:
             context_applied = f"Boosted categories: {', '.join(sorted(boosted))}"
 
-    # Generate LLM blurb
-    blurb = _generate_compare_blurb(results, categories, body.context)
+    # Generate LLM blurb with real stats
+    blurb = _generate_compare_blurb(results, categories, body.context, raw_stats_map)
 
     return CompareResponse(
         ranked_players=[
@@ -416,6 +483,7 @@ def compare_players_endpoint(
                 composite_score=r.composite_score,
                 category_scores=r.category_scores,
                 stat_type=r.stat_type,
+                overall_rank=r.overall_rank,
             )
             for r in results
         ],
