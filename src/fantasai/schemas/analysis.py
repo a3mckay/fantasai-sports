@@ -46,6 +46,11 @@ class CompareRequest(BaseModel):
         default="predictive",
         description='"predictive" (forward-looking) or "current" (season-to-date).',
     )
+    horizon: str = Field(
+        default="season",
+        pattern="^(week|month|season)$",
+        description="Projection horizon for predictive rankings: week, month, or season.",
+    )
 
 
 class ComparePlayerResultRead(BaseModel):
@@ -120,8 +125,15 @@ class TradeRequest(BaseModel):
         default=None,
         description="Custom league type: h2h_categories, roto, or points.",
     )
-
-
+    horizon: str = Field(
+        default="season",
+        pattern="^(week|month|season)$",
+        description=(
+            "Projection horizon for trade evaluation: week (next 7 days), "
+            "month (next 30 days), or season (full remaining season). "
+            "Defaults to season — use 'week' or 'month' for deadline trades."
+        ),
+    )
 
 
 class TradeResponse(BaseModel):

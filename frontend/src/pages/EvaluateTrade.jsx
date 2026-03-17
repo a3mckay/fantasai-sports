@@ -189,6 +189,7 @@ export default function EvaluateTrade() {
   const [receivingPicks,   setReceivingPicks]  = useState([])
   const [myRosterPlayers,  setMyRosterPlayers] = useState([])
   const [context,          setContext]         = useState('')
+  const [horizon,          setHorizon]         = useState('season')
   const [leagueSettings,   setLeagueSettings] = useState(null)
   const [loading,          setLoading]         = useState(false)
   const [error,            setError]           = useState(null)
@@ -222,6 +223,7 @@ export default function EvaluateTrade() {
         giving:    { player_ids: givingIds,    draft_picks: givingPickStrs    },
         receiving: { player_ids: receivingIds, draft_picks: receivingPickStrs },
         context:   context || null,
+        horizon,
       }
 
       const rosterIds = myRosterPlayers.filter(p => p.playerId).map(p => p.playerId)
@@ -340,6 +342,34 @@ export default function EvaluateTrade() {
               )}
             </div>
           )}
+        </div>
+
+        {/* Projection horizon — trade always uses forward-looking (predictive) rankings */}
+        <div>
+          <label className="section-label">Evaluate over</label>
+          <div className="flex gap-2 mt-1">
+            {[
+              { value: 'season', label: 'Full Season' },
+              { value: 'month',  label: 'This Month'  },
+              { value: 'week',   label: 'This Week'   },
+            ].map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setHorizon(value)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  horizon === value
+                    ? 'bg-field-700 border-field-600 text-white'
+                    : 'bg-navy-800 border-navy-600 text-slate-500 hover:text-slate-300 hover:border-navy-500'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-slate-600 mt-1">
+            Use "This Month" or "This Week" for deadline/stretch-run trades.
+          </p>
         </div>
 
         <ContextInput value={context} onChange={setContext} />

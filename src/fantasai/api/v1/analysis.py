@@ -57,6 +57,7 @@ from fantasai.brain.trade_evaluator import (
     evaluate_trade,
 )
 from fantasai.config import settings
+from fantasai.engine.projection import ProjectionHorizon
 from fantasai.engine.scoring import PlayerRanking
 from fantasai.models.league import Team
 from fantasai.models.player import Player
@@ -396,7 +397,8 @@ def compare_players_endpoint(
     if body.custom_categories:
         categories = body.custom_categories
 
-    lookback, predictive = _compute_rankings(db, categories)
+    proj_horizon = ProjectionHorizon(body.horizon) if body.ranking_type == "predictive" else ProjectionHorizon.SEASON
+    lookback, predictive = _compute_rankings(db, categories, horizon=proj_horizon)
     if not lookback and not predictive:
         raise HTTPException(
             status_code=404,
@@ -537,7 +539,8 @@ def evaluate_trade_endpoint(
     if body.custom_league_type:
         league_type = body.custom_league_type
 
-    lookback, predictive = _compute_rankings(db, categories)
+    trade_horizon = ProjectionHorizon(body.horizon)
+    lookback, predictive = _compute_rankings(db, categories, horizon=trade_horizon)
     if not lookback:
         raise HTTPException(
             status_code=404,

@@ -30,6 +30,7 @@ export default function ComparePlayers() {
   const [players, setPlayers]         = useState([emptyPlayer(), emptyPlayer()])
   const [context, setContext]         = useState('')
   const [rankingType, setRankingType] = useState('predictive')
+  const [horizon, setHorizon]         = useState('season')
   const [leagueSettings, setLeagueSettings] = useState(null)
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState(null)
@@ -62,6 +63,7 @@ export default function ComparePlayers() {
         player_ids:   resolved.map(p => p.playerId),
         context:      context || null,
         ranking_type: rankingType,
+        horizon:      rankingType === 'predictive' ? horizon : 'season',
       }
       if (leagueSettings) {
         body.custom_categories      = leagueSettings.categories
@@ -132,17 +134,33 @@ export default function ComparePlayers() {
           )}
         </div>
 
-        {/* Ranking type */}
-        <div>
-          <label className="section-label">Ranking type</label>
-          <select
-            className="field-input"
-            value={rankingType}
-            onChange={e => setRankingType(e.target.value)}
-          >
-            <option value="predictive">Projected (forward-looking)</option>
-            <option value="lookback">Current (season-to-date)</option>
-          </select>
+        {/* Ranking type + horizon */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="section-label">Ranking type</label>
+            <select
+              className="field-input"
+              value={rankingType}
+              onChange={e => setRankingType(e.target.value)}
+            >
+              <option value="predictive">Projected (forward-looking)</option>
+              <option value="lookback">Current (season-to-date)</option>
+            </select>
+          </div>
+          {rankingType === 'predictive' && (
+            <div>
+              <label className="section-label">Projection window</label>
+              <select
+                className="field-input"
+                value={horizon}
+                onChange={e => setHorizon(e.target.value)}
+              >
+                <option value="season">Full Season</option>
+                <option value="month">This Month</option>
+                <option value="week">This Week</option>
+              </select>
+            </div>
+          )}
         </div>
 
         <ContextInput value={context} onChange={setContext} />
