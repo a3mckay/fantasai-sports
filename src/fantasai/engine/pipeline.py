@@ -350,31 +350,38 @@ def sync_steamer_projections(
     season: int = 2026,
     batch_size: int = BATCH_SIZE,
 ) -> int:
-    """Fetch 2026 Steamer projections from FanGraphs and persist to DB.
+    """Fetch forward-looking projections from FanGraphs and persist to DB.
+
+    Uses a per-category consensus blend of the most accurate available
+    systems (ATC, ZiPS, The BAT, Steamer) based on whiffs.org 2025 accuracy
+    research.  Falls back to single-system Steamer for prospects / MiLB
+    players not covered by the consensus systems.
 
     Stores projections as PlayerStats rows with the given season so that
     keeper-evaluation queries can prefer forward-looking data (season=2026)
     over current-year actuals (season=2025).
 
-    Creates Player rows for any projection player who isn't already in the DB,
-    using whatever name/team/position data Steamer provides.  Existing Player
-    rows are never downgraded (birth_year stays as-is).
+    Creates Player rows for any projection player who isn't already in the DB.
+    Existing Player rows are never downgraded (birth_year stays as-is).
 
     Returns:
         Total number of projection rows successfully upserted.
     """
-    from fantasai.adapters.projections import fetch_steamer_batting, fetch_steamer_pitching
+    from fantasai.adapters.projections import (
+        fetch_consensus_batting,
+        fetch_consensus_pitching,
+    )
 
     try:
-        batters = fetch_steamer_batting(season)
+        batters = fetch_consensus_batting(season)
     except Exception:
-        logger.error("Steamer batting fetch failed — skipping batting projections")
+        logger.error("Consensus batting fetch failed — skipping batting projections")
         batters = []
 
     try:
-        pitchers = fetch_steamer_pitching(season)
+        pitchers = fetch_consensus_pitching(season)
     except Exception:
-        logger.error("Steamer pitching fetch failed — skipping pitching projections")
+        logger.error("Consensus pitching fetch failed — skipping pitching projections")
         pitchers = []
 
     all_players = batters + pitchers
