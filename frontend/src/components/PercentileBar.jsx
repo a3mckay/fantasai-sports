@@ -24,6 +24,19 @@ function zToPercentile(z) {
   return Math.round(Math.min(99, Math.max(1, normCdf(z) * 100)))
 }
 
+/** Returns the correct ordinal suffix for any integer: 1→st, 2→nd, 3→rd, else→th. */
+function ordinal(n) {
+  const mod100 = n % 100
+  // 11, 12, 13 are exceptions (11th, 12th, 13th — not 11st/12nd/13rd)
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`
+  switch (n % 10) {
+    case 1: return `${n}st`
+    case 2: return `${n}nd`
+    case 3: return `${n}rd`
+    default: return `${n}th`
+  }
+}
+
 export default function PercentileBar({ data = {} }) {
   if (!Object.keys(data).length) return null
 
@@ -37,7 +50,7 @@ export default function PercentileBar({ data = {} }) {
       {entries.map(([cat, _z, pct]) => {
         const isStrong = pct >= 75
         const isWeak   = pct < 40
-        const barColor = isStrong ? 'bg-field-500' : isWeak ? 'bg-stitch-500' : 'bg-slate-600'
+        const barColor  = isStrong ? 'bg-field-500' : isWeak ? 'bg-stitch-500' : 'bg-slate-600'
         const textColor = isStrong ? 'text-field-400' : isWeak ? 'text-stitch-400' : 'text-slate-400'
 
         return (
@@ -49,8 +62,8 @@ export default function PercentileBar({ data = {} }) {
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <span className={`w-14 font-mono text-right ${textColor}`}>
-              {pct}th
+            <span className={`w-16 font-mono text-right ${textColor}`}>
+              {ordinal(pct)} <span className="text-slate-600">%ile</span>
             </span>
           </div>
         )
