@@ -12,6 +12,16 @@ import LeagueSettings from '../components/LeagueSettings'
 
 const RANK_COLORS = ['text-yellow-400', 'text-slate-300', 'text-leather-400']
 
+// Categories that only apply to pitchers / batters — filter out irrelevant
+// zeros so the bar chart stays meaningful.
+const PITCHING_CATS = new Set(['W', 'SV', 'HLD', 'K', 'ERA', 'WHIP', 'IP', 'QS', 'K/9', 'BB/9', 'SVHLD'])
+const BATTING_CATS  = new Set(['R', 'HR', 'RBI', 'SB', 'AVG', 'OPS', 'OBP', 'SLG', 'H', 'TB', 'XBH', 'BB', 'SO', 'NSB'])
+
+function filterCategoryScores(scores, statType) {
+  const relevant = statType === 'pitching' ? PITCHING_CATS : BATTING_CATS
+  return Object.fromEntries(Object.entries(scores).filter(([cat]) => relevant.has(cat)))
+}
+
 function emptyPlayer() {
   return { name: '', playerId: null }
 }
@@ -172,7 +182,7 @@ export default function ComparePlayers() {
                         {p.composite_score.toFixed(2)}
                       </span>
                     </div>
-                    <CategoryBar data={p.category_scores} />
+                    <CategoryBar data={filterCategoryScores(p.category_scores, p.stat_type)} />
                   </div>
                 </div>
               </div>
