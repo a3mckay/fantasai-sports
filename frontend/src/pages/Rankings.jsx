@@ -46,13 +46,25 @@ function TrendBadge({ current, prior }) {
   )
 }
 
+function renderMarkdown(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**'))
+      return <strong key={i} className="text-slate-200 font-semibold">{part.slice(2, -2)}</strong>
+    if (part.startsWith('*') && part.endsWith('*'))
+      return <em key={i}>{part.slice(1, -1)}</em>
+    return part
+  })
+}
+
 function Blurb({ text }) {
   const [open, setOpen] = useState(false)
   if (!text) return null
   const long = text.length > BLURB_TRUNCATE
+  const displayed = open || !long ? text : text.slice(0, BLURB_TRUNCATE) + '…'
   return (
     <div className="mt-1.5 text-xs text-slate-400 leading-relaxed">
-      {open || !long ? text : text.slice(0, BLURB_TRUNCATE) + '…'}
+      {renderMarkdown(displayed)}
       {long && (
         <button
           onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
