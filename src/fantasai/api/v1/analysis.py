@@ -99,8 +99,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-# Default scoring categories used when no league context is provided.
-DEFAULT_CATEGORIES = ["R", "HR", "RBI", "SB", "AVG", "W", "SV", "K", "ERA", "WHIP"]
+# Default scoring categories — must match RANKINGS_DEFAULT_CATEGORIES in
+# rankings.py exactly so that overall_rank values are consistent across
+# the Rankings page and every analysis endpoint (compare, trade, etc.).
+from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES as DEFAULT_CATEGORIES
 
 # System prompt for analysis-type LLM calls (compare, trade verdict).
 # Different persona from per-player blurbs — this is the "analyst making
