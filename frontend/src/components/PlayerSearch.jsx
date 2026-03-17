@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import { Search, X, AlertCircle } from 'lucide-react'
 import { searchPlayers } from '../lib/api'
 
@@ -22,15 +22,21 @@ function useDebounce(value, delay) {
  *   placeholder — string
  *   className  — extra CSS classes
  */
-export default function PlayerSearch({ value, onChange, onEnterKey, placeholder, className }) {
+const PlayerSearch = forwardRef(function PlayerSearch({ value, onChange, onEnterKey, placeholder, className }, ref) {
   const [query, setQuery]       = useState(value || '')
   const [results, setResults]   = useState([])
   const [open, setOpen]         = useState(false)
   const [busy, setBusy]         = useState(false)
   const [apiError, setApiError] = useState(false)
   const containerRef            = useRef(null)
+  const inputRef                = useRef(null)
   const justSelectedRef         = useRef(false)  // suppress search after a selection
   const debouncedQuery          = useDebounce(query, 280)
+
+  // Expose focus() so parent list managers can advance focus between slots
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus(),
+  }))
 
   // Keep query in sync when parent resets value
   useEffect(() => {
@@ -99,12 +105,11 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
     if (e.key === 'Enter') {
       e.preventDefault()
       if (open && results.length > 0) {
-        // Select the first result
         selectPlayer(results[0])
-      } else {
-        // No dropdown — trigger add-next-player callback
-        onEnterKey?.()
       }
+      // Always advance to the next field on Enter, whether a suggestion was
+      // selected or the user just confirmed the current text.
+      onEnterKey?.()
     } else if (e.key === 'Escape') {
       setOpen(false)
     }
@@ -118,6 +123,7 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
           className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"
         />
         <input
+          ref={inputRef}
           type="text"
           className="field-input pl-8 pr-8"
           placeholder={placeholder || 'Search player name…'}
@@ -182,4 +188,6 @@ export default function PlayerSearch({ value, onChange, onEnterKey, placeholder,
       )}
     </div>
   )
-}
+})
+
+export default PlayerSearch

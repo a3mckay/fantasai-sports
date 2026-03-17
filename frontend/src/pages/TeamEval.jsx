@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { usePlayerListFocus } from '../hooks/usePlayerListFocus'
 import { Star, Play, Plus, X, Upload, ImageIcon, Loader2, AlertCircle } from 'lucide-react'
 import { teamEval, extractPlayers, searchPlayers } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
@@ -44,6 +45,8 @@ export default function TeamEval() {
   const [extracting, setExtracting]         = useState(false)
   const [extractError, setExtractError]     = useState(null)
   const fileRef                             = useRef(null)
+
+  const { playerRefs, focusNextOrAdd } = usePlayerListFocus(players, addPlayer)
 
   function addPlayer() {
     if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
@@ -207,10 +210,11 @@ export default function TeamEval() {
             {players.map((p, idx) => (
               <div key={idx} className="flex items-center gap-2">
                 <PlayerSearch
+                  ref={el => { playerRefs.current[idx] = el }}
                   value={p.name}
                   playerId={p.playerId}
                   onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-                  onEnterKey={addPlayer}
+                  onEnterKey={() => focusNextOrAdd(idx)}
                   placeholder={`Player ${idx + 1}…`}
                   className="flex-1"
                 />

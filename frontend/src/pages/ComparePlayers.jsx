@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { BarChart2, Play, Plus, X } from 'lucide-react'
 import { comparePlayers } from '../lib/api'
+import { usePlayerListFocus } from '../hooks/usePlayerListFocus'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
@@ -23,6 +24,8 @@ export default function ComparePlayers() {
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState(null)
   const [result, setResult]           = useState(null)
+
+  const { playerRefs, focusNextOrAdd } = usePlayerListFocus(players, addPlayer)
 
   function updatePlayer(idx, name, playerId) {
     setPlayers(prev => prev.map((p, i) => i === idx ? { name, playerId } : p))
@@ -87,10 +90,11 @@ export default function ComparePlayers() {
             {players.map((p, idx) => (
               <div key={idx} className="flex items-center gap-2">
                 <PlayerSearch
+                  ref={el => { playerRefs.current[idx] = el }}
                   value={p.name}
                   playerId={p.playerId}
                   onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-                  onEnterKey={addPlayer}
+                  onEnterKey={() => focusNextOrAdd(idx)}
                   placeholder={`Player ${idx + 1}…`}
                   className="flex-1"
                 />

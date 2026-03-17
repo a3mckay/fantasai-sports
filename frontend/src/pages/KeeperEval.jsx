@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
-import { Trophy, Play, Scissors, CheckCircle, Plus, X, Upload, ImageIcon, Loader2, AlertCircle } from 'lucide-react'
+import { usePlayerListFocus } from '../hooks/usePlayerListFocus'
+import { Trophy, Play, Scissors, CheckCircle, Plus, X, Upload, ImageIcon, Loader2, AlertCircle, RotateCcw } from 'lucide-react'
 import { keeperEval, extractPlayers, searchPlayers } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -102,6 +103,8 @@ export default function KeeperEval() {
   const [extractError, setExtractError] = useState(null)
   const fileRef                         = useRef(null)
 
+  const { playerRefs, focusNextOrAdd } = usePlayerListFocus(players, addPlayer)
+
   function addPlayer() {
     if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
   }
@@ -117,6 +120,16 @@ export default function KeeperEval() {
   function switchMode(m) {
     setMode(m)
     setPlayers([emptyPlayer()])
+    setResult(null)
+    setError(null)
+    setShowUpload(false)
+    setExtractError(null)
+  }
+
+  function resetAll() {
+    setPlayers([emptyPlayer()])
+    setContext('')
+    setNKeepers('5')
     setResult(null)
     setError(null)
     setShowUpload(false)
@@ -299,10 +312,11 @@ export default function KeeperEval() {
             {players.map((p, idx) => (
               <div key={idx} className="flex items-center gap-2">
                 <PlayerSearch
+                  ref={el => { playerRefs.current[idx] = el }}
                   value={p.name}
                   playerId={p.playerId}
                   onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-                  onEnterKey={addPlayer}
+                  onEnterKey={() => focusNextOrAdd(idx)}
                   placeholder={`Player ${idx + 1}…`}
                   className="flex-1"
                 />
@@ -355,6 +369,16 @@ export default function KeeperEval() {
 
       {result && (
         <div className="space-y-6">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={resetAll}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              <RotateCcw size={12} />
+              Start over
+            </button>
+          </div>
           <div className="card flex items-center gap-4">
             <div className="text-center shrink-0">
               <div className={`text-5xl font-bold ${GRADE_STYLE[result.keeper_foundation_grade] || 'text-slate-300'}`}>
