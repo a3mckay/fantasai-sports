@@ -89,8 +89,9 @@ from fantasai.schemas.team_analysis import (
     TradeOpportunityRead,
 )
 
-# Reuse the shared rankings helper from the recommendations module
+# Reuse the shared rankings helpers from the recommendations module
 from fantasai.api.v1.recommendations import (
+    _compute_projection_rankings,
     _compute_rankings,
     _fetch_team_and_league,
 )
@@ -1170,9 +1171,23 @@ def keeper_eval_endpoint(
     if body.custom_roster_positions:
         roster_positions = body.custom_roster_positions
 
-    # Compute rankings
-    lookback, predictive = _compute_rankings(db, categories)
-    source = predictive or lookback
+    # Prefer Steamer projections (season=2026) for keeper evaluation —
+    # they account for age regression, prior performance, and playing time
+    # changes, giving a more accurate forward-looking value than YTD actuals.
+    # Fall back to predictive/lookback rankings if projections aren't ingested yet.
+    steamer_rankings = _compute_projection_rankings(db, categories, projection_season=2026)
+    if steamer_rankings:
+        source = steamer_rankings
+        logger.info(
+            "keeper_eval: using %d Steamer 2026 projection rankings", len(steamer_rankings)
+        )
+    else:
+        lookback, predictive = _compute_rankings(db, categories)
+        source = predictive or lookback
+        logger.info(
+            "keeper_eval: Steamer projections not available — using YTD rankings (%d)",
+            len(source),
+        )
     if not source:
         raise HTTPException(status_code=404, detail="No player stats available for rankings.")
 

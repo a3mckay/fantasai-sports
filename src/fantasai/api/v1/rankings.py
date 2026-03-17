@@ -155,3 +155,43 @@ def list_rankings(
         )
         for r in rankings
     ]
+
+
+# ---------------------------------------------------------------------------
+# Admin: projection sync
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/sync-projections",
+    tags=["admin"],
+    summary="Ingest Steamer 2026 projections from FanGraphs",
+)
+def sync_projections(
+    season: int = Query(default=2026, ge=2025, le=2030),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fetch Steamer projections for the given season and store them as
+    PlayerStats rows (season=2026, stat_type=batting|pitching).
+
+    Safe to re-run: upserts existing rows rather than duplicating them.
+    Keeper evaluation will automatically prefer these projection rows over
+    YTD actuals the next time the keeper-eval endpoint is called.
+
+    Returns the number of rows upserted.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    from fantasai.engine.pipeline import sync_steamer_projections
+
+    # Invalidate the projection rankings cache so the next keeper-eval call
+    # sees the fresh data immediately.
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    stale_keys = [k for k in list(_RANKINGS_CACHE.keys()) if k.startswith("proj|")]
+    for k in stale_keys:
+        del _RANKINGS_CACHE[k]
+    _logger.info("Invalidated %d stale projection cache entries", len(stale_keys))
+
+    upserted = sync_steamer_projections(db, season=season)
+    return {"season": season, "rows_upserted": upserted, "status": "ok"}

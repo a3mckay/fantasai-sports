@@ -160,6 +160,87 @@ def _compute_rankings(
     return result
 
 
+def _compute_projection_rankings(
+    db: Session,
+    categories: list[str],
+    projection_season: int = 2026,
+) -> list:
+    """Compute lookback-style rankings from Steamer projection rows (season=2026).
+
+    Used by keeper evaluation to produce forward-looking scores. Runs the
+    standard lookback scorer on Steamer stat rows, which already represent
+    full-season projections — no z-score blending needed.
+
+    Falls back to an empty list if no projection rows are found for the given
+    season (caller should then fall back to _compute_rankings predictive).
+
+    Results are cached for 30 minutes under a separate key.
+    """
+    cache_key = f"proj|{','.join(sorted(categories))}|{projection_season}"
+    entry = _RANKINGS_CACHE.get(cache_key)
+    if entry is not None:
+        ts, value = entry
+        if time.monotonic() - ts <= _RANKINGS_TTL:
+            return value
+
+    from fantasai.adapters.base import NormalizedPlayerData
+    from fantasai.adapters.mlb import MLBAdapter
+    from fantasai.models.player import Player
+
+    stats_rows = db.query(PlayerStats).filter(
+        PlayerStats.season == projection_season,
+        PlayerStats.stat_type.in_(["batting", "pitching"]),
+        PlayerStats.week.is_(None),
+    ).all()
+
+    if not stats_rows:
+        return []
+
+    stat_player_ids = [s.player_id for s in stats_rows]
+    player_map = {
+        p.player_id: p
+        for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
+    }
+
+    players = []
+    for stats in stats_rows:
+        player = player_map.get(stats.player_id)
+        if not player:
+            continue
+        players.append(
+            NormalizedPlayerData(
+                player_id=stats.player_id,
+                name=player.name,
+                team=player.team,
+                positions=player.positions or [],
+                stat_type=stats.stat_type,
+                counting_stats=stats.counting_stats or {},
+                rate_stats=stats.rate_stats or {},
+                advanced_stats=stats.advanced_stats or {},
+            )
+        )
+
+    if not players:
+        return []
+
+    adapter = MLBAdapter()
+    engine = ScoringEngine(adapter, categories)
+    # Steamer rows are full-season projections — use the lookback scorer
+    # (z-score on counting/rate stats) so ranking units match the actuals.
+    rankings = engine.compute_lookback_rankings(projection_season, players=players)
+
+    seen: dict = {}
+    for r in rankings:
+        if r.player_id not in seen or r.score > seen[r.player_id].score:
+            seen[r.player_id] = r
+    deduped = sorted(seen.values(), key=lambda r: r.score, reverse=True)
+    for i, r in enumerate(deduped):
+        r.overall_rank = i + 1
+
+    _RANKINGS_CACHE[cache_key] = (time.monotonic(), deduped)
+    return deduped
+
+
 def _fetch_rolling_windows_map(
     db: Session,
     player_ids: list[int],

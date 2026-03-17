@@ -345,6 +345,74 @@ def _upsert_player(db: Session, data: NormalizedPlayerData) -> None:
             player.birth_year = data.birth_year
 
 
+def sync_steamer_projections(
+    db: Session,
+    season: int = 2026,
+    batch_size: int = BATCH_SIZE,
+) -> int:
+    """Fetch 2026 Steamer projections from FanGraphs and persist to DB.
+
+    Stores projections as PlayerStats rows with the given season so that
+    keeper-evaluation queries can prefer forward-looking data (season=2026)
+    over current-year actuals (season=2025).
+
+    Creates Player rows for any projection player who isn't already in the DB,
+    using whatever name/team/position data Steamer provides.  Existing Player
+    rows are never downgraded (birth_year stays as-is).
+
+    Returns:
+        Total number of projection rows successfully upserted.
+    """
+    from fantasai.adapters.projections import fetch_steamer_batting, fetch_steamer_pitching
+
+    try:
+        batters = fetch_steamer_batting(season)
+    except Exception:
+        logger.error("Steamer batting fetch failed — skipping batting projections")
+        batters = []
+
+    try:
+        pitchers = fetch_steamer_pitching(season)
+    except Exception:
+        logger.error("Steamer pitching fetch failed — skipping pitching projections")
+        pitchers = []
+
+    all_players = batters + pitchers
+    logger.info(
+        "sync_steamer_projections: %d batters + %d pitchers = %d total",
+        len(batters), len(pitchers), len(all_players),
+    )
+
+    if not all_players:
+        return 0
+
+    succeeded = 0
+    failed = 0
+
+    for i in range(0, len(all_players), batch_size):
+        batch = all_players[i : i + batch_size]
+        try:
+            for p in batch:
+                _upsert_player(db, p)
+                _upsert_player_stats(db, p, season, week=None)
+            db.commit()
+            succeeded += len(batch)
+        except Exception:
+            db.rollback()
+            failed += len(batch)
+            logger.error(
+                "Projection batch %d-%d failed, rolled back.",
+                i, i + len(batch),
+                exc_info=True,
+            )
+
+    logger.info(
+        "Steamer projections: %d upserted, %d failed",
+        succeeded, failed,
+    )
+    return succeeded
+
+
 def _upsert_player_stats(
     db: Session,
     data: NormalizedPlayerData,
