@@ -25,6 +25,37 @@ from typing import Optional
 from fantasai.adapters.base import NormalizedPlayerData
 
 
+# ---------------------------------------------------------------------------
+# Steamer helpers
+# ---------------------------------------------------------------------------
+
+def _steamer_rate(steamer: Optional[NormalizedPlayerData], key: str) -> Optional[float]:
+    """Return a Steamer rate stat (e.g. AVG, ERA, K/9) if available."""
+    if steamer is None:
+        return None
+    return steamer.rate_stats.get(key)
+
+
+def _steamer_count_per(
+    steamer: Optional[NormalizedPlayerData],
+    count_key: str,
+    denom_key: str,
+    denom_default: float = 550.0,
+) -> Optional[float]:
+    """Return Steamer count_key / denom_key as a per-unit rate.
+
+    E.g. steamer HR / steamer PA  →  projected HR rate per PA.
+    Returns None if Steamer data is absent or denom is zero.
+    """
+    if steamer is None:
+        return None
+    denom = steamer.counting_stats.get(denom_key, 0.0) or denom_default
+    val = steamer.counting_stats.get(count_key)
+    if val is None:
+        return None
+    return val / max(denom, 1.0)
+
+
 class ProjectionHorizon(str, Enum):
     WEEK = "week"
     MONTH = "month"
@@ -114,8 +145,14 @@ def _safe(d: dict, key: str, default: float = 0.0) -> float:
 def project_hitter_stats(
     player: NormalizedPlayerData,
     config: HorizonConfig,
+    steamer_data: Optional[NormalizedPlayerData] = None,
 ) -> dict[str, float]:
     """Project hitter fantasy category stats for a given horizon.
+
+    When *steamer_data* is supplied, Steamer's projected values replace the
+    homegrown xStats-derived talent signal.  This gives better pre-season
+    projections (Steamer accounts for age curves, role changes, health) while
+    preserving the blend-with-actuals logic for mid-season use.
 
     Returns a flat dict keyed by fantasy category / stat name, all scaled to
     the horizon's plate-appearance volume.  Rate stats (AVG, OBP, SLG, OPS)
@@ -131,50 +168,55 @@ def project_hitter_stats(
 
     # ── Rate stats ──────────────────────────────────────────────────────────
 
-    # AVG: xBA is the expected batting average — best talent predictor
-    proj_avg = _blend(
-        _safe(adv, "xBA") or None,
-        _safe(rate, "AVG") or None,
-        tw, aw, default=0.250,
+    # AVG: Steamer projected AVG > xBA (already regressed + age-adjusted)
+    talent_avg: Optional[float] = (
+        _steamer_rate(steamer_data, "AVG")
+        or (_safe(adv, "xBA") or None)
     )
+    proj_avg = _blend(talent_avg, _safe(rate, "AVG") or None, tw, aw, default=0.250)
     proj_avg = max(0.100, min(0.400, proj_avg))
 
-    # OBP: derive from xwOBA (wOBA ≈ 1.21 * OBP + 0.04, so OBP ≈ (wOBA − 0.04) / 1.21)
-    xwoba = adv.get("xwOBA")
-    talent_obp: Optional[float] = ((float(xwoba) - 0.04) / 1.21) if xwoba is not None else None
-    proj_obp = _blend(
-        talent_obp,
-        _safe(rate, "OBP") or None,
-        tw, aw, default=0.315,
-    )
-    proj_obp = max(proj_avg, min(0.500, proj_obp))  # OBP must be ≥ AVG
+    # OBP: Steamer projected OBP, else derive from xwOBA
+    talent_obp: Optional[float] = _steamer_rate(steamer_data, "OBP")
+    if talent_obp is None:
+        xwoba = adv.get("xwOBA")
+        talent_obp = ((float(xwoba) - 0.04) / 1.21) if xwoba is not None else None
+    proj_obp = _blend(talent_obp, _safe(rate, "OBP") or None, tw, aw, default=0.315)
+    proj_obp = max(proj_avg, min(0.500, proj_obp))
 
-    # SLG: xSLG is the direct talent signal
-    proj_slg = _blend(
-        adv.get("xSLG"),
-        _safe(rate, "SLG") or None,
-        tw, aw, default=0.400,
+    # SLG: Steamer projected SLG > xSLG
+    talent_slg: Optional[float] = (
+        _steamer_rate(steamer_data, "SLG")
+        or adv.get("xSLG")
     )
-    proj_slg = max(proj_avg, min(0.900, proj_slg))  # SLG must be ≥ AVG
+    proj_slg = _blend(talent_slg, _safe(rate, "SLG") or None, tw, aw, default=0.400)
+    proj_slg = max(proj_avg, min(0.900, proj_slg))
 
     proj_ops = proj_obp + proj_slg
 
     # ── Per-PA rates for counting stats ─────────────────────────────────────
 
-    # HR rate: Barrel% * 0.35 converts barrel% to HR/PA (roughly 35% of barrels = HR)
-    barrel_pct = _safe(adv, "Barrel%") / 100.0  # stored as 0–100 percent
-    talent_hr_rate = barrel_pct * 0.35
+    # HR rate: Steamer HR/PA > Barrel%-derived estimate
+    talent_hr_rate: float = (
+        _steamer_count_per(steamer_data, "HR", "PA")
+        or (_safe(adv, "Barrel%") / 100.0 * 0.35)
+    )
     actual_hr_rate = _safe(cnt, "HR") / season_pa
     proj_hr_rate = max(0.0, _blend(talent_hr_rate, actual_hr_rate, tw, aw, default=0.033))
 
-    # SB rate: Spd score (0–10) predicts steals; 3.5 is roughly replacement-level speed
-    spd = _safe(adv, "Spd", default=4.5)
-    talent_sb_rate = max(0.0, (spd - 3.5) * 0.012)
+    # SB rate: Steamer SB/PA > Spd-score estimate
+    talent_sb_rate: float = (
+        _steamer_count_per(steamer_data, "SB", "PA")
+        or max(0.0, (_safe(adv, "Spd", default=4.5) - 3.5) * 0.012)
+    )
     actual_sb_rate = _safe(cnt, "SB") / season_pa
     proj_sb_rate = max(0.0, _blend(talent_sb_rate, actual_sb_rate, tw, aw, default=0.010))
 
-    # BB rate: BB% is stored as a decimal (0.10 = 10%), very stable year-to-year
-    talent_bb_pct = _safe(rate, "BB%", default=0.08)
+    # BB rate: Steamer BB/PA > actual BB%
+    talent_bb_pct: float = (
+        _steamer_count_per(steamer_data, "BB", "PA")
+        or _safe(rate, "BB%", default=0.08)
+    )
     actual_bb_pct = _safe(cnt, "BB") / season_pa
     proj_bb_pct = max(0.03, min(0.25, _blend(talent_bb_pct, actual_bb_pct, tw, aw, default=0.08)))
 
@@ -218,8 +260,12 @@ def project_pitcher_stats(
     player: NormalizedPlayerData,
     config: HorizonConfig,
     is_sp: bool,
+    steamer_data: Optional[NormalizedPlayerData] = None,
 ) -> dict[str, float]:
     """Project pitcher fantasy category stats for a given horizon.
+
+    When *steamer_data* is supplied, Steamer's projected ERA/K9/WHIP replace
+    the homegrown xERA/SwStr% talent derivations.
 
     IP is set directly from the horizon config (sp_ip or rp_ip) — this is the
     key mechanism that naturally bounds reliever upside relative to starters.
@@ -233,56 +279,55 @@ def project_pitcher_stats(
 
     season_ip = max(_safe(cnt, "IP", 0.1), 0.1)
 
-    # ── ERA (ensemble of regressed ERA estimators) ───────────────────────────
-    era_estimates = [
-        float(adv[k]) for k in ("xERA", "SIERA", "xFIP")
-        if adv.get(k) is not None
-    ]
-    talent_era: Optional[float] = (sum(era_estimates) / len(era_estimates)) if era_estimates else None
-    proj_era = _blend(
-        talent_era,
-        _safe(rate, "ERA") or None,
-        tw, aw, default=4.00,
-    )
+    # ── ERA ───────────────────────────────────────────────────────────────────
+    # Steamer ERA > ensemble of xERA/SIERA/xFIP
+    talent_era: Optional[float] = _steamer_rate(steamer_data, "ERA")
+    if talent_era is None:
+        era_estimates = [
+            float(adv[k]) for k in ("xERA", "SIERA", "xFIP")
+            if adv.get(k) is not None
+        ]
+        talent_era = (sum(era_estimates) / len(era_estimates)) if era_estimates else None
+    proj_era = _blend(talent_era, _safe(rate, "ERA") or None, tw, aw, default=4.00)
     proj_era = max(0.50, min(9.0, proj_era))
 
-    # ── K/9 (SwStr% is the strongest per-pitch strikeout predictor) ──────────
-    # Approximation derived from FanGraphs research: K% ≈ 2.3 × SwStr% + 0.04
-    # K/9 = K% × 27  (27 outs = 9 innings, ignoring walks for this approximation)
-    swstr = _safe(adv, "SwStr%", default=0.10)
-    talent_k_pct = min(0.45, 2.3 * swstr + 0.04)
-    talent_k9 = talent_k_pct * 27.0
-    proj_k9 = _blend(
-        talent_k9,
-        _safe(rate, "K/9") or None,
-        tw, aw, default=8.0,
-    )
+    # ── K/9 ───────────────────────────────────────────────────────────────────
+    # Steamer K/9 > SwStr%-derived estimate
+    talent_k9: Optional[float] = _steamer_rate(steamer_data, "K/9")
+    if talent_k9 is None:
+        swstr = _safe(adv, "SwStr%", default=0.10)
+        talent_k_pct = min(0.45, 2.3 * swstr + 0.04)
+        talent_k9 = talent_k_pct * 27.0
+    proj_k9 = _blend(talent_k9, _safe(rate, "K/9") or None, tw, aw, default=8.0)
     proj_k9 = max(3.0, min(18.0, proj_k9))
 
-    # ── BB/9 (command is among the stickiest pitcher skills) ─────────────────
-    # Use actual BB/9 directly — it's already a reliable talent proxy
-    proj_bb9 = max(0.5, min(8.0, _safe(rate, "BB/9", default=3.0)))
+    # ── BB/9 ──────────────────────────────────────────────────────────────────
+    talent_bb9: Optional[float] = _steamer_rate(steamer_data, "BB/9")
+    proj_bb9 = max(0.5, min(8.0, talent_bb9 or _safe(rate, "BB/9", default=3.0)))
 
-    # ── WHIP (ERA-correlated; blend with actual WHIP) ────────────────────────
-    # Rough linear: WHIP ≈ 0.22 × ERA + 0.55
-    talent_whip = 0.22 * proj_era + 0.55
-    proj_whip = _blend(
-        talent_whip,
-        _safe(rate, "WHIP") or None,
-        tw, aw, default=1.28,
-    )
+    # ── WHIP ──────────────────────────────────────────────────────────────────
+    talent_whip: Optional[float] = _steamer_rate(steamer_data, "WHIP")
+    if talent_whip is None:
+        talent_whip = 0.22 * proj_era + 0.55
+    proj_whip = _blend(talent_whip, _safe(rate, "WHIP") or None, tw, aw, default=1.28)
     proj_whip = max(0.60, min(3.0, proj_whip))
 
     # ── Counting stats scaled to horizon IP ──────────────────────────────────
 
     proj_k = proj_k9 / 9.0 * ip
 
-    # W/SV/HLD: role- and team-context-dependent; scale from actual rates.
-    # SPs never accumulate saves or holds — zero them out even if they had a
-    # bullpen stint earlier in the season (e.g. Bubba Chandler with early saves).
-    proj_w   = (_safe(cnt, "W")   / season_ip) * ip
-    proj_sv  = 0.0 if is_sp else (_safe(cnt, "SV")  / season_ip) * ip
-    proj_hld = 0.0 if is_sp else (_safe(cnt, "HLD") / season_ip) * ip
+    # W/SV/HLD: Steamer already accounts for role, team context, and opener risk.
+    # Use Steamer per-IP rates when available; fall back to scaling YTD actuals.
+    # SPs never accumulate saves or holds.
+    if steamer_data:
+        steamer_ip = max(_safe(steamer_data.counting_stats, "IP", 0.1), 0.1)
+        proj_w   = (_safe(steamer_data.counting_stats, "W",   0.0) / steamer_ip) * ip
+        proj_sv  = 0.0 if is_sp else (_safe(steamer_data.counting_stats, "SV",  0.0) / steamer_ip) * ip
+        proj_hld = 0.0 if is_sp else (_safe(steamer_data.counting_stats, "HLD", 0.0) / steamer_ip) * ip
+    else:
+        proj_w   = (_safe(cnt, "W")   / season_ip) * ip
+        proj_sv  = 0.0 if is_sp else (_safe(cnt, "SV")  / season_ip) * ip
+        proj_hld = 0.0 if is_sp else (_safe(cnt, "HLD") / season_ip) * ip
 
     # QS: SP only; tiered by projected ERA
     if is_sp:

@@ -202,26 +202,30 @@ class ScoringEngine:
         week: Optional[int] = None,
         players: Optional[list[NormalizedPlayerData]] = None,
         horizon: ProjectionHorizon = ProjectionHorizon.SEASON,
+        steamer_lookup: Optional[dict[int, NormalizedPlayerData]] = None,
     ) -> list[PlayerRanking]:
         """Rank players by expected future performance using category projection.
 
         Instead of z-scoring advanced metrics directly, this method:
           1. Projects each player's expected fantasy category stats (HR, SB, K, ERA…)
-             using their advanced metrics as talent signals blended with YTD actuals.
+             using Steamer projections as the talent signal (when available) blended
+             with YTD actuals, falling back to xStats-derived estimates otherwise.
           2. Scales projected counting stats to the horizon's PA/IP volume — this
              naturally bounds reliever upside (62 IP season vs 170 IP for SPs).
           3. Z-scores the *projected category stats* through the same pipeline as
              the lookback model, making the two ranking modes directly comparable.
 
-        This fixes the core problem with the old direct-advanced-metric approach:
-        a closer's elite K-BB% z-score no longer competes with an elite hitter's
-        xwOBA z-score on the same scale, because both are now measured by their
-        expected contribution to the categories you actually score in.
+        ``steamer_lookup``: optional dict mapping player_id → NormalizedPlayerData
+        loaded from the season+1 Steamer rows in PlayerStats.  When provided, the
+        projection functions substitute Steamer's ERA/K9/AVG/OBP/etc. for the
+        homegrown xStats derivations, giving better pre-season projections that
+        already embed age curves, role context, and regression-to-mean.
         """
         if players is None:
             players = self.adapter.fetch_player_data(season, week)
 
         config = HORIZON_CONFIGS[horizon]
+        sl = steamer_lookup or {}
 
         batters = [p for p in players if p.stat_type == "batting"]
         # SP takes priority: a player with both SP+RP in their positions (e.g. a
@@ -239,7 +243,7 @@ class ScoringEngine:
         ]
 
         batter_rankings = self._score_category_projection(
-            batters, config, self.hitting_cats, is_sp=None,
+            batters, config, self.hitting_cats, is_sp=None, steamer_lookup=sl,
         )
         # Score all pitchers in ONE combined pool so that volume differences
         # (SP 170 IP vs RP 62 IP) create real z-score variance in IP and K.
@@ -247,7 +251,8 @@ class ScoringEngine:
         # for everyone, erasing the starter volume advantage entirely.
         all_pitchers = starters + relievers + unknown_pitchers
         pitcher_rankings = self._score_category_projection(
-            all_pitchers, config, self.pitching_cats, is_sp=None, detect_pitcher_role=True,
+            all_pitchers, config, self.pitching_cats, is_sp=None,
+            detect_pitcher_role=True, steamer_lookup=sl,
         )
 
         all_rankings = batter_rankings + pitcher_rankings
@@ -375,11 +380,13 @@ class ScoringEngine:
         categories: list[str],
         is_sp: Optional[bool],
         detect_pitcher_role: bool = False,
+        steamer_lookup: Optional[dict[int, NormalizedPlayerData]] = None,
     ) -> list[PlayerRanking]:
         """Score players by projecting category stats then z-scoring those projections.
 
         This is the engine behind ``compute_predictive_rankings``.  The flow is:
-          1. Call projection module to get expected counting/rate stats per player.
+          1. Call projection module to get expected counting/rate stats per player,
+             using Steamer projections as the talent signal when available.
           2. Run the same z-score loop as ``_score_lookback`` on the projected values.
           3. Return PlayerRanking objects with category_contributions keyed by
              fantasy category name — directly comparable to lookback contributions.
@@ -392,17 +399,20 @@ class ScoringEngine:
         if not players or not categories:
             return []
 
+        sl = steamer_lookup or {}
+
         # Step 1: Project stats for each player into flat dicts
         projected: list[dict[str, float]] = []
         for p in players:
+            steamer = sl.get(p.player_id)
             if is_sp is None and not detect_pitcher_role:
-                projected.append(project_hitter_stats(p, config))
+                projected.append(project_hitter_stats(p, config, steamer_data=steamer))
             elif detect_pitcher_role:
                 # Combined pitcher pool: each player uses their own role's IP volume
                 player_is_sp = "SP" in p.positions
-                projected.append(project_pitcher_stats(p, config, is_sp=player_is_sp))
+                projected.append(project_pitcher_stats(p, config, is_sp=player_is_sp, steamer_data=steamer))
             else:
-                projected.append(project_pitcher_stats(p, config, is_sp=is_sp))
+                projected.append(project_pitcher_stats(p, config, is_sp=is_sp, steamer_data=steamer))
 
         # Step 2: Extract per-category raw values from projected dicts
         cat_values: dict[str, list[Optional[float]]] = {}

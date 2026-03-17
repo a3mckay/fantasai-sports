@@ -138,14 +138,22 @@ def fetch_steamer_batting(season: int = 2026) -> list[NormalizedPlayerData]:
         if not pid_raw:
             continue
         try:
-            player_id = int(str(pid_raw).split(",")[0])
+            raw_id = str(pid_raw).split(",")[0].strip()
+            # MiLB / prospect IDs use a "sa" prefix (e.g. "sa3022895").
+            # Strip it and use the numeric part — these numbers are in the
+            # 3,000,000+ range and never collide with FanGraphs integer IDs
+            # (which top out around 25,000 for current players).
+            if raw_id.startswith("sa"):
+                player_id = int(raw_id[2:])
+            else:
+                player_id = int(raw_id)
         except (ValueError, TypeError):
             continue
 
         if player_id in seen:
             continue
 
-        # Skip players with very few projected PA (noise / minor leaguers)
+        # Skip players with very few projected PA (noise / non-roster noise)
         pa = _safe_float(row.get("PA"))
         if pa is None or pa < 50:
             continue
@@ -235,7 +243,11 @@ def fetch_steamer_pitching(season: int = 2026) -> list[NormalizedPlayerData]:
         if not pid_raw:
             continue
         try:
-            player_id = int(str(pid_raw).split(",")[0])
+            raw_id = str(pid_raw).split(",")[0].strip()
+            if raw_id.startswith("sa"):
+                player_id = int(raw_id[2:])
+            else:
+                player_id = int(raw_id)
         except (ValueError, TypeError):
             continue
 

@@ -101,6 +101,7 @@ def _compute_rankings(
     from fantasai.adapters.mlb import MLBAdapter
     from fantasai.models.player import Player
 
+    # ── Load 2025 YTD actual stats ──────────────────────────────────────────
     stats_rows = db.query(PlayerStats).filter(
         PlayerStats.season == 2025,
         PlayerStats.stat_type.in_(["batting", "pitching"]),
@@ -109,8 +110,8 @@ def _compute_rankings(
     if not stats_rows:
         return [], []
 
-    # Batch-load all players in one query (avoids N+1 round trips)
-    stat_player_ids = [s.player_id for s in stats_rows]
+    # Batch-load all players referenced by stats (avoids N+1 round trips)
+    stat_player_ids = {s.player_id for s in stats_rows}
     player_map = {
         p.player_id: p
         for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
@@ -137,10 +138,55 @@ def _compute_rankings(
     if not players:
         return [], []
 
+    # ── Load 2026 Steamer projections as the forward-looking talent signal ──
+    # These replace the homegrown xStats-derived talent estimates in the
+    # predictive blend, giving better age-curve / role-context signals.
+    # Also include Steamer-only players (prospects / MiLB) who have no 2025
+    # YTD rows — they participate in predictive rankings only.
+    steamer_rows = db.query(PlayerStats).filter(
+        PlayerStats.season == 2026,
+        PlayerStats.stat_type.in_(["batting", "pitching"]),
+    ).all()
+
+    steamer_lookup: dict[int, NormalizedPlayerData] = {}
+    ytd_player_ids = {p.player_id for p in players}
+
+    # Batch-load all Steamer player rows we don't already have
+    steamer_player_ids = {s.player_id for s in steamer_rows} - ytd_player_ids
+    extra_player_map = {
+        p.player_id: p
+        for p in db.query(Player).filter(Player.player_id.in_(steamer_player_ids)).all()
+    }
+    # Merge with already-loaded player_map
+    full_player_map = {**player_map, **extra_player_map}
+
+    for stats in steamer_rows:
+        player = full_player_map.get(stats.player_id)
+        if not player:
+            continue
+        nd = NormalizedPlayerData(
+            player_id=stats.player_id,
+            name=player.name,
+            team=player.team,
+            positions=player.positions or [],
+            stat_type=stats.stat_type,
+            counting_stats=stats.counting_stats or {},
+            rate_stats=stats.rate_stats or {},
+            advanced_stats=stats.advanced_stats or {},
+        )
+        steamer_lookup[stats.player_id] = nd
+        # Add Steamer-only players (prospects) to the predictive player pool.
+        # They have no 2025 YTD actuals — the projection functions will fall
+        # back entirely to the Steamer talent signal.
+        if stats.player_id not in ytd_player_ids:
+            players.append(nd)
+
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
-    predictive = engine.compute_predictive_rankings(2025, players=players, horizon=horizon)
+    predictive = engine.compute_predictive_rankings(
+        2025, players=players, horizon=horizon, steamer_lookup=steamer_lookup,
+    )
 
     # Deduplicate: two-way players (e.g. Ohtani) have both batting and pitching
     # rows, producing two ranking entries with the same player_id. Keep the
