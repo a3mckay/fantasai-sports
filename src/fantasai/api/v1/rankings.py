@@ -195,3 +195,17 @@ def sync_projections(
 
     upserted = sync_steamer_projections(db, season=season)
     return {"season": season, "rows_upserted": upserted, "status": "ok"}
+
+
+@router.post("/clear-cache")
+def clear_rankings_cache() -> dict:
+    """Bust the in-process rankings cache immediately.
+
+    The next request to any endpoint that calls _compute_rankings will
+    recompute from the DB (takes a few seconds).  Useful after a code deploy
+    or data sync when you don't want to wait out the 30-minute TTL.
+    """
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    n = len(_RANKINGS_CACHE)
+    _RANKINGS_CACHE.clear()
+    return {"cleared": n, "status": "ok"}
