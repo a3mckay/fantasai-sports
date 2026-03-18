@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import date
+from typing import Any, Optional
 
 
 @dataclass
@@ -21,6 +22,16 @@ class NormalizedPlayerData:
     # Birth year derived from the Age column in source data (season - age).
     # Used for keeper-league future-value multipliers.
     birth_year: int | None = None
+    # Injury / availability fields — merged in by _compute_rankings from DB.
+    # injury_status: current IL status ("active", "il_10", "il_60",
+    #                "day_to_day", "out_for_season")
+    # injury_return_date: expected first eligible date back (None = unknown)
+    # risk_flag: chronic/structural risk profile ("fragile", "recent_surgery")
+    # risk_note: human-readable note ("Shoulder surgery recovery")
+    injury_status: str = "active"
+    injury_return_date: Optional[date] = None
+    risk_flag: Optional[str] = None
+    risk_note: Optional[str] = None
 
 
 class SportAdapter(ABC):

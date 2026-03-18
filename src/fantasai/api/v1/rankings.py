@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from fantasai.api.deps import get_db
@@ -152,9 +153,233 @@ def list_rankings(
             raw_score=r.raw_score,
             category_contributions=r.category_contributions,
             blurb=blurb_map.get(r.player_id),
+            injury_status=r.injury_status,
+            risk_flag=r.risk_flag,
+            risk_note=r.risk_note,
         )
         for r in rankings
     ]
+
+
+# ---------------------------------------------------------------------------
+# Admin: cache management
+# ---------------------------------------------------------------------------
+
+
+@router.post("/clear-cache", tags=["admin"])
+def clear_rankings_cache() -> dict:
+    """Clear the in-process rankings cache, forcing a fresh compute on next request."""
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    n = len(_RANKINGS_CACHE)
+    _RANKINGS_CACHE.clear()
+    return {"cleared": n, "status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Admin: injury management
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sync-injuries", tags=["admin"])
+def sync_injuries(db: Session = Depends(get_db)) -> dict:
+    """Fetch current MLB IL data from the MLB Stats API and upsert into injury_records.
+
+    Iterates all 30 MLB teams, fetches each team's injured-list roster, and
+    cross-references players by mlbam_id.  Safe to re-run; existing records are
+    updated in-place.  Call ``POST /rankings/clear-cache`` after syncing to
+    have the new status reflected immediately.
+    """
+    import httpx
+    from datetime import datetime, timezone
+    from fantasai.models.player import InjuryRecord, Player
+
+    synced = 0
+    not_found = 0
+    errors: list[str] = []
+
+    try:
+        teams_resp = httpx.get(
+            "https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1, "season": 2026},
+            timeout=15.0,
+        )
+        teams_resp.raise_for_status()
+        teams = teams_resp.json().get("teams", [])
+    except Exception as exc:
+        return {"error": f"Failed to fetch teams: {exc}", "synced": 0}
+
+    # Build mlbam_id → player_id lookup (batch)
+    all_players = db.query(Player).filter(Player.mlbam_id.isnot(None)).all()
+    mlbam_map: dict[int, int] = {p.mlbam_id: p.player_id for p in all_players}  # type: ignore[index]
+
+    now_utc = datetime.now(timezone.utc)
+
+    for team in teams:
+        team_id = team.get("id")
+        if not team_id:
+            continue
+        try:
+            il_resp = httpx.get(
+                f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
+                params={"rosterType": "injuredList", "season": 2026},
+                timeout=10.0,
+            )
+            il_resp.raise_for_status()
+            roster = il_resp.json().get("roster", [])
+        except Exception as exc:
+            errors.append(f"team {team_id}: {exc}")
+            continue
+
+        for entry in roster:
+            mlbam_id = entry.get("person", {}).get("id")
+            if not mlbam_id:
+                continue
+
+            player_id = mlbam_map.get(mlbam_id)
+            if not player_id:
+                not_found += 1
+                continue
+
+            status_desc = entry.get("status", {}).get("description", "")
+            if "60" in status_desc:
+                status = "il_60"
+            elif "10" in status_desc or "15" in status_desc:
+                status = "il_10"
+            else:
+                status = "day_to_day"
+
+            injury_note = (
+                entry.get("note")
+                or entry.get("injuryDescription")
+                or status_desc
+                or None
+            )
+
+            existing = db.query(InjuryRecord).filter(
+                InjuryRecord.player_id == player_id
+            ).first()
+            if existing:
+                existing.status = status
+                existing.injury_description = injury_note
+                existing.fetched_at = now_utc
+            else:
+                db.add(InjuryRecord(
+                    player_id=player_id,
+                    status=status,
+                    injury_description=injury_note,
+                    fetched_at=now_utc,
+                ))
+            synced += 1
+
+    db.commit()
+
+    # Bust the rankings cache so changes take effect immediately
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    _RANKINGS_CACHE.clear()
+
+    return {
+        "synced": synced,
+        "not_found_in_db": not_found,
+        "team_errors": errors,
+        "status": "ok",
+    }
+
+
+class InjuryOverrideBody(BaseModel):
+    """Request body for manually setting a player's current injury status."""
+    player_id: int
+    status: str  # "il_10" | "il_60" | "day_to_day" | "out_for_season" | "active"
+    return_date: Optional[str] = None   # ISO date string: "2026-07-01"
+    injury_description: Optional[str] = None
+
+
+class RiskFlagBody(BaseModel):
+    """Request body for setting a player's chronic risk flag."""
+    player_id: int
+    risk_flag: Optional[str] = None   # "fragile" | "recent_surgery" | null to clear
+    risk_note: Optional[str] = None
+
+
+@router.post("/set-injury", tags=["admin"])
+def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
+    """Manually set or clear a player's current injury status.
+
+    Use this for spring-training injuries (not yet in the MLB Stats API IL),
+    or to set precise return dates that the API doesn't provide.
+    Setting status="active" removes the injury record entirely.
+    """
+    from datetime import date as _date, datetime, timezone
+    from fantasai.models.player import InjuryRecord, Player
+
+    player = db.get(Player, body.player_id)
+    if not player:
+        raise HTTPException(status_code=404, detail=f"Player {body.player_id} not found")
+
+    if body.status == "active":
+        # Clear any existing injury record
+        db.query(InjuryRecord).filter(InjuryRecord.player_id == body.player_id).delete()
+    else:
+        return_date = None
+        if body.return_date:
+            try:
+                return_date = _date.fromisoformat(body.return_date)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="return_date must be ISO format: YYYY-MM-DD")
+
+        existing = db.query(InjuryRecord).filter(
+            InjuryRecord.player_id == body.player_id
+        ).first()
+        if existing:
+            existing.status = body.status
+            existing.return_date = return_date
+            existing.injury_description = body.injury_description
+            existing.fetched_at = datetime.now(timezone.utc)
+        else:
+            db.add(InjuryRecord(
+                player_id=body.player_id,
+                status=body.status,
+                return_date=return_date,
+                injury_description=body.injury_description,
+                fetched_at=datetime.now(timezone.utc),
+            ))
+
+    db.commit()
+
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    _RANKINGS_CACHE.clear()
+
+    return {"player_id": body.player_id, "status": body.status, "ok": True}
+
+
+@router.post("/set-risk-flag", tags=["admin"])
+def set_risk_flag(body: RiskFlagBody, db: Session = Depends(get_db)) -> dict:
+    """Set or clear a player's chronic injury risk flag.
+
+    risk_flag values:
+      "fragile"        — chronically injury-prone: 0.70× PA/IP (Glasnow, Seager)
+      "recent_surgery" — post-surgery risk: 0.80× PA/IP (Wheeler)
+      null / ""        — clear the flag (player is healthy profile)
+    """
+    from fantasai.models.player import Player
+
+    player = db.get(Player, body.player_id)
+    if not player:
+        raise HTTPException(status_code=404, detail=f"Player {body.player_id} not found")
+
+    player.risk_flag = body.risk_flag or None
+    player.risk_note = body.risk_note or None
+    db.commit()
+
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    _RANKINGS_CACHE.clear()
+
+    return {
+        "player_id": body.player_id,
+        "name": player.name,
+        "risk_flag": player.risk_flag,
+        "risk_note": player.risk_note,
+        "ok": True,
+    }
 
 
 # ---------------------------------------------------------------------------

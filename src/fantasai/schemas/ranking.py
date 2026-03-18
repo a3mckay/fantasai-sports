@@ -32,3 +32,7 @@ class PlayerRankingRead(BaseModel):
     raw_score: float
     category_contributions: dict[str, float]
     blurb: Optional[str] = None
+    # Injury / risk fields for display in the UI.
+    injury_status: str = "active"
+    risk_flag: Optional[str] = None
+    risk_note: Optional[str] = None

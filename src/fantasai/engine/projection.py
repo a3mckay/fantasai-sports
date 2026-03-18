@@ -19,6 +19,7 @@ future enhancement; the HorizonConfig dataclass has a slot reserved for that.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -139,6 +140,84 @@ def _safe(d: dict, key: str, default: float = 0.0) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Injury / availability discount
+# ---------------------------------------------------------------------------
+
+# Risk-flag multipliers applied to projected PA / IP.
+# These represent realistic full-season expectations vs. Steamer's optimistic
+# assumption of full health:
+#   "fragile"        → historically misses 25-35% of the season (Glasnow, Seager).
+#                      0.70× gives ~119 IP for Glasnow (vs Steamer 170) — still
+#                      elite if healthy, but not pretending he'll pitch a full year.
+#   "recent_surgery" → coming back from major surgery; 80% of Steamer is a
+#                      conservative-but-not-punitive haircut (Wheeler: 136 IP).
+_RISK_FLAG_MULTIPLIER: dict[str, float] = {
+    "fragile": 0.70,
+    "recent_surgery": 0.80,
+}
+
+# 2026 season window used for availability calculation.
+# April 1 → October 1 = 183 days.  Adjust here if the projection year changes.
+_SEASON_START = date(2026, 4, 1)
+_SEASON_END   = date(2026, 10, 1)
+_SEASON_DAYS  = (_SEASON_END - _SEASON_START).days  # 183
+
+
+def _availability_multiplier(player: NormalizedPlayerData, config: HorizonConfig) -> float:
+    """Return a 0.0–1.0 playing-time multiplier reflecting injury/risk discounts.
+
+    Two independent factors are multiplied together:
+
+    1. **Risk-flag discount** (chronic or structural risk):
+       Applied even when the player is not currently on the IL.  Reduces the
+       effective PA/IP cap by _RISK_FLAG_MULTIPLIER[risk_flag].
+
+    2. **Current IL availability** (on the IL right now):
+       For SEASON horizon: computes the fraction of the season a player can
+       contribute based on their expected return date vs. the season window.
+       For WEEK/MONTH: zeros out any player who won't be back within that window.
+       When return_date is unknown, falls back to a conservative estimate.
+    """
+    risk_mult = _RISK_FLAG_MULTIPLIER.get(player.risk_flag or "", 1.0)
+
+    status = player.injury_status
+    if status == "active":
+        il_mult = 1.0
+    elif status == "out_for_season":
+        il_mult = 0.0
+    else:
+        return_date = player.injury_return_date
+        if return_date is None:
+            # Conservative estimate when no return date is known
+            il_mult = 0.05 if status == "il_60" else 0.25
+        else:
+            today = date.today()
+            if config == HORIZON_CONFIGS[ProjectionHorizon.WEEK]:
+                horizon_end = today + timedelta(days=7)
+                if return_date >= horizon_end:
+                    il_mult = 0.0
+                else:
+                    available = max(0, (horizon_end - max(return_date, today)).days)
+                    il_mult = available / 7.0
+            elif config == HORIZON_CONFIGS[ProjectionHorizon.MONTH]:
+                horizon_end = today + timedelta(days=30)
+                if return_date >= horizon_end:
+                    il_mult = 0.0
+                else:
+                    available = max(0, (horizon_end - max(return_date, today)).days)
+                    il_mult = available / 30.0
+            else:  # SEASON
+                if return_date >= _SEASON_END:
+                    il_mult = 0.0
+                else:
+                    effective_start = max(return_date, _SEASON_START)
+                    available_days = max(0, (_SEASON_END - effective_start).days)
+                    il_mult = available_days / _SEASON_DAYS
+
+    return risk_mult * il_mult
+
+
+# ---------------------------------------------------------------------------
 # Hitter projection
 # ---------------------------------------------------------------------------
 
@@ -180,6 +259,12 @@ def project_hitter_stats(
     else:
         _consensus_pa = pa
     effective_pa = min(pa, float(_consensus_pa))
+
+    # Apply injury / availability discount to effective playing time.
+    # This handles both current IL (Hunter Greene) and chronic fragility
+    # risk flags (Glasnow 0.70×, Wheeler 0.80×).  Rate stats (AVG, OBP,
+    # SLG, OPS) are unaffected — we're only discounting volume, not skill.
+    effective_pa *= _availability_multiplier(player, config)
 
     # ── Rate stats ──────────────────────────────────────────────────────────
 
@@ -306,7 +391,12 @@ def project_pitcher_stats(
     rate = player.rate_stats
     cnt = player.counting_stats
     tw, aw = config.talent_weight, config.actual_weight
-    ip = config.sp_ip if is_sp else config.rp_ip
+
+    # Apply injury/availability discount to IP volume before any rate scaling.
+    # Risk flags (Glasnow "fragile" → 0.70×) and current IL (return_date →
+    # fraction of season available) both reduce the IP ceiling here, keeping
+    # rate stats (ERA, WHIP, K/9) unaffected while docking counting stats.
+    ip = (config.sp_ip if is_sp else config.rp_ip) * _availability_multiplier(player, config)
 
     season_ip = max(_safe(cnt, "IP", 0.1), 0.1)
 

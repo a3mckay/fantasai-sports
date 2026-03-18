@@ -357,6 +357,27 @@ export default function Rankings() {
                         {player.team && (
                           <span className="text-xs text-slate-500 hidden sm:inline">({player.team})</span>
                         )}
+                        {/* Current IL badge */}
+                        {player.injury_status && player.injury_status !== 'active' && (
+                          <span
+                            className="text-[10px] font-semibold text-red-400 bg-red-950/60 border border-red-800/50 rounded px-1 py-0.5 leading-none"
+                            title={player.risk_note || player.injury_status.replace('_', ' ').toUpperCase()}
+                          >
+                            ⚠ {player.injury_status === 'il_60' ? 'IL60'
+                               : player.injury_status === 'il_10' ? 'IL10'
+                               : player.injury_status === 'out_for_season' ? 'OUT'
+                               : 'DTD'}
+                          </span>
+                        )}
+                        {/* Chronic risk flag (only shown when NOT on IL — avoid double-badging) */}
+                        {(!player.injury_status || player.injury_status === 'active') && player.risk_flag && (
+                          <span
+                            className="text-[10px] font-semibold text-amber-400 bg-amber-950/40 border border-amber-800/40 rounded px-1 py-0.5 leading-none"
+                            title={player.risk_note || (player.risk_flag === 'fragile' ? 'Injury-prone history' : 'Post-surgery risk')}
+                          >
+                            ⚠
+                          </span>
+                        )}
                       </div>
                       <Blurb text={player.blurb} />
                       {isExpanded && hasCats && (

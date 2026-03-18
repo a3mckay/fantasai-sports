@@ -181,6 +181,24 @@ def _compute_rankings(
         if stats.player_id not in ytd_player_ids:
             players.append(nd)
 
+    # ── Merge injury / risk-flag data into NormalizedPlayerData ────────────
+    # InjuryRecord holds current IL status; Player.risk_flag holds chronic
+    # risk profiles.  Both are set via POST /rankings/set-injury|set-risk-flag.
+    from fantasai.models.player import InjuryRecord
+    injury_records: dict[int, InjuryRecord] = {
+        ir.player_id: ir
+        for ir in db.query(InjuryRecord).all()
+    }
+    for nd in players:
+        db_player = full_player_map.get(nd.player_id)
+        if db_player:
+            nd.risk_flag = db_player.risk_flag
+            nd.risk_note = db_player.risk_note
+        ir = injury_records.get(nd.player_id)
+        if ir:
+            nd.injury_status = ir.status
+            nd.injury_return_date = ir.return_date
+
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
@@ -211,11 +229,20 @@ def _compute_projection_rankings(
     categories: list[str],
     projection_season: int = 2026,
 ) -> list:
-    """Compute lookback-style rankings from Steamer projection rows (season=2026).
+    """Compute predictive rankings from consensus projection rows (season=2026).
 
-    Used by keeper evaluation to produce forward-looking scores. Runs the
-    standard lookback scorer on Steamer stat rows, which already represent
-    full-season projections — no z-score blending needed.
+    Used by keeper evaluation to produce forward-looking scores. Uses the same
+    ``compute_predictive_rankings`` path as the main rankings so that:
+
+    - The ``effective_pa`` cap prevents part-time players with high per-PA rates
+      (e.g. a 60-PA speedster) from inflating the pool mean with phantom counting
+      stats when scaled to a 540-PA season.
+    - SP/RP IP volume bounds are respected (62 IP for RP, 170 IP for SP).
+    - Rate-to-counting-stat projection formulas match the Projected rankings tab.
+
+    The 2026 consensus rows serve as BOTH the player pool and the steamer_lookup
+    (talent signal) so the blend reduces to the projection values directly — there
+    are no 2025 YTD actuals to mix in.
 
     Falls back to an empty list if no projection rows are found for the given
     season (caller should then fall back to _compute_rankings predictive).
@@ -269,11 +296,21 @@ def _compute_projection_rankings(
     if not players:
         return []
 
+    # Build steamer_lookup from the same rows so the projection engine's
+    # talent signal == the projection data (no separate YTD actuals to blend).
+    steamer_lookup = {p.player_id: p for p in players}
+
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
-    # Steamer rows are full-season projections — use the lookback scorer
-    # (z-score on counting/rate stats) so ranking units match the actuals.
-    rankings = engine.compute_lookback_rankings(projection_season, players=players)
+    # Use compute_predictive_rankings so effective_pa capping, SP/RP IP
+    # volume bounds, and rate-to-counting projection formulas all apply —
+    # matching the behaviour of the Projected rankings tab.
+    rankings = engine.compute_predictive_rankings(
+        projection_season,
+        players=players,
+        horizon=ProjectionHorizon.SEASON,
+        steamer_lookup=steamer_lookup,
+    )
 
     seen: dict = {}
     for r in rankings:

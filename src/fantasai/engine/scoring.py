@@ -140,6 +140,10 @@ class PlayerRanking:
     score: float = 0.0
     raw_score: float = 0.0  # before positional scarcity
     category_contributions: dict[str, float] = field(default_factory=dict)
+    # Injury fields — carried through from NormalizedPlayerData for display.
+    injury_status: str = "active"
+    risk_flag: Optional[str] = None
+    risk_note: Optional[str] = None
 
 
 def _get_stat_value(
@@ -474,6 +478,9 @@ class ScoringEngine:
                     score=round(raw_score * scarcity_mult, 3),
                     raw_score=round(raw_score, 3),
                     category_contributions=contributions,
+                    injury_status=getattr(player, "injury_status", "active"),
+                    risk_flag=getattr(player, "risk_flag", None),
+                    risk_note=getattr(player, "risk_note", None),
                 )
             )
 
@@ -549,6 +556,9 @@ class ScoringEngine:
                     score=round(score, 3),
                     raw_score=round(raw_score, 3),
                     category_contributions=contributions,
+                    injury_status=getattr(player, "injury_status", "active"),
+                    risk_flag=getattr(player, "risk_flag", None),
+                    risk_note=getattr(player, "risk_note", None),
                 )
             )
 
@@ -670,6 +680,9 @@ class ScoringEngine:
                     score=round(score, 3),
                     raw_score=round(raw_score, 3),
                     category_contributions=cat_contributions[i],
+                    injury_status=getattr(player, "injury_status", "active"),
+                    risk_flag=getattr(player, "risk_flag", None),
+                    risk_note=getattr(player, "risk_note", None),
                 )
             )
 
