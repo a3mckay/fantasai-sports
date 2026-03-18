@@ -173,6 +173,10 @@ export default function Rankings() {
     })
   }
 
+  // Normalize a string for accent-insensitive search:
+  // "Julio Rodríguez" → "julio rodriguez"
+  const normalize = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
   // Filter by position + search
   const filtered = (activeList ?? []).filter(p => {
     const posOk =
@@ -181,7 +185,7 @@ export default function Rankings() {
       : posFilter === 'Pitchers'                                                 ? p.stat_type === 'pitching'
       : displayPositions(p).some(pos => pos.toUpperCase() === posFilter.toUpperCase())
     const searchOk = !search.trim() ||
-      p.name.toLowerCase().includes(search.toLowerCase().trim())
+      normalize(p.name).includes(normalize(search.trim()))
     return posOk && searchOk
   })
 
