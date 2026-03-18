@@ -296,6 +296,25 @@ def _compute_projection_rankings(
     if not players:
         return []
 
+    # ── Merge injury / risk-flag data (same logic as _compute_rankings) ─────
+    # Without this, _availability_multiplier() always sees risk_flag=None and
+    # injury_status="active", so Glasnow's fragile flag and current IL players
+    # have zero effect on projection-based rankings.
+    from fantasai.models.player import InjuryRecord
+    injury_records_proj: dict[int, InjuryRecord] = {
+        ir.player_id: ir
+        for ir in db.query(InjuryRecord).all()
+    }
+    for nd in players:
+        db_player = player_map.get(nd.player_id)
+        if db_player:
+            nd.risk_flag = db_player.risk_flag
+            nd.risk_note = db_player.risk_note
+        ir = injury_records_proj.get(nd.player_id)
+        if ir:
+            nd.injury_status = ir.status
+            nd.injury_return_date = ir.return_date
+
     # Build steamer_lookup from the same rows so the projection engine's
     # talent signal == the projection data (no separate YTD actuals to blend).
     steamer_lookup = {p.player_id: p for p in players}

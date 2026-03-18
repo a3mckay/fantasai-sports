@@ -300,18 +300,65 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
 
 
 class InjuryOverrideBody(BaseModel):
-    """Request body for manually setting a player's current injury status."""
-    player_id: int
+    """Request body for manually setting a player's current injury status.
+
+    Provide either ``player_id`` (FanGraphs IDfg) or ``player_name`` (partial
+    match, case-insensitive).  ``player_id`` takes precedence when both are given.
+    """
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
     status: str  # "il_10" | "il_60" | "day_to_day" | "out_for_season" | "active"
     return_date: Optional[str] = None   # ISO date string: "2026-07-01"
     injury_description: Optional[str] = None
 
 
 class RiskFlagBody(BaseModel):
-    """Request body for setting a player's chronic risk flag."""
-    player_id: int
+    """Request body for setting a player's chronic risk flag.
+
+    Provide either ``player_id`` (FanGraphs IDfg) or ``player_name`` (partial
+    match, case-insensitive).  ``player_id`` takes precedence when both are given.
+    """
+    player_id: Optional[int] = None
+    player_name: Optional[str] = None
     risk_flag: Optional[str] = None   # "fragile" | "recent_surgery" | null to clear
     risk_note: Optional[str] = None
+
+
+def _resolve_player(db: Session, player_id: Optional[int], player_name: Optional[str]):
+    """Return a Player ORM object from either player_id or a name search.
+
+    Name search is case-insensitive substring match — returns the best single
+    match or raises 404/422 if the name is ambiguous or not found.
+    """
+    from fantasai.models.player import Player
+
+    if player_id is not None:
+        player = db.get(Player, player_id)
+        if not player:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+        return player
+
+    if player_name:
+        name_lower = player_name.strip().lower()
+        # Try exact match first (case-insensitive)
+        rows = db.query(Player).filter(
+            Player.name.ilike(f"%{name_lower}%")
+        ).limit(10).all()
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"No player found matching '{player_name}'")
+        if len(rows) == 1:
+            return rows[0]
+        # Prefer an exact case-insensitive match if there are multiple hits
+        exact = [r for r in rows if r.name.lower() == name_lower]
+        if len(exact) == 1:
+            return exact[0]
+        names = ", ".join(r.name for r in rows[:5])
+        raise HTTPException(
+            status_code=422,
+            detail=f"Ambiguous name '{player_name}' — matched: {names}. Use player_id instead.",
+        )
+
+    raise HTTPException(status_code=422, detail="Provide either player_id or player_name.")
 
 
 @router.post("/set-injury", tags=["admin"])
@@ -321,17 +368,19 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
     Use this for spring-training injuries (not yet in the MLB Stats API IL),
     or to set precise return dates that the API doesn't provide.
     Setting status="active" removes the injury record entirely.
+
+    Pass either ``player_id`` (FanGraphs IDfg) or ``player_name`` (e.g. "Tyler Glasnow").
     """
     from datetime import date as _date, datetime, timezone
-    from fantasai.models.player import InjuryRecord, Player
+    from fantasai.models.player import InjuryRecord
 
-    player = db.get(Player, body.player_id)
-    if not player:
-        raise HTTPException(status_code=404, detail=f"Player {body.player_id} not found")
+    player = _resolve_player(db, body.player_id, body.player_name)
+
+    pid = player.player_id
 
     if body.status == "active":
         # Clear any existing injury record and reset auto-classified risk flag.
-        db.query(InjuryRecord).filter(InjuryRecord.player_id == body.player_id).delete()
+        db.query(InjuryRecord).filter(InjuryRecord.player_id == pid).delete()
         # Only clear auto-classified flags — preserve manual "fragile" flag.
         if player.risk_flag != "fragile":
             player.risk_flag = None
@@ -344,9 +393,7 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
             except ValueError:
                 raise HTTPException(status_code=422, detail="return_date must be ISO format: YYYY-MM-DD")
 
-        existing = db.query(InjuryRecord).filter(
-            InjuryRecord.player_id == body.player_id
-        ).first()
+        existing = db.query(InjuryRecord).filter(InjuryRecord.player_id == pid).first()
         if existing:
             existing.status = body.status
             existing.return_date = return_date
@@ -354,7 +401,7 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
             existing.fetched_at = datetime.now(timezone.utc)
         else:
             db.add(InjuryRecord(
-                player_id=body.player_id,
+                player_id=pid,
                 status=body.status,
                 return_date=return_date,
                 injury_description=body.injury_description,
@@ -378,7 +425,8 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
     _RANKINGS_CACHE.clear()
 
     return {
-        "player_id": body.player_id,
+        "player_id": pid,
+        "name": player.name,
         "status": body.status,
         "risk_flag": player.risk_flag,
         "risk_note": player.risk_note,
@@ -394,12 +442,10 @@ def set_risk_flag(body: RiskFlagBody, db: Session = Depends(get_db)) -> dict:
       "fragile"        — chronically injury-prone: 0.70× PA/IP (Glasnow, Seager)
       "recent_surgery" — post-surgery risk: 0.80× PA/IP (Wheeler)
       null / ""        — clear the flag (player is healthy profile)
-    """
-    from fantasai.models.player import Player
 
-    player = db.get(Player, body.player_id)
-    if not player:
-        raise HTTPException(status_code=404, detail=f"Player {body.player_id} not found")
+    Pass either ``player_id`` (FanGraphs IDfg) or ``player_name`` (e.g. "Tyler Glasnow").
+    """
+    player = _resolve_player(db, body.player_id, body.player_name)
 
     player.risk_flag = body.risk_flag or None
     player.risk_note = body.risk_note or None
@@ -409,7 +455,7 @@ def set_risk_flag(body: RiskFlagBody, db: Session = Depends(get_db)) -> dict:
     _RANKINGS_CACHE.clear()
 
     return {
-        "player_id": body.player_id,
+        "player_id": player.player_id,
         "name": player.name,
         "risk_flag": player.risk_flag,
         "risk_note": player.risk_note,
