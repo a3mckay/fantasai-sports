@@ -208,15 +208,23 @@ def project_hitter_stats(
     proj_hr_rate = max(0.0, _blend(talent_hr_rate, actual_hr_rate, tw, aw, default=0.033))
 
     # SB rate: Steamer SB/PA > Spd-score estimate.
-    # Explicit None check is critical here: slow players genuinely projected for
-    # 0 SBs must not fall through to the Spd fallback (default Spd=4.5 gives
-    # every player ~6.5 phantom SBs, inflating the pool mean and making real
-    # base-stealers look below average).
+    # Two-level fallback:
+    #   1. If Steamer data exists but has no SB key → FanGraphs omits SB for
+    #      non-stealers instead of returning 0; treat as 0 (not a base-stealer).
+    #      Using the Spd fallback here inflates the pool mean with ~6.5 phantom
+    #      SBs per player and makes real base-stealers look below average.
+    #   2. If there is NO Steamer data at all (pure prospect / fringe player
+    #      not covered by any projection system) → use Spd score as the only
+    #      available speed signal.
     _steamer_sb = _steamer_count_per(steamer_data, "SB", "PA")
-    talent_sb_rate: float = (
-        _steamer_sb if _steamer_sb is not None
-        else max(0.0, (_safe(adv, "Spd", default=4.5) - 3.5) * 0.012)
-    )
+    if _steamer_sb is not None:
+        talent_sb_rate: float = _steamer_sb
+    elif steamer_data is not None:
+        # Has a consensus projection row but SB wasn't projected → not a stealer
+        talent_sb_rate = 0.0
+    else:
+        # No projection data at all → use Spd as speed proxy
+        talent_sb_rate = max(0.0, (_safe(adv, "Spd", default=4.5) - 3.5) * 0.012)
     actual_sb_rate = _safe(cnt, "SB") / season_pa
     proj_sb_rate = max(0.0, _blend(talent_sb_rate, actual_sb_rate, tw, aw, default=0.010))
 
