@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from fantasai.api.deps import get_db
+from fantasai.brain.injury_classifier import maybe_apply_classification
+from fantasai.config import settings
 from fantasai.engine.projection import ProjectionHorizon
 from fantasai.schemas.ranking import PlayerRankingRead
 
@@ -269,6 +271,18 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
                     injury_description=injury_note,
                     fetched_at=now_utc,
                 ))
+
+            # Auto-classify severity and set risk_flag on the Player row.
+            # "fragile" is never overwritten (manual-only flag).
+            player_obj = db.get(Player, player_id)
+            if player_obj:
+                maybe_apply_classification(
+                    player=player_obj,
+                    description=injury_note or status_desc,
+                    il_status=status,
+                    api_key=settings.anthropic_api_key,
+                )
+
             synced += 1
 
     db.commit()
@@ -316,8 +330,12 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail=f"Player {body.player_id} not found")
 
     if body.status == "active":
-        # Clear any existing injury record
+        # Clear any existing injury record and reset auto-classified risk flag.
         db.query(InjuryRecord).filter(InjuryRecord.player_id == body.player_id).delete()
+        # Only clear auto-classified flags — preserve manual "fragile" flag.
+        if player.risk_flag != "fragile":
+            player.risk_flag = None
+            player.risk_note = None
     else:
         return_date = None
         if body.return_date:
@@ -343,12 +361,29 @@ def set_injury(body: InjuryOverrideBody, db: Session = Depends(get_db)) -> dict:
                 fetched_at=datetime.now(timezone.utc),
             ))
 
+        # Auto-classify severity when a description is provided.
+        # Always re-runs so manual overrides with updated descriptions work correctly.
+        # "fragile" is never overwritten (manual-only flag).
+        if body.injury_description:
+            maybe_apply_classification(
+                player=player,
+                description=body.injury_description,
+                il_status=body.status,
+                api_key=settings.anthropic_api_key,
+            )
+
     db.commit()
 
     from fantasai.api.v1.recommendations import _RANKINGS_CACHE
     _RANKINGS_CACHE.clear()
 
-    return {"player_id": body.player_id, "status": body.status, "ok": True}
+    return {
+        "player_id": body.player_id,
+        "status": body.status,
+        "risk_flag": player.risk_flag,
+        "risk_note": player.risk_note,
+        "ok": True,
+    }
 
 
 @router.post("/set-risk-flag", tags=["admin"])
@@ -421,16 +456,3 @@ def sync_projections(
     upserted = sync_steamer_projections(db, season=season)
     return {"season": season, "rows_upserted": upserted, "status": "ok"}
 
-
-@router.post("/clear-cache")
-def clear_rankings_cache() -> dict:
-    """Bust the in-process rankings cache immediately.
-
-    The next request to any endpoint that calls _compute_rankings will
-    recompute from the DB (takes a few seconds).  Useful after a code deploy
-    or data sync when you don't want to wait out the 30-minute TTL.
-    """
-    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
-    n = len(_RANKINGS_CACHE)
-    _RANKINGS_CACHE.clear()
-    return {"cleared": n, "status": "ok"}
