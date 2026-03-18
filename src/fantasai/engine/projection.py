@@ -166,6 +166,21 @@ def project_hitter_stats(
 
     season_pa = max(_safe(cnt, "PA", 1.0), 1.0)
 
+    # Effective PA for counting stat scaling.
+    # The consensus projection already represents a full-season estimate at
+    # whatever playing time the projection system expects (e.g. 120 PA for a
+    # prospect, 634 PA for Bobby Witt Jr.).  If we naively divide by consensus
+    # PA and multiply by 540 we get absurd numbers — a player projected for 46
+    # SBs in 120 PA would "project" to 207 SBs, massively inflating the pool
+    # mean and making real base-stealers look below average.
+    # Fix: cap the projection PA at the consensus projected PA so we never
+    # extrapolate beyond the full-season estimate.
+    if steamer_data is not None:
+        _consensus_pa = steamer_data.counting_stats.get("PA") or pa
+    else:
+        _consensus_pa = pa
+    effective_pa = min(pa, float(_consensus_pa))
+
     # ── Rate stats ──────────────────────────────────────────────────────────
 
     # AVG: Steamer projected AVG > xBA (already regressed + age-adjusted)
@@ -239,20 +254,20 @@ def project_hitter_stats(
     # ── Scale counting stats to horizon PA ──────────────────────────────────
 
     # estimated ABs ≈ PA minus BB, HBP, SF (roughly BB% + ~1% for HBP/SF)
-    est_ab = pa * max(0.5, 1.0 - proj_bb_pct - 0.01)
+    est_ab = effective_pa * max(0.5, 1.0 - proj_bb_pct - 0.01)
 
     proj_h   = proj_avg * est_ab
-    proj_hr  = proj_hr_rate * pa
-    proj_sb  = proj_sb_rate * pa
-    proj_bb  = proj_bb_pct * pa
+    proj_hr  = proj_hr_rate * effective_pa
+    proj_sb  = proj_sb_rate * effective_pa
+    proj_bb  = proj_bb_pct * effective_pa
 
     # R estimate: linear approximation from OBP and SLG
     # Based on run-value research: R/PA ≈ 0.42*OBP + 0.09*SLG
-    proj_r   = (0.42 * proj_obp + 0.09 * proj_slg) * pa
+    proj_r   = (0.42 * proj_obp + 0.09 * proj_slg) * effective_pa
 
     # RBI estimate: power-driven; ISO = SLG − AVG proxies extra-base hit rate
     iso      = max(0.0, proj_slg - proj_avg)
-    proj_rbi = (0.07 + 0.46 * iso) * pa
+    proj_rbi = (0.07 + 0.46 * iso) * effective_pa
 
     return {
         "AVG": proj_avg,
