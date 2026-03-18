@@ -7,7 +7,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
-import CategoryBar from '../components/CategoryBar'
+import PercentileBar from '../components/PercentileBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -291,7 +291,7 @@ export default function TeamEval() {
           {/* Category strengths */}
           <div className="card">
             <div className="section-label">Category strength</div>
-            <CategoryBar data={result.category_strengths} />
+            <PercentileBar data={result.category_strengths} />
           </div>
 
           {/* Position breakdown */}

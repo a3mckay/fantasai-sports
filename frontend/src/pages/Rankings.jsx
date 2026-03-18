@@ -6,7 +6,7 @@ import {
 import { getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
-import CategoryBar from '../components/CategoryBar'
+import PercentileBar from '../components/PercentileBar'
 
 const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 'Batters', 'Pitchers']
 const PAGE_SIZES       = [50, 100, 250, 'All']
@@ -361,7 +361,7 @@ export default function Rankings() {
                       <Blurb text={player.blurb} />
                       {isExpanded && hasCats && (
                         <div className="mt-3 pr-2">
-                          <CategoryBar data={player.category_contributions} />
+                          <PercentileBar data={player.category_contributions} />
                         </div>
                       )}
                     </td>

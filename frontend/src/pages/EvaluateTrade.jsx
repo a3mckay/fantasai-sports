@@ -6,7 +6,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
-import CategoryBar from '../components/CategoryBar'
+import PercentileBar from '../components/PercentileBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -416,7 +416,7 @@ export default function EvaluateTrade() {
 
           <div className="card">
             <div className="section-label">Category impact after trade</div>
-            <CategoryBar data={result.category_impact} />
+            <PercentileBar data={result.category_impact} />
           </div>
 
           <ProsCons pros={result.pros} cons={result.cons} />

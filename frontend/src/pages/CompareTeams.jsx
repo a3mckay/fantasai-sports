@@ -8,7 +8,7 @@ import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
-import CategoryBar from '../components/CategoryBar'
+import PercentileBar from '../components/PercentileBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -45,7 +45,7 @@ function TeamCard({ snap, rank, isWinner }) {
           {expanded ? 'less' : 'more'}
         </button>
       </div>
-      {expanded && <CategoryBar data={snap.category_strengths} />}
+      {expanded && <PercentileBar data={snap.category_strengths} />}
     </div>
   )
 }
