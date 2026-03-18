@@ -91,6 +91,7 @@ export default function KeeperEval() {
   const [mode, setMode]               = useState('plan_keepers')
   const [players, setPlayers]         = useState([emptyPlayer()])
   const [nKeepers, setNKeepers]       = useState('5')
+  const [nTeams, setNTeams]           = useState('12')
   const [context, setContext]         = useState('')
   const [leagueSettings, setLeagueSettings] = useState(null)
   const [loading, setLoading]         = useState(false)
@@ -130,6 +131,7 @@ export default function KeeperEval() {
     setPlayers([emptyPlayer()])
     setContext('')
     setNKeepers('5')
+    setNTeams('12')
     setResult(null)
     setError(null)
     setShowUpload(false)
@@ -194,6 +196,7 @@ export default function KeeperEval() {
         mode,
         player_ids: resolved,
         n_keepers:  parseInt(nKeepers) || 5,
+        n_teams:    parseInt(nTeams)   || 12,
         context:    context || null,
       }
       if (leagueSettings) {
@@ -343,17 +346,28 @@ export default function KeeperEval() {
           )}
         </div>
 
-        {mode === 'plan_keepers' && (
+        <div className="flex gap-6 flex-wrap">
+          {mode === 'plan_keepers' && (
+            <div>
+              <label className="section-label">Keepers per team</label>
+              <input
+                className="field-input font-mono w-24"
+                type="number" min="1" max="20"
+                value={nKeepers}
+                onChange={e => setNKeepers(e.target.value)}
+              />
+            </div>
+          )}
           <div>
-            <label className="section-label">How many keepers to keep</label>
+            <label className="section-label">Teams in league</label>
             <input
               className="field-input font-mono w-24"
-              type="number" min="1" max="20"
-              value={nKeepers}
-              onChange={e => setNKeepers(e.target.value)}
+              type="number" min="4" max="30"
+              value={nTeams}
+              onChange={e => setNTeams(e.target.value)}
             />
           </div>
-        )}
+        </div>
 
         <ContextInput value={context} onChange={setContext} />
         <LeagueSettings onChange={setLeagueSettings} />

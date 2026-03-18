@@ -87,6 +87,78 @@ GRADE_PERCENTILE_THRESHOLDS = [
     (20.0, "D"),
 ]
 
+# Keeper-specific rank-based grade thresholds.
+# Score = mean((threshold − rank) / threshold) across all keepers,
+# penalised by −0.30 × (n_below_threshold / n_keepers).
+# Calibration for a 12-team, 8-keeper league (threshold = 96):
+#   rank  1 → +0.99   rank 48 → +0.50   rank 96 → 0.00   rank 120 → −0.25
+# Examples:
+#   All top-15  → ~0.88 adjusted → A
+#   Mix of top-30 and top-80 → ~0.50 → B
+#   Screenshot team (2 below-threshold) → ~0.28 → C
+#   All rank-90+, 1 bad → ~−0.01 → D
+KEEPER_RANK_GRADE_THRESHOLDS = [
+    (0.60, "A"),
+    (0.40, "B"),
+    (0.20, "C"),
+    (0.00, "D"),
+]
+
+
+def _compute_keeper_grade(
+    keeper_rankings: list[PlayerRanking],
+    n_teams: int = 12,
+    n_keepers_per_team: int = 8,
+) -> tuple[str, float, int]:
+    """Grade a keeper core relative to the league keeper threshold.
+
+    Uses rank-based scoring so the grade reflects the player's actual value
+    compared to what other teams in the league are keeping — not just whether
+    the player is above average in the full player pool.
+
+    Args:
+        keeper_rankings: The confirmed (or recommended) keepers.
+        n_teams:         Number of teams in the league.
+        n_keepers_per_team: Keepers per team (often == len(keeper_rankings)).
+
+    Returns:
+        (letter_grade, adjusted_rank_score, n_below_threshold)
+
+    Score per player: ``(threshold − overall_rank) / threshold``
+        - Positive: player is inside the expected keeper pool — worth keeping.
+        - Zero: player is right at the threshold — borderline.
+        - Negative: player is outside the pool — a wasted keeper slot.
+
+    Overall score = mean of per-player scores, then penalised by
+    ``−0.30 × (n_below / n_total)`` for each below-threshold keeper.
+    """
+    threshold = n_teams * n_keepers_per_team
+    scores: list[float] = []
+    n_below = 0
+
+    for kr in keeper_rankings:
+        rank = kr.overall_rank
+        if rank <= 0:
+            # Rank unavailable — treat as borderline (score 0)
+            scores.append(0.0)
+            continue
+        rank_score = (threshold - rank) / threshold
+        scores.append(rank_score)
+        if rank > threshold:
+            n_below += 1
+
+    if not scores:
+        return "F", 0.0, 0
+
+    mean_score = sum(scores) / len(scores)
+    wasted_penalty = (n_below / len(scores)) * 0.30
+    adjusted = round(mean_score - wasted_penalty, 3)
+
+    for min_score, grade in KEEPER_RANK_GRADE_THRESHOLDS:
+        if adjusted >= min_score:
+            return grade, adjusted, n_below
+    return "F", adjusted, n_below
+
 
 def _compute_letter_grade(
     overall_score: float,
@@ -173,6 +245,9 @@ class KeeperEvaluation:
     pros: list[str]
     cons: list[str]
     analysis_blurb: str                # filled in by API layer
+    # Rank-based grading metadata (for LLM context and UI display)
+    keeper_threshold: int = 96         # n_teams × n_keepers_per_team
+    n_below_threshold: int = 0         # keepers ranked outside the threshold
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +611,7 @@ def evaluate_keepers(
     league_type: str,
     available_pool: Optional[list[PlayerRanking]] = None,
     context: Optional[str] = None,
+    n_teams: int = 12,
 ) -> KeeperEvaluation:
     """Evaluate a confirmed keeper core and suggest draft targets.
 
@@ -547,10 +623,14 @@ def evaluate_keepers(
         available_pool: Optional rankings for non-rostered players (improves
             example player suggestions in draft profiles).
         context: Optional free-text user context.
+        n_teams: Number of teams in the league (used for rank-based grading).
 
     Returns:
         KeeperEvaluation with draft profiles and foundation grade.
     """
+    n_keepers_per_team = len(keeper_rankings) or 8
+    keeper_threshold = n_teams * n_keepers_per_team
+
     if not keeper_rankings:
         return KeeperEvaluation(
             mode="evaluate_keepers",
@@ -564,8 +644,18 @@ def evaluate_keepers(
             pros=[],
             cons=["No keepers provided"],
             analysis_blurb="",
+            keeper_threshold=keeper_threshold,
+            n_below_threshold=0,
         )
 
+    # Rank-based grade: compares each keeper's overall_rank to the expected
+    # keeper pool (n_teams × n_keepers_per_team). Players ranked below the
+    # threshold are penalised — they're roster slots other teams wouldn't use.
+    grade, _adjusted_score, n_below = _compute_keeper_grade(
+        keeper_rankings, n_teams=n_teams, n_keepers_per_team=n_keepers_per_team
+    )
+
+    # Still run team_eval for category strengths/gaps — we just override its grade.
     team_eval = evaluate_team(
         keeper_rankings, categories, roster_positions, league_type, context=context
     )
@@ -592,9 +682,22 @@ def evaluate_keepers(
     if pos_gaps:
         cons.append(f"Missing keeper coverage at {', '.join(pos_gaps)}")
 
+    # Flag below-threshold keepers explicitly — most teams in the league wouldn't keep them.
+    if n_below > 0:
+        below_names = [
+            r.name for r in sorted(keeper_rankings, key=lambda r: r.overall_rank, reverse=True)
+            if r.overall_rank > keeper_threshold
+        ][:3]
+        cons.append(
+            f"{n_below} keeper{'s' if n_below > 1 else ''} ranked outside top {keeper_threshold} "
+            f"({', '.join(below_names)}) — most teams would not keep {'them' if n_below > 1 else 'this player'}"
+        )
+
     logger.info(
-        "Keeper evaluation: %d keepers, %d cat gaps, %d pos gaps",
+        "Keeper evaluation: %d keepers, grade=%s, %d below threshold, %d cat gaps, %d pos gaps",
         len(keeper_rankings),
+        grade,
+        n_below,
         len(cat_gaps),
         len(pos_gaps),
     )
@@ -603,7 +706,7 @@ def evaluate_keepers(
         mode="evaluate_keepers",
         keepers=keeper_rankings,
         cuts=[],
-        keeper_foundation_grade=team_eval.letter_grade,
+        keeper_foundation_grade=grade,
         category_strengths=team_eval.category_strengths,
         category_gaps=cat_gaps,
         position_gaps=pos_gaps,
@@ -611,6 +714,8 @@ def evaluate_keepers(
         pros=pros,
         cons=cons,
         analysis_blurb="",
+        keeper_threshold=keeper_threshold,
+        n_below_threshold=n_below,
     )
 
 
@@ -623,6 +728,7 @@ def plan_keepers(
     available_pool: Optional[list[PlayerRanking]] = None,
     player_ages: Optional[dict[int, int]] = None,
     context: Optional[str] = None,
+    n_teams: int = 12,
 ) -> KeeperEvaluation:
     """Recommend which players to keep and what to draft.
 
@@ -659,7 +765,8 @@ def plan_keepers(
 
     # Evaluate the recommended keeper core
     eval_result = evaluate_keepers(
-        keep_rankings, categories, roster_positions, league_type, available_pool, context
+        keep_rankings, categories, roster_positions, league_type, available_pool, context,
+        n_teams=n_teams,
     )
 
     # Augment with cut rationale
@@ -688,4 +795,6 @@ def plan_keepers(
         pros=eval_result.pros,
         cons=eval_result.cons,
         analysis_blurb="",
+        keeper_threshold=eval_result.keeper_threshold,
+        n_below_threshold=eval_result.n_below_threshold,
     )

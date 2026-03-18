@@ -857,7 +857,19 @@ def _generate_keeper_eval_blurb(
             lines.append(f"User context: {context}")
         lines.append(f"Mode: {evaluation.mode}")
         lines.append(f"Keeper foundation grade: {evaluation.keeper_foundation_grade}")
-        lines.append(f"Keepers ({len(evaluation.keepers)}): {', '.join(r.name for r in evaluation.keepers[:6])}")
+        lines.append(
+            f"Keeper threshold (top players most teams would keep): {evaluation.keeper_threshold}"
+        )
+        lines.append(
+            f"Keepers below threshold (wasted slots): {evaluation.n_below_threshold}"
+        )
+        # Include each keeper's overall rank so the LLM can reason about quality
+        keeper_rank_strs = []
+        for r in evaluation.keepers:
+            rank_label = f"#{r.overall_rank}" if r.overall_rank > 0 else "unranked"
+            below = " ⚠ below threshold" if r.overall_rank > evaluation.keeper_threshold else ""
+            keeper_rank_strs.append(f"{r.name} ({rank_label}{below})")
+        lines.append(f"Keepers ({len(evaluation.keepers)}): {', '.join(keeper_rank_strs[:8])}")
         if evaluation.cuts:
             lines.append(f"Cuts ({len(evaluation.cuts)}): {', '.join(r.name for r in evaluation.cuts[:5])}")
         lines.append(f"Category gaps: {', '.join(evaluation.category_gaps[:5]) or 'none'}")
@@ -873,12 +885,17 @@ def _generate_keeper_eval_blurb(
         if evaluation.mode == "plan_keepers":
             instruction = (
                 "Write 3–5 sentences evaluating the recommended keeper core and draft strategy. "
-                "Mention the strongest keeper(s), the biggest gap(s) to fill, and the #1 draft priority."
+                "Mention the strongest keeper(s), the biggest gap(s) to fill, and the #1 draft priority. "
+                "If any keepers are flagged '⚠ below threshold', note that those are questionable keeps "
+                "that most teams in the league would not use a keeper slot on."
             )
         else:
             instruction = (
                 "Write 3–5 sentences evaluating this keeper core's strengths, weaknesses, "
-                "and most important draft target profiles."
+                "and most important draft target profiles. "
+                "Be honest about the grade — if keepers are flagged '⚠ below threshold', "
+                "explicitly call them out as players most teams would not keep, "
+                "and factor that into your assessment of the keeper core's overall quality."
             )
         if context:
             instruction += f" Address user context: {context}"
@@ -1252,6 +1269,7 @@ def keeper_eval_endpoint(
             available_pool=available_pool,
             player_ages=player_ages,
             context=body.context,
+            n_teams=body.n_teams,
         )
     else:
         evaluation = evaluate_keepers(
@@ -1261,6 +1279,7 @@ def keeper_eval_endpoint(
             league_type=league_type,
             available_pool=available_pool,
             context=body.context,
+            n_teams=body.n_teams,
         )
 
     blurb = _generate_keeper_eval_blurb(evaluation, categories, body.context)

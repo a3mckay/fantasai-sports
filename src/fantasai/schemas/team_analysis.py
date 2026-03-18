@@ -137,6 +137,14 @@ class KeeperEvalRequest(BaseModel):
         default=None,
         description="Custom roster positions (used when no league_id).",
     )
+    n_teams: int = Field(
+        default=12,
+        description=(
+            "Number of teams in the league. Used to compute the keeper threshold "
+            "(n_teams × n_keepers_per_team) for rank-based grading. "
+            "Defaults to 12 (standard league size)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_mode_and_input(self) -> "KeeperEvalRequest":
