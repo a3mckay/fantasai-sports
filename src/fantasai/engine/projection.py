@@ -196,18 +196,26 @@ def project_hitter_stats(
 
     # ── Per-PA rates for counting stats ─────────────────────────────────────
 
-    # HR rate: Steamer HR/PA > Barrel%-derived estimate
+    # HR rate: Steamer HR/PA > Barrel%-derived estimate.
+    # Explicit None check prevents Steamer's legitimate 0-HR projection from
+    # being silently replaced by the Barrel% fallback (0.0 is falsy in Python).
+    _steamer_hr = _steamer_count_per(steamer_data, "HR", "PA")
     talent_hr_rate: float = (
-        _steamer_count_per(steamer_data, "HR", "PA")
-        or (_safe(adv, "Barrel%") / 100.0 * 0.35)
+        _steamer_hr if _steamer_hr is not None
+        else (_safe(adv, "Barrel%") / 100.0 * 0.35)
     )
     actual_hr_rate = _safe(cnt, "HR") / season_pa
     proj_hr_rate = max(0.0, _blend(talent_hr_rate, actual_hr_rate, tw, aw, default=0.033))
 
-    # SB rate: Steamer SB/PA > Spd-score estimate
+    # SB rate: Steamer SB/PA > Spd-score estimate.
+    # Explicit None check is critical here: slow players genuinely projected for
+    # 0 SBs must not fall through to the Spd fallback (default Spd=4.5 gives
+    # every player ~6.5 phantom SBs, inflating the pool mean and making real
+    # base-stealers look below average).
+    _steamer_sb = _steamer_count_per(steamer_data, "SB", "PA")
     talent_sb_rate: float = (
-        _steamer_count_per(steamer_data, "SB", "PA")
-        or max(0.0, (_safe(adv, "Spd", default=4.5) - 3.5) * 0.012)
+        _steamer_sb if _steamer_sb is not None
+        else max(0.0, (_safe(adv, "Spd", default=4.5) - 3.5) * 0.012)
     )
     actual_sb_rate = _safe(cnt, "SB") / season_pa
     proj_sb_rate = max(0.0, _blend(talent_sb_rate, actual_sb_rate, tw, aw, default=0.010))
