@@ -345,6 +345,37 @@ def _upsert_player(db: Session, data: NormalizedPlayerData) -> None:
             player.birth_year = data.birth_year
 
 
+def backfill_mlbam_ids(db: Session) -> int:
+    """Populate Player.mlbam_id for all players using the Chadwick register.
+
+    Reads FanGraphs IDs (player_id column = IDfg) and looks up matching MLBAM
+    IDs from the pybaseball Chadwick Bureau register.  Only updates rows where
+    mlbam_id is currently NULL to avoid overwriting manually-set values.
+
+    Returns:
+        Number of rows updated.
+    """
+    from fantasai.adapters.mlb import _build_fg_to_mlbam
+
+    players_without_mlbam = db.query(Player).filter(Player.mlbam_id.is_(None)).all()
+    if not players_without_mlbam:
+        return 0
+
+    fg_ids = [p.player_id for p in players_without_mlbam]
+    mapping = _build_fg_to_mlbam(fg_ids)  # {fangraphs_id: mlbam_id}
+
+    updated = 0
+    for player in players_without_mlbam:
+        mlbam = mapping.get(player.player_id)
+        if mlbam:
+            player.mlbam_id = mlbam
+            updated += 1
+
+    if updated:
+        db.commit()
+    return updated
+
+
 def sync_steamer_projections(
     db: Session,
     season: int = 2026,

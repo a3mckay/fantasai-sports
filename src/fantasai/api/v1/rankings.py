@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,7 @@ from fantasai.config import settings
 from fantasai.engine.projection import ProjectionHorizon
 from fantasai.schemas.ranking import PlayerRankingRead
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
 # Default 6x6 roto categories — used when no league context is available.
@@ -182,18 +184,38 @@ def clear_rankings_cache() -> dict:
 # ---------------------------------------------------------------------------
 
 
+@router.post("/sync-mlbam-ids", tags=["admin"])
+def sync_mlbam_ids(db: Session = Depends(get_db)) -> dict:
+    """Backfill Player.mlbam_id for all players using the Chadwick Bureau register.
+
+    Required before sync-injuries will work: the injury sync cross-references
+    MLB Stats API players by MLBAM ID. Run this once after ingesting stats,
+    then re-run sync-injuries to pick up IL data.
+
+    Safe to call repeatedly — only updates rows where mlbam_id is currently NULL.
+    """
+    from fantasai.engine.pipeline import backfill_mlbam_ids
+    updated = backfill_mlbam_ids(db)
+    return {"updated": updated, "status": "ok"}
+
+
 @router.post("/sync-injuries", tags=["admin"])
 def sync_injuries(db: Session = Depends(get_db)) -> dict:
     """Fetch current MLB IL data from the MLB Stats API and upsert into injury_records.
 
     Iterates all 30 MLB teams, fetches each team's injured-list roster, and
-    cross-references players by mlbam_id.  Safe to re-run; existing records are
-    updated in-place.  Call ``POST /rankings/clear-cache`` after syncing to
-    have the new status reflected immediately.
+    cross-references players by mlbam_id.  Auto-runs the MLBAM ID backfill
+    first if any players are missing their mlbam_id.
     """
     import httpx
     from datetime import datetime, timezone
     from fantasai.models.player import InjuryRecord, Player
+
+    # Auto-backfill missing MLBAM IDs so the sync can match players
+    from fantasai.engine.pipeline import backfill_mlbam_ids
+    backfilled = backfill_mlbam_ids(db)
+    if backfilled:
+        logger.info("sync-injuries: backfilled %d MLBAM IDs before sync", backfilled)
 
     synced = 0
     not_found = 0
