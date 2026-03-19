@@ -4,13 +4,19 @@ from __future__ import annotations
 import pytest
 
 from fantasai.adapters.base import NormalizedPlayerData
+from fantasai.adapters.mlb import MLBAdapter
+from fantasai.engine.projection import (
+    HORIZON_CONFIGS,
+    ProjectionHorizon,
+    project_hitter_stats,
+    project_pitcher_stats,
+)
 from fantasai.engine.scoring import (
     ScoringEngine,
     PlayerRanking,
     _get_scarcity_multiplier,
     _assign_position_ranks,
 )
-from fantasai.adapters.mlb import MLBAdapter
 
 
 def _make_batter(
@@ -385,13 +391,6 @@ class TestComputeWindowRankings:
 # ---------------------------------------------------------------------------
 # Projection model tests
 # ---------------------------------------------------------------------------
-
-from fantasai.engine.projection import (
-    ProjectionHorizon,
-    HORIZON_CONFIGS,
-    project_hitter_stats,
-    project_pitcher_stats,
-)
 
 
 class TestProjectionHitterStats:

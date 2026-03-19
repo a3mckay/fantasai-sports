@@ -91,11 +91,13 @@ from fantasai.schemas.team_analysis import (
 )
 
 # Reuse the shared rankings helpers from the recommendations module
+from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES as DEFAULT_CATEGORIES
 from fantasai.api.v1.recommendations import (
     _compute_projection_rankings,
     _compute_rankings,
     _fetch_team_and_league,
 )
+from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +106,11 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 # Default scoring categories — must match RANKINGS_DEFAULT_CATEGORIES in
 # rankings.py exactly so that overall_rank values are consistent across
 # the Rankings page and every analysis endpoint (compare, trade, etc.).
-from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES as DEFAULT_CATEGORIES
 
 # System prompt for analysis-type LLM calls (compare, trade verdict).
 # Different persona from per-player blurbs — this is the "analyst making
 # a call" rather than "writer describing a player's stats".
 # Import the shared writer persona so all LLM calls share one voice.
-from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
-
 _ANALYSIS_SYSTEM_PROMPT = _WRITER_PERSONA
 
 
@@ -893,9 +892,11 @@ def _generate_keeper_eval_blurb(
             instruction = (
                 "Write 3–5 sentences evaluating this keeper core's strengths, weaknesses, "
                 "and most important draft target profiles. "
-                "Be honest about the grade — if keepers are flagged '⚠ below threshold', "
-                "explicitly call them out as players most teams would not keep, "
-                "and factor that into your assessment of the keeper core's overall quality."
+                "Be honest about the grade. If keepers are flagged '⚠ below threshold', "
+                "note that these carries more value risk as keeper slots — but don't be rigid: "
+                "a player outside the typical keep range can still make sense as a high-upside "
+                "prospect, a punted-category specialist, or a player held at a favorable keeper "
+                "cost. Factor in context before dismissing them outright."
             )
         if context:
             instruction += f" Address user context: {context}"

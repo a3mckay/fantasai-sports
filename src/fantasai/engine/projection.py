@@ -145,15 +145,22 @@ def _safe(d: dict, key: str, default: float = 0.0) -> float:
 
 # Risk-flag multipliers applied to projected PA / IP.
 # These represent realistic full-season expectations vs. Steamer's optimistic
-# assumption of full health:
-#   "fragile"        → historically misses 25-35% of the season (Glasnow, Seager).
-#                      0.70× gives ~119 IP for Glasnow (vs Steamer 170) — still
-#                      elite if healthy, but not pretending he'll pitch a full year.
-#   "recent_surgery" → coming back from major surgery; 80% of Steamer is a
-#                      conservative-but-not-punitive haircut (Wheeler: 136 IP).
+# assumption of full health.  Calibrated so that the rank drop for a flagged
+# player lands roughly where a well-informed analyst would expect:
+#
+#   "fragile"        → chronic injury history; typically misses 15-25% of the
+#                      season across a career (Glasnow: ~134 IP in 2024,
+#                      ~100 IP in 2023).  0.85× on a 160 IP Steamer line
+#                      gives ~136 IP — a meaningful haircut without punishing
+#                      a still-elite upside pitcher too harshly.
+#
+#   "recent_surgery" → recovering from a major procedure but structurally
+#                      intact; expect a cautious ramp-up.  0.90× haircut
+#                      (Wheeler: ~153 of 170 projected IP) acknowledges the
+#                      risk without overcorrecting for a likely-healthy pitcher.
 _RISK_FLAG_MULTIPLIER: dict[str, float] = {
-    "fragile": 0.70,
-    "recent_surgery": 0.80,
+    "fragile": 0.85,
+    "recent_surgery": 0.90,
 }
 
 # 2026 season window used for availability calculation.

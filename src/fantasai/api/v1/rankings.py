@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -346,12 +347,23 @@ class RiskFlagBody(BaseModel):
     risk_note: Optional[str] = None
 
 
+def _fold_name(text: str) -> str:
+    """Strip diacritics and lowercase for accent-insensitive name matching.
+
+    Converts "José Ramírez" → "jose ramirez" so that typing without accents
+    still finds the correct player.
+    """
+    return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode().lower()
+
+
 def _resolve_player(db: Session, player_id: Optional[int], player_name: Optional[str]):
     """Return a Player ORM object from either player_id or a name search.
 
-    Name search is case-insensitive substring match — returns the best single
-    match or raises 404/422 if the name is ambiguous or not found.
+    Name search is accent- and case-insensitive substring match — returns the
+    best single match or raises 404/422 if the name is ambiguous or not found.
     """
+    from sqlalchemy import func as sqlfunc
+
     from fantasai.models.player import Player
 
     if player_id is not None:
@@ -361,17 +373,28 @@ def _resolve_player(db: Session, player_id: Optional[int], player_name: Optional
         return player
 
     if player_name:
-        name_lower = player_name.strip().lower()
-        # Try exact match first (case-insensitive)
-        rows = db.query(Player).filter(
-            Player.name.ilike(f"%{name_lower}%")
-        ).limit(10).all()
+        norm = _fold_name(player_name.strip())
+
+        # Try DB-level unaccent() (PostgreSQL); fall back to Python filtering.
+        rows: list[Player] = []
+        try:
+            rows = (
+                db.query(Player)
+                .filter(sqlfunc.unaccent(sqlfunc.lower(Player.name)).contains(norm))
+                .limit(10)
+                .all()
+            )
+        except Exception:
+            # unaccent() not available (SQLite/extension missing) — Python fallback.
+            candidates = db.query(Player).limit(5000).all()
+            rows = [r for r in candidates if norm in _fold_name(r.name)][:10]
+
         if not rows:
             raise HTTPException(status_code=404, detail=f"No player found matching '{player_name}'")
         if len(rows) == 1:
             return rows[0]
-        # Prefer an exact case-insensitive match if there are multiple hits
-        exact = [r for r in rows if r.name.lower() == name_lower]
+        # Prefer an exact accent-folded match when multiple partial hits exist.
+        exact = [r for r in rows if _fold_name(r.name) == norm]
         if len(exact) == 1:
             return exact[0]
         names = ", ".join(r.name for r in rows[:5])

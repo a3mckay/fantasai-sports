@@ -682,15 +682,20 @@ def evaluate_keepers(
     if pos_gaps:
         cons.append(f"Missing keeper coverage at {', '.join(pos_gaps)}")
 
-    # Flag below-threshold keepers explicitly — most teams in the league wouldn't keep them.
+    # Flag below-threshold keepers — note this is a signal, not a hard rule.
+    # Prospects, punted-category specialists, and low-cost veterans can be
+    # legitimate keeps even outside the threshold.
     if n_below > 0:
         below_names = [
             r.name for r in sorted(keeper_rankings, key=lambda r: r.overall_rank, reverse=True)
             if r.overall_rank > keeper_threshold
         ][:3]
+        they_or_its = "they are" if n_below > 1 else "it's"
         cons.append(
-            f"{n_below} keeper{'s' if n_below > 1 else ''} ranked outside top {keeper_threshold} "
-            f"({', '.join(below_names)}) — most teams would not keep {'them' if n_below > 1 else 'this player'}"
+            f"{n_below} keeper{'s' if n_below > 1 else ''} ranked outside the typical "
+            f"keep range ({', '.join(below_names)}) — "
+            f"{'these are' if n_below > 1 else 'this is'} a potential drag on value "
+            f"unless {they_or_its} a prospect or punted-category pick"
         )
 
     logger.info(
