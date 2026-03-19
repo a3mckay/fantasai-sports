@@ -8,6 +8,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        timeout: 120000,      // 2 min — analysis endpoints call Anthropic API
+        proxyTimeout: 120000,
       },
     },
   },

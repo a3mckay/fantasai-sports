@@ -56,7 +56,10 @@ def list_players(
                 .all()
             )
         except Exception:
-            # unaccent() unavailable — pull a broader set and filter in memory.
+            # unaccent() unavailable — roll back the failed transaction first
+            # (PostgreSQL rejects all queries after an error until rollback),
+            # then pull a broader set and filter in memory.
+            db.rollback()
             base_q = db.query(Player)
             if team:
                 base_q = base_q.filter(Player.team == team.upper())
