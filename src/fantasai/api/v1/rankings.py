@@ -260,12 +260,18 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             if not mlbam_id:
                 continue
 
+            status_desc = entry.get("status", {}).get("description", "")
+
+            # Spring training returns the full roster with "Active" status —
+            # skip entries that aren't actual IL placements.
+            if not status_desc or status_desc.lower() == "active":
+                continue
+
             player_id = mlbam_map.get(mlbam_id)
             if not player_id:
                 not_found += 1
                 continue
 
-            status_desc = entry.get("status", {}).get("description", "")
             if "60" in status_desc:
                 status = "il_60"
             elif "10" in status_desc or "15" in status_desc:
@@ -273,10 +279,10 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             else:
                 status = "day_to_day"
 
+            # Only store meaningful notes — don't fall back to a bare status string.
             injury_note = (
                 entry.get("note")
                 or entry.get("injuryDescription")
-                or status_desc
                 or None
             )
 
@@ -296,15 +302,18 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
                 ))
 
             # Auto-classify severity and set risk_flag on the Player row.
+            # Only call when there's an actual note — avoids 900+ Claude API
+            # calls on spring training rosters with no injury descriptions.
             # "fragile" is never overwritten (manual-only flag).
-            player_obj = db.get(Player, player_id)
-            if player_obj:
-                maybe_apply_classification(
-                    player=player_obj,
-                    description=injury_note or status_desc,
-                    il_status=status,
-                    api_key=settings.anthropic_api_key,
-                )
+            if injury_note:
+                player_obj = db.get(Player, player_id)
+                if player_obj:
+                    maybe_apply_classification(
+                        player=player_obj,
+                        description=injury_note,
+                        il_status=status,
+                        api_key=settings.anthropic_api_key,
+                    )
 
             synced += 1
 
