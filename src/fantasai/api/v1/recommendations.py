@@ -365,7 +365,8 @@ def _inject_prospect_rankings(
     from fantasai.models.prospect import ProspectProfile
     from fantasai.engine.scoring import PlayerRanking
 
-    existing_ids: set[int] = {r.player_id for r in rankings}
+    # Index existing rankings by player_id so we can augment or deduplicate
+    existing_by_id: dict[int, object] = {r.player_id: r for r in rankings}
 
     profiles = (
         db.query(ProspectProfile, Player)
@@ -375,8 +376,13 @@ def _inject_prospect_rankings(
     )
 
     for pp, player in profiles:
-        if player.player_id in existing_ids:
-            continue  # already in MLB rankings; don't duplicate
+        if player.player_id in existing_by_id:
+            # Already in MLB rankings (has FanGraphs projections) — augment
+            # the existing entry with prospect metadata instead of duplicating.
+            existing = existing_by_id[player.player_id]
+            existing.is_prospect = True
+            existing.pav_score = pp.pav_score
+            continue
         pr = PlayerRanking(
             player_id=player.player_id,
             name=player.name,
