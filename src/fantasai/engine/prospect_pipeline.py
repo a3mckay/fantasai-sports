@@ -21,6 +21,7 @@ Sport IDs:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -78,6 +79,24 @@ def _get(url: str, params: Optional[dict] = None, retries: int = 3) -> Optional[
 
 
 # ---------------------------------------------------------------------------
+# Name normalization for cross-reference fallback
+# ---------------------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip accents (best-effort), remove non-alpha chars."""
+    s = name.lower().strip()
+    # Simple accent removal for common characters
+    _accent_map = str.maketrans(
+        "áàäâãåæçéèëêíìïîñóòöôõøúùüûý",
+        "aaaaaaaceeeeiiiinoooooouuuuy",
+    )
+    s = s.translate(_accent_map)
+    s = re.sub(r"[^a-z ]", "", s)
+    # Collapse whitespace
+    return " ".join(s.split())
+
+
+# ---------------------------------------------------------------------------
 # Fetch: prospect IDs from MiLB rosters
 # ---------------------------------------------------------------------------
 
@@ -110,7 +129,11 @@ def fetch_prospect_ids(season: int = 2025) -> list[dict]:
             if birth_year and birth_year < min_birth_year:
                 continue  # too old
             seen.add(mid)
-            prospects.append({"mlbam_id": mid, "birth_year": birth_year})
+            prospects.append({
+                "mlbam_id": mid,
+                "birth_year": birth_year,
+                "full_name": p.get("fullName", ""),
+            })
         time.sleep(0.1)  # be gentle
 
     logger.info("Fetched %d MiLB prospect candidates for %d", len(prospects), season)
@@ -519,10 +542,15 @@ def sync_prospect_data(
     """
     logger.info("Starting prospect sync for season %d", season)
 
-    # Build a lookup: mlbam_id → Player (only players who have mlbam_id set)
+    # Build primary lookup: mlbam_id → Player
+    all_players = db.query(Player).all()
     mlbam_to_player: dict[int, Player] = {
-        p.mlbam_id: p
-        for p in db.query(Player).filter(Player.mlbam_id.isnot(None)).all()
+        p.mlbam_id: p for p in all_players if p.mlbam_id is not None
+    }
+    # Fallback lookup: normalized name → Player (catches MiLB-only players whose
+    # mlbam_id isn't in the Chadwick register and therefore not set in our DB)
+    name_to_player: dict[str, Player] = {
+        _normalize_name(p.name): p for p in all_players if p.name
     }
 
     # Build a lookup: player_id → ProspectProfile (existing)
@@ -550,8 +578,24 @@ def sync_prospect_data(
         mid = bio["mlbam_id"]
         player = mlbam_to_player.get(mid)
         if not player:
+            # Fallback: try to match by name (handles MiLB-only players where
+            # Chadwick register doesn't have an mlbam_id mapping)
+            norm = _normalize_name(bio.get("full_name", ""))
+            player = name_to_player.get(norm) if norm else None
+            if player:
+                # Cache the mlbam_id on the player row so future syncs use the
+                # faster ID-based path
+                player.mlbam_id = mid
+                mlbam_to_player[mid] = player
+                logger.info(
+                    "Matched prospect %r by name → player_id=%d; stored mlbam_id=%d",
+                    bio.get("full_name"),
+                    player.player_id,
+                    mid,
+                )
+        if not player:
             skipped += 1
-            continue  # player not in our DB yet
+            continue  # player not in our DB
 
         # Get or create ProspectProfile
         pp = existing_profiles.get(player.player_id) or mlbam_to_profile.get(mid)
@@ -586,8 +630,10 @@ def sync_prospect_data(
     _assign_pipeline_ranks(db)
 
     # Phase 3: re-run PAV with proper grades now that ranks are assigned
+    # Rebuild player lookup now that name-matched players may have had mlbam_id set
+    player_id_to_player: dict[int, Player] = {p.player_id: p for p in all_players}
     for pp in updated_profiles:
-        player = mlbam_to_player.get(pp.mlbam_id or 0)
+        player = player_id_to_player.get(pp.player_id)
         if not player:
             continue
         try:
