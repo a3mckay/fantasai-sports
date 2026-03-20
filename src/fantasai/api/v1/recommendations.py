@@ -365,6 +365,13 @@ def _inject_prospect_rankings(
     from fantasai.models.prospect import ProspectProfile
     from fantasai.engine.scoring import PlayerRanking
 
+    # Reset prospect flags first so this function is idempotent even when the
+    # underlying PlayerRanking objects are shared via the in-process rankings cache.
+    # Without this, mutations from a previous call persist on subsequent cache hits.
+    for r in rankings:
+        r.is_prospect = False
+        r.pav_score = None
+
     # Index existing rankings by player_id so we can augment or deduplicate
     existing_by_id: dict[int, object] = {r.player_id: r for r in rankings}
 
