@@ -375,13 +375,21 @@ def _inject_prospect_rankings(
         .all()
     )
 
+    # These levels indicate the player is a true minor-leaguer, not an MLB player
+    # with a brief rehab stint or recent graduation. Triple-A players who are
+    # also in MLB rankings (e.g. Gunnar Henderson) should NOT get the badge.
+    _MILB_BADGE_LEVELS = {"Double-A", "High-A", "Low-A", "Rookie"}
+
     for pp, player in profiles:
         if player.player_id in existing_by_id:
-            # Already in MLB rankings (has FanGraphs projections) — augment
-            # the existing entry with prospect metadata instead of duplicating.
-            existing = existing_by_id[player.player_id]
-            existing.is_prospect = True
-            existing.pav_score = pp.pav_score
+            # Already in MLB rankings (has FanGraphs projections).
+            # Augment with prospect metadata only if the player's highest MiLB
+            # level confirms they're a genuine prospect (not an MLB player who
+            # had a brief rehab stint in the minors).
+            if pp.highest_level in _MILB_BADGE_LEVELS:
+                existing = existing_by_id[player.player_id]
+                existing.is_prospect = True
+                existing.pav_score = pp.pav_score
             continue
         pr = PlayerRanking(
             player_id=player.player_id,

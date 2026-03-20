@@ -589,10 +589,15 @@ def sync_prospect_data(
         player = mlbam_to_player.get(mid)
         if not player:
             # Fallback: try to match by name (handles MiLB-only players where
-            # Chadwick register doesn't have an mlbam_id mapping)
+            # Chadwick register doesn't have an mlbam_id mapping).
+            # Only accept the match if the DB player doesn't already have a
+            # *different* mlbam_id — that would indicate a name collision with
+            # an established MLB player (e.g. a MiLB "José Ramírez" falsely
+            # matching the CLE all-star).
             norm = _normalize_name(bio.get("full_name", ""))
-            player = name_to_player.get(norm) if norm else None
-            if player:
+            candidate = name_to_player.get(norm) if norm else None
+            if candidate and (candidate.mlbam_id is None or candidate.mlbam_id == mid):
+                player = candidate
                 # Cache the mlbam_id on the player row so future syncs use the
                 # faster ID-based path
                 player.mlbam_id = mid
