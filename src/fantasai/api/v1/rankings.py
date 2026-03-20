@@ -120,20 +120,33 @@ def list_rankings(
     if not rankings:
         return []
 
+    # Inject MiLB prospects at their PAV-equivalent rank.
+    # Only inject when no position / stat_type filter has been applied yet
+    # (we filter after injection so the position filter still works on prospects).
+    if season == _CACHED_SEASON:
+        from fantasai.api.v1.recommendations import _inject_prospect_rankings
+        rankings = list(_inject_prospect_rankings(rankings, db))
+
     # Pull pre-generated blurbs from the Ranking table.
     # Keyed on (player_id, ranking_type, period); league_id=None = global blurbs.
+    # Also pull PAV blurbs for prospects.
     player_ids = [r.player_id for r in rankings]
     blurb_rows = (
         db.query(Ranking)
         .filter(
             Ranking.player_id.in_(player_ids),
-            Ranking.ranking_type == ranking_type,
+            Ranking.ranking_type.in_([ranking_type, "pav"]),
             Ranking.period == CURRENT_PERIOD,
             Ranking.league_id.is_(None),
         )
         .all()
     )
-    blurb_map: dict[int, str] = {row.player_id: row.blurb for row in blurb_rows if row.blurb}
+    # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players
+    blurb_map: dict[int, str] = {}
+    for row in blurb_rows:
+        if row.blurb:
+            if row.ranking_type == "pav" or row.player_id not in blurb_map:
+                blurb_map[row.player_id] = row.blurb
 
     # Apply filters
     if stat_type:
@@ -161,6 +174,8 @@ def list_rankings(
             injury_status=r.injury_status,
             risk_flag=r.risk_flag,
             risk_note=r.risk_note,
+            is_prospect=getattr(r, "is_prospect", False),
+            pav_score=getattr(r, "pav_score", None),
         )
         for r in rankings
     ]
@@ -178,6 +193,33 @@ def clear_rankings_cache() -> dict:
     n = len(_RANKINGS_CACHE)
     _RANKINGS_CACHE.clear()
     return {"cleared": n, "status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Admin: prospect sync
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sync-prospects", tags=["admin"])
+def sync_prospects(
+    season: int = Query(default=2025),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fetch MiLB stats from the MLB Stats API, compute PAV scores, and
+    upsert ProspectProfile rows for all tracked minor-league prospects.
+
+    Also generates AI blurbs via the Anthropic API (requires ANTHROPIC_API_KEY).
+
+    Runs in two passes so the implied pipeline_rank (based on PAV order)
+    feeds back into the prospect grade calculation for a better final score.
+    """
+    from fantasai.engine.prospect_pipeline import sync_prospect_data
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+
+    result = sync_prospect_data(db, season=season, api_key=settings.anthropic_api_key)
+    # Bust the rankings cache so injected prospects appear on the next request
+    _RANKINGS_CACHE.clear()
+    return result
 
 
 # ---------------------------------------------------------------------------

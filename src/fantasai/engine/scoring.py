@@ -144,6 +144,9 @@ class PlayerRanking:
     injury_status: str = "active"
     risk_flag: Optional[str] = None
     risk_note: Optional[str] = None
+    # Prospect fields — set when a MiLB player is injected into rankings via PAV.
+    is_prospect: bool = False
+    pav_score: Optional[float] = None
 
 
 def _get_stat_value(

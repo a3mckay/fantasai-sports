@@ -343,6 +343,67 @@ def _compute_projection_rankings(
     return deduped
 
 
+def _inject_prospect_rankings(
+    rankings: list,
+    db: Session,
+) -> list:
+    """Load ProspectProfile records and insert MiLB prospects into the MLB ranking list.
+
+    Each prospect gets a PlayerRanking with:
+      overall_rank  = proxy_mlb_rank   (e.g. Griffin → rank 46)
+      is_prospect   = True
+      pav_score     = their PAV score
+      score         = pav_score / 10   (normalised ~0–10, comparable to z-score sums)
+
+    After insertion the list is sorted by overall_rank and renumbered sequentially
+    so MLB players retain their relative ordering with prospects slotted between them.
+
+    Players already in the MLB rankings list (called up mid-season) are deduplicated:
+    the MLB ranking takes precedence over the prospect ranking for the same player_id.
+    """
+    from fantasai.models.player import Player
+    from fantasai.models.prospect import ProspectProfile
+    from fantasai.engine.scoring import PlayerRanking
+
+    existing_ids: set[int] = {r.player_id for r in rankings}
+
+    profiles = (
+        db.query(ProspectProfile, Player)
+        .join(Player, Player.player_id == ProspectProfile.player_id)
+        .filter(ProspectProfile.pav_score.isnot(None))
+        .all()
+    )
+
+    for pp, player in profiles:
+        if player.player_id in existing_ids:
+            continue  # already in MLB rankings; don't duplicate
+        pr = PlayerRanking(
+            player_id=player.player_id,
+            name=player.name,
+            team=player.team,
+            positions=list(player.positions or []),
+            stat_type=pp.stat_type,
+            overall_rank=pp.proxy_mlb_rank,
+            position_rank=0,
+            score=round((pp.pav_score or 0) / 10.0, 3),
+            raw_score=round((pp.pav_score or 0) / 10.0, 3),
+            category_contributions={},
+            injury_status="active",
+            risk_flag=player.risk_flag,
+            risk_note=player.risk_note,
+            is_prospect=True,
+            pav_score=pp.pav_score,
+        )
+        rankings.append(pr)
+
+    # Re-sort and renumber
+    rankings.sort(key=lambda r: (r.overall_rank, 0 if r.is_prospect else 1))
+    for i, r in enumerate(rankings):
+        r.overall_rank = i + 1
+
+    return rankings
+
+
 def _fetch_rolling_windows_map(
     db: Session,
     player_ids: list[int],

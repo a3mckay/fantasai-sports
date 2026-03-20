@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy import Date, DateTime, ForeignKey, JSON, String, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from fantasai.models.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from fantasai.models.prospect import ProspectProfile
 
 
 class Player(TimestampMixin, Base):
@@ -32,6 +35,9 @@ class Player(TimestampMixin, Base):
     rolling_stats: Mapped[list[PlayerRollingStats]] = relationship(back_populates="player")
     injury_record: Mapped[Optional[InjuryRecord]] = relationship(
         back_populates="player", uselist=False
+    )
+    prospect_profile: Mapped[Optional[ProspectProfile]] = relationship(
+        "ProspectProfile", back_populates="player", uselist=False
     )
 
 

@@ -36,3 +36,6 @@ class PlayerRankingRead(BaseModel):
     injury_status: str = "active"
     risk_flag: Optional[str] = None
     risk_note: Optional[str] = None
+    # Prospect fields — set for MiLB players injected via PAV scoring.
+    is_prospect: bool = False
+    pav_score: Optional[float] = None

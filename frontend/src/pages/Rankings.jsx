@@ -378,8 +378,23 @@ export default function Rankings() {
                             ⚠
                           </span>
                         )}
+                        {/* MiLB prospect badge — shown for minor-league players injected via PAV */}
+                        {player.is_prospect && (
+                          <span
+                            className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5 leading-none"
+                            title={`PAV Score: ${player.pav_score != null ? player.pav_score.toFixed(1) : '—'}/100`}
+                          >
+                            {player.team} · MiLB
+                          </span>
+                        )}
                       </div>
                       <Blurb text={player.blurb} />
+                      {isExpanded && player.is_prospect && player.pav_score != null && (
+                        <div className="mt-2 text-xs text-emerald-400/80">
+                          PAV Score: <span className="font-semibold">{player.pav_score.toFixed(1)}</span>/100
+                          <span className="text-slate-500 ml-2">— Prospect Adjusted Value</span>
+                        </div>
+                      )}
                       {isExpanded && hasCats && (
                         <div className="mt-3 pr-2">
                           <PercentileBar data={player.category_contributions} />
