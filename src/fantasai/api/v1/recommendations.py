@@ -396,11 +396,14 @@ def _inject_prospect_rankings(
     for pp, player in profiles:
         if player.player_id in existing_by_id:
             # Already in MLB rankings (has FanGraphs projections).
-            # Only augment with the MiLB badge if the player has NO 2025 actual
-            # stats — that's the reliable signal that they're a genuine prospect
-            # (projection-only in the DB) rather than an active MLB player who
-            # happened to have a MiLB rehab stint (Gunnar Henderson, Moreno, etc.).
-            if player.player_id not in players_with_2025_stats:
+            # Only augment with the MiLB badge if:
+            #   1. No 2025 actual stats → confirms they haven't played MLB yet
+            #   2. PAV >= 30 → rules out rehab pitchers with tiny/poor MiLB stints
+            #      (e.g. Jared Jones doing a 2-week High-A rehab → PAV 16)
+            if (
+                player.player_id not in players_with_2025_stats
+                and (pp.pav_score or 0) >= 30.0
+            ):
                 existing = existing_by_id[player.player_id]
                 existing.is_prospect = True
                 existing.pav_score = pp.pav_score
