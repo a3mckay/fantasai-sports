@@ -361,7 +361,7 @@ def _inject_prospect_rankings(
     Players already in the MLB rankings list (called up mid-season) are deduplicated:
     the MLB ranking takes precedence over the prospect ranking for the same player_id.
     """
-    from fantasai.models.player import Player
+    from fantasai.models.player import Player, PlayerStats
     from fantasai.models.prospect import ProspectProfile
     from fantasai.engine.scoring import PlayerRanking
 
@@ -371,6 +371,17 @@ def _inject_prospect_rankings(
     for r in rankings:
         r.is_prospect = False
         r.pav_score = None
+
+    # Build a set of player_ids that have 2025 ACTUAL stats in our DB.
+    # True MiLB prospects like Griffin only have 2026 projection data.
+    # Established MLB players (Henderson, Moreno, etc.) have 2025 actuals.
+    # This is the most reliable way to distinguish the two groups.
+    players_with_2025_stats: set[int] = {
+        pid for (pid,) in db.query(PlayerStats.player_id)
+        .filter(PlayerStats.season == 2025, PlayerStats.week.is_(None))
+        .distinct()
+        .all()
+    }
 
     # Index existing rankings by player_id so we can augment or deduplicate
     existing_by_id: dict[int, object] = {r.player_id: r for r in rankings}
@@ -382,18 +393,14 @@ def _inject_prospect_rankings(
         .all()
     )
 
-    # PAV threshold below which we assume the player is an established MLB player
-    # who had a brief rehab stint (poor MiLB stats → low PAV) rather than a
-    # genuine prospect. This filters out pitchers like Jared Jones on High-A rehab.
-    _MIN_PROSPECT_PAV = 50.0
-
     for pp, player in profiles:
         if player.player_id in existing_by_id:
             # Already in MLB rankings (has FanGraphs projections).
-            # Only augment with the MiLB badge if the PAV score is high enough
-            # to confirm this is a genuine prospect rather than an MLB player
-            # with a brief rehab assignment in the minors.
-            if (pp.pav_score or 0) >= _MIN_PROSPECT_PAV:
+            # Only augment with the MiLB badge if the player has NO 2025 actual
+            # stats — that's the reliable signal that they're a genuine prospect
+            # (projection-only in the DB) rather than an active MLB player who
+            # happened to have a MiLB rehab stint (Gunnar Henderson, Moreno, etc.).
+            if player.player_id not in players_with_2025_stats:
                 existing = existing_by_id[player.player_id]
                 existing.is_prospect = True
                 existing.pav_score = pp.pav_score
