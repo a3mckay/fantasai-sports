@@ -161,40 +161,45 @@ def fetch_hitting_stints(
     Each entry: {level, games, ops, player_age}
     Skips stints with fewer than _MIN_GAMES_HIT games.
     """
+    # Must query each sport level separately — the MLB Stats API returns empty
+    # results for MiLB players when sportId is not specified.
     url = f"{_MLB_BASE}/people/{mlbam_id}/stats"
-    data = _get(url, {"stats": "season", "group": "hitting", "season": season})
-    if not data:
-        return []
-
     stints: list[dict] = []
-    for stat_group in data.get("stats", []):
-        for split in stat_group.get("splits", []):
-            sport_id = split.get("sport", {}).get("id") or split.get("team", {}).get("sport", {}).get("id")
-            level = SPORT_ID_TO_LEVEL.get(sport_id, "")
-            if not level or level == "MLB":
-                continue  # skip MLB stints for prospect scoring
 
-            s = split.get("stat", {})
-            games = int(s.get("gamesPlayed", 0))
-            if games < _MIN_GAMES_HIT:
-                continue
+    for sport_id in _MILB_SPORT_IDS:
+        level = SPORT_ID_TO_LEVEL.get(sport_id, "")
+        if not level or level == "MLB":
+            continue
 
-            try:
-                obp = float(s.get("obp", 0) or 0)
-                slg = float(s.get("slg", 0) or 0)
-                ops = obp + slg
-                if ops <= 0:
-                    ops_str = s.get("ops", "")
-                    ops = float(ops_str) if ops_str else 0.700
-            except (TypeError, ValueError):
-                ops = 0.700
+        data = _get(url, {"stats": "season", "group": "hitting", "season": season, "sportId": sport_id})
+        if not data:
+            continue
 
-            stints.append({
-                "level": level,
-                "games": games,
-                "ops": round(ops, 3),
-                "player_age": _parse_age(birth_year, season),
-            })
+        for stat_group in data.get("stats", []):
+            for split in stat_group.get("splits", []):
+                s = split.get("stat", {})
+                games = int(s.get("gamesPlayed", 0))
+                if games < _MIN_GAMES_HIT:
+                    continue
+
+                try:
+                    obp = float(s.get("obp", 0) or 0)
+                    slg = float(s.get("slg", 0) or 0)
+                    ops = obp + slg
+                    if ops <= 0:
+                        ops_str = s.get("ops", "")
+                        ops = float(ops_str) if ops_str else 0.700
+                except (TypeError, ValueError):
+                    ops = 0.700
+
+                stints.append({
+                    "level": level,
+                    "games": games,
+                    "ops": round(ops, 3),
+                    "player_age": _parse_age(birth_year, season),
+                })
+
+        time.sleep(0.05)
 
     return stints
 
@@ -209,50 +214,51 @@ def fetch_pitching_stints(
     Each entry: {level, ip, era, k9, whip, player_age}
     Skips stints with fewer than _MIN_IP_PITCH innings.
     """
+    # Must query each sport level separately — same reason as fetch_hitting_stints.
     url = f"{_MLB_BASE}/people/{mlbam_id}/stats"
-    data = _get(url, {"stats": "season", "group": "pitching", "season": season})
-    if not data:
-        return []
-
     stints: list[dict] = []
-    for stat_group in data.get("stats", []):
-        for split in stat_group.get("splits", []):
-            sport_id = split.get("sport", {}).get("id") or split.get("team", {}).get("sport", {}).get("id")
-            level = SPORT_ID_TO_LEVEL.get(sport_id, "")
-            if not level or level == "MLB":
-                continue
 
-            s = split.get("stat", {})
-            try:
-                ip = float(str(s.get("inningsPitched", 0)).replace(".", ""))
-                # API returns e.g. "45.1" (45 innings + 1 out = 45.333)
-                # Keep as float; use string directly
-                ip_str = str(s.get("inningsPitched", "0"))
-                parts = ip_str.split(".")
-                full_inn = int(parts[0]) if parts[0] else 0
-                outs = int(parts[1]) if len(parts) > 1 else 0
-                ip = full_inn + outs / 3.0
-            except (TypeError, ValueError):
-                ip = 0.0
+    for sport_id in _MILB_SPORT_IDS:
+        level = SPORT_ID_TO_LEVEL.get(sport_id, "")
+        if not level or level == "MLB":
+            continue
 
-            if ip < _MIN_IP_PITCH:
-                continue
+        data = _get(url, {"stats": "season", "group": "pitching", "season": season, "sportId": sport_id})
+        if not data:
+            continue
 
-            try:
-                era = float(s.get("era", 4.50) or 4.50)
-                whip = float(s.get("whip", 1.30) or 1.30)
-                k9 = float(s.get("strikeoutsPer9Inn", 7.0) or 7.0)
-            except (TypeError, ValueError):
-                era, whip, k9 = 4.50, 1.30, 7.0
+        for stat_group in data.get("stats", []):
+            for split in stat_group.get("splits", []):
+                s = split.get("stat", {})
+                try:
+                    ip_str = str(s.get("inningsPitched", "0"))
+                    parts = ip_str.split(".")
+                    full_inn = int(parts[0]) if parts[0] else 0
+                    outs = int(parts[1]) if len(parts) > 1 else 0
+                    ip = full_inn + outs / 3.0
+                except (TypeError, ValueError):
+                    ip = 0.0
 
-            stints.append({
-                "level": level,
-                "ip": round(ip, 1),
-                "era": round(era, 2),
-                "k9": round(k9, 2),
-                "whip": round(whip, 2),
-                "player_age": _parse_age(birth_year, season),
-            })
+                if ip < _MIN_IP_PITCH:
+                    continue
+
+                try:
+                    era = float(s.get("era", 4.50) or 4.50)
+                    whip = float(s.get("whip", 1.30) or 1.30)
+                    k9 = float(s.get("strikeoutsPer9Inn", 7.0) or 7.0)
+                except (TypeError, ValueError):
+                    era, whip, k9 = 4.50, 1.30, 7.0
+
+                stints.append({
+                    "level": level,
+                    "ip": round(ip, 1),
+                    "era": round(era, 2),
+                    "k9": round(k9, 2),
+                    "whip": round(whip, 2),
+                    "player_age": _parse_age(birth_year, season),
+                })
+
+        time.sleep(0.05)
 
     return stints
 
@@ -573,6 +579,10 @@ def sync_prospect_data(
     skipped = 0
     errors = 0
     updated_profiles: list[ProspectProfile] = []
+    # Track player_ids already processed this run to prevent duplicates when two
+    # different mlbam_ids normalize to the same player name (e.g. same-name players
+    # appearing at different levels in the MLB Stats API response).
+    processed_player_ids: set[int] = set()
 
     for bio in candidates:
         mid = bio["mlbam_id"]
@@ -597,6 +607,13 @@ def sync_prospect_data(
             skipped += 1
             continue  # player not in our DB
 
+        # Skip if we already processed this player under a different mlbam_id
+        # (avoids UniqueViolation when two API entries normalize to the same name)
+        if player.player_id in processed_player_ids:
+            skipped += 1
+            continue
+        processed_player_ids.add(player.player_id)
+
         # Get or create ProspectProfile
         pp = existing_profiles.get(player.player_id) or mlbam_to_profile.get(mid)
         if not pp:
@@ -608,6 +625,10 @@ def sync_prospect_data(
             )
             db.add(pp)
             db.flush()
+            # Keep the in-memory dicts in sync so a second bio for the same player
+            # (e.g. same name at a different level) hits the existing-profile branch
+            existing_profiles[player.player_id] = pp
+            mlbam_to_profile[mid] = pp
         else:
             pp.mlbam_id = mid
 
