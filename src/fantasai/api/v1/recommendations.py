@@ -349,33 +349,25 @@ def _inject_prospect_rankings(
 ) -> list:
     """Load ProspectProfile records and insert MiLB prospects into the MLB ranking list.
 
-    Each prospect gets a PlayerRanking with:
-      overall_rank  = proxy_mlb_rank   (e.g. Griffin → rank 46)
-      is_prospect   = True
-      pav_score     = their PAV score
-      score         = pav_score / 10   (normalised ~0–10, comparable to z-score sums)
+    Prospects are positioned at their PAV proxy rank (e.g. Griffin PAV 84 → rank ~72)
+    regardless of whether their FanGraphs projection placed them higher or lower.
+    After insertion the list is sorted by overall_rank and renumbered sequentially.
 
-    After insertion the list is sorted by overall_rank and renumbered sequentially
-    so MLB players retain their relative ordering with prospects slotted between them.
-
-    Players already in the MLB rankings list (called up mid-season) are deduplicated:
-    the MLB ranking takes precedence over the prospect ranking for the same player_id.
+    IMPORTANT: This function returns a NEW list built from shallow copies of the
+    incoming PlayerRanking objects so the in-process rankings cache is never mutated.
     """
+    import dataclasses as _dc
     from fantasai.models.player import Player, PlayerStats
     from fantasai.models.prospect import ProspectProfile
     from fantasai.engine.scoring import PlayerRanking
 
-    # Reset prospect flags first so this function is idempotent even when the
-    # underlying PlayerRanking objects are shared via the in-process rankings cache.
-    # Without this, mutations from a previous call persist on subsequent cache hits.
-    for r in rankings:
-        r.is_prospect = False
-        r.pav_score = None
+    # Work on shallow copies of the cached objects so that sort(), append(), and
+    # field mutations here don't corrupt the shared _RANKINGS_CACHE entries.
+    working: list = [_dc.replace(r, is_prospect=False, pav_score=None) for r in rankings]
 
     # Build a set of player_ids that have 2025 ACTUAL stats in our DB.
     # True MiLB prospects like Griffin only have 2026 projection data.
     # Established MLB players (Henderson, Moreno, etc.) have 2025 actuals.
-    # This is the most reliable way to distinguish the two groups.
     players_with_2025_stats: set[int] = {
         pid for (pid,) in db.query(PlayerStats.player_id)
         .filter(PlayerStats.season == 2025, PlayerStats.week.is_(None))
@@ -383,8 +375,8 @@ def _inject_prospect_rankings(
         .all()
     }
 
-    # Index existing rankings by player_id so we can augment or deduplicate
-    existing_by_id: dict[int, object] = {r.player_id: r for r in rankings}
+    # Index working copies by player_id
+    existing_by_id: dict[int, object] = {r.player_id: r for r in working}
 
     profiles = (
         db.query(ProspectProfile, Player)
@@ -394,12 +386,11 @@ def _inject_prospect_rankings(
     )
 
     for pp, player in profiles:
+        proxy = pp.proxy_mlb_rank or 999
         if player.player_id in existing_by_id:
             # Already in MLB rankings (has FanGraphs projections).
-            # Only augment with the MiLB badge if:
-            #   1. No 2025 actual stats → confirms they haven't played MLB yet
-            #   2. PAV >= 30 → rules out rehab pitchers with tiny/poor MiLB stints
-            #      (e.g. Jared Jones doing a 2-week High-A rehab → PAV 16)
+            # Only tag as a prospect if they lack 2025 actual stats (i.e. they
+            # haven't played meaningful MLB time yet) and PAV is substantive.
             if (
                 player.player_id not in players_with_2025_stats
                 and (pp.pav_score or 0) >= 30.0
@@ -407,14 +398,20 @@ def _inject_prospect_rankings(
                 existing = existing_by_id[player.player_id]
                 existing.is_prospect = True
                 existing.pav_score = pp.pav_score
+                # Override the FanGraphs-derived rank with the PAV proxy rank so
+                # prospects appear where their talent warrants rather than where
+                # FanGraphs' conservative projection places them.
+                existing.overall_rank = proxy
             continue
+
+        # Pure MiLB player — inject a new entry at their PAV-equivalent rank.
         pr = PlayerRanking(
             player_id=player.player_id,
             name=player.name,
             team=player.team,
             positions=list(player.positions or []),
             stat_type=pp.stat_type,
-            overall_rank=pp.proxy_mlb_rank,
+            overall_rank=proxy,
             position_rank=0,
             score=round((pp.pav_score or 0) / 10.0, 3),
             raw_score=round((pp.pav_score or 0) / 10.0, 3),
@@ -425,14 +422,14 @@ def _inject_prospect_rankings(
             is_prospect=True,
             pav_score=pp.pav_score,
         )
-        rankings.append(pr)
+        working.append(pr)
 
-    # Re-sort and renumber
-    rankings.sort(key=lambda r: (r.overall_rank, 0 if r.is_prospect else 1))
-    for i, r in enumerate(rankings):
+    # Sort by PAV/FanGraphs rank (prospects win ties) then renumber sequentially.
+    working.sort(key=lambda r: (r.overall_rank, 0 if r.is_prospect else 1))
+    for i, r in enumerate(working):
         r.overall_rank = i + 1
 
-    return rankings
+    return working
 
 
 def _fetch_rolling_windows_map(
