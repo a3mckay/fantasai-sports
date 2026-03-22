@@ -44,7 +44,14 @@ export function AuthProvider({ children }) {
         let detail = `Server error ${res.status}`
         try { detail = (await res.json()).detail || detail } catch {}
         console.error('[AuthContext] /auth/verify failed:', res.status, detail)
-        setAuthError(detail)
+        if (res.status === 401) {
+          // Stale or invalid Firebase session — sign out so the user gets
+          // a clean login screen rather than a looping error banner.
+          await firebaseSignOut(auth)
+          setAuthError(null)
+        } else {
+          setAuthError(detail)
+        }
         setUser(null)
       }
     } catch (err) {

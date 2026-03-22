@@ -86,10 +86,10 @@ def verify(body: VerifyRequest, db: Session = Depends(get_db)) -> dict[str, Any]
     try:
         claims = verify_firebase_token(body.id_token)
     except Exception as exc:
-        _log.warning("Token verification failed: %s", exc)
+        _log.warning("Token verification failed (%s): %s", type(exc).__name__, exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Firebase token",
+            detail=f"Invalid or expired Firebase token ({type(exc).__name__}: {exc})",
         )
 
     firebase_uid: str = claims["sub"]
