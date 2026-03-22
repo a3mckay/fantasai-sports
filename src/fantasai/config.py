@@ -24,6 +24,24 @@ class Settings(BaseSettings):
     # In production, set to your frontend domain, e.g. "https://fantasaisports.com"
     cors_origins: str = "*"
 
+    # Firebase (for verifying ID tokens client-side via Google public keys)
+    firebase_project_id: str = "fantasaisports-fantasy-gm"
+    firebase_web_api_key: str = ""
+
+    # Yahoo Fantasy OAuth
+    yahoo_client_id: str = ""
+    yahoo_client_secret: str = ""
+    yahoo_redirect_uri: str = "http://localhost:8000/api/v1/auth/yahoo/callback"
+
+    # Token encryption key (generate: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    token_encryption_key: str = ""
+
+    # Email (Resend)
+    resend_api_key: str = ""
+
+    # App base URL (used for Yahoo OAuth redirect, email links, etc.)
+    app_url: str = "http://localhost:8000"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @field_validator("log_level")

@@ -4,8 +4,10 @@ from fantasai.models.league import League, Team
 from fantasai.models.ranking import Ranking
 from fantasai.models.recommendation import Recommendation
 from fantasai.models.prospect import ProspectProfile
+from fantasai.models.user import User, YahooConnection, UserSettings, AnonymousUsage
 
 __all__ = [
     "Base", "Player", "PlayerStats", "League", "Team",
     "Ranking", "Recommendation", "ProspectProfile",
+    "User", "YahooConnection", "UserSettings", "AnonymousUsage",
 ]

@@ -28,7 +28,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from fantasai.api.deps import get_db
+from fantasai.api.deps import check_rate_limit, get_db
 from fantasai.brain.comparator import CompareContext, compare_players
 from fantasai.brain.league_analyzer import (
     LeaguePowerReport,
@@ -379,6 +379,7 @@ def _generate_find_player_blurb(
 def compare_players_endpoint(
     body: CompareRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("compare")),
 ) -> CompareResponse:
     """Rank two or more players against each other.
 
@@ -509,6 +510,7 @@ def compare_players_endpoint(
 def evaluate_trade_endpoint(
     body: TradeRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("trade")),
 ) -> TradeResponse:
     """Assess whether a trade proposal is fair, favors receiving, or favors giving.
 
@@ -630,6 +632,7 @@ def evaluate_trade_endpoint(
 def find_player_endpoint(
     body: FindPlayerRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("find-player")),
 ) -> FindPlayerResponse:
     """Find the best available player for a given roster slot.
 
@@ -1054,6 +1057,7 @@ def _trade_opp_to_read(opp) -> TradeOpportunityRead:  # TradeOpportunity → sch
 def team_eval_endpoint(
     body: TeamEvalRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("team-eval")),
 ) -> TeamEvalResponse:
     """Evaluate a fantasy roster from top to bottom.
 
@@ -1161,6 +1165,7 @@ def team_eval_endpoint(
 def keeper_eval_endpoint(
     body: KeeperEvalRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("keeper-eval")),
 ) -> KeeperEvalResponse:
     """Keeper/dynasty planning endpoint.
 
@@ -1338,6 +1343,7 @@ def keeper_eval_endpoint(
 def compare_teams_endpoint(
     body: CompareTeamsRequest,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("compare-teams")),
 ) -> CompareTeamsResponse:
     """Compare multiple teams side-by-side.
 
@@ -1420,6 +1426,7 @@ def compare_teams_endpoint(
 def league_power_endpoint(
     league_id: int,
     db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("league-power")),
 ) -> LeaguePowerResponse:
     """Compute power rankings for every team in a league.
 
@@ -1484,6 +1491,7 @@ def league_power_endpoint(
 )
 def extract_players_endpoint(
     body: ExtractPlayersRequest,
+    _limit: None = Depends(check_rate_limit("extract-players")),
 ) -> ExtractPlayersResponse:
     """Extract fantasy baseball player names from a screenshot image.
 

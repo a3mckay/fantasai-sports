@@ -41,6 +41,9 @@ from fantasai.api.v1.rankings import router as rankings_router  # noqa: E402
 from fantasai.api.v1.recommendations import router as recommendations_router, _compute_rankings  # noqa: E402
 from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES  # noqa: E402
 from fantasai.api.v1.analysis import router as analysis_router  # noqa: E402
+from fantasai.api.v1.auth import router as auth_router  # noqa: E402
+from fantasai.api.v1.users import router as users_router  # noqa: E402
+from fantasai.api.v1.settings import router as settings_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
@@ -100,3 +103,6 @@ app.include_router(players_router, prefix="/api/v1")
 app.include_router(rankings_router, prefix="/api/v1")
 app.include_router(recommendations_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(users_router, prefix="/api/v1")
+app.include_router(settings_router, prefix="/api/v1")

@@ -13,21 +13,42 @@ const RAILWAY_URL = 'https://fantasai-sports-production.up.railway.app'
 
 const _rawUrl = import.meta.env.VITE_API_URL || ''
 const BASE = _rawUrl.startsWith('http')
-  ? `${_rawUrl}/api/v1`
+  ? _rawUrl
   : import.meta.env.PROD
-    ? `${RAILWAY_URL}/api/v1`   // production: call Railway directly, no Vercel proxy
-    : '/api/v1'                  // dev: Vite proxy → localhost:8000
+    ? RAILWAY_URL   // production: call Railway directly, no Vercel proxy
+    : ''            // dev: Vite proxy → localhost:8000
 
-export const API_BASE_URL = BASE.replace('/api/v1', '') // used by keepalive
+export const API_BASE_URL = BASE || window.location.origin
 
-async function req(method, path, body) {
-  const opts = {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-  }
+async function _getIdToken() {
+  try {
+    const { auth } = await import('./firebase')
+    const fbUser = auth.currentUser
+    if (fbUser) return fbUser.getIdToken()
+  } catch {}
+  return null
+}
+
+export async function req(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' }
+
+  const token = await _getIdToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const opts = { method, headers }
   if (body !== undefined) opts.body = JSON.stringify(body)
 
-  const res = await fetch(`${BASE}${path}`, opts)
+  const url = path.startsWith('http') ? path : `${BASE}${path}`
+  const res = await fetch(url, opts)
+
+  if (res.status === 429) {
+    let detail = {}
+    try { detail = await res.json() } catch {}
+    const feature = detail.detail?.feature || detail.feature || 'this feature'
+    window.dispatchEvent(new CustomEvent('metering:limit', { detail: { feature } }))
+    throw new Error('rate_limited')
+  }
+
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
     try {
@@ -44,22 +65,22 @@ const post = (path, body) => req('POST', path, body)
 
 // ── Players ──────────────────────────────────────────────────────────────────
 export const searchPlayers = (q, limit = 20) =>
-  get(`/players?search=${encodeURIComponent(q)}&limit=${limit}`)
+  get(`/api/v1/players?search=${encodeURIComponent(q)}&limit=${limit}`)
 
 // ── Leagues ───────────────────────────────────────────────────────────────────
-export const listLeagues = () => get('/leagues')
-export const getLeague   = (id) => get(`/leagues/${id}`)
-export const listTeams   = (leagueId) => get(`/leagues/${leagueId}/teams`)
+export const listLeagues = () => get('/api/v1/leagues')
+export const getLeague   = (id) => get(`/api/v1/leagues/${id}`)
+export const listTeams   = (leagueId) => get(`/api/v1/leagues/${leagueId}/teams`)
 
 // ── Analysis ─────────────────────────────────────────────────────────────────
-export const comparePlayers  = (body) => post('/analysis/compare', body)
-export const evaluateTrade   = (body) => post('/analysis/trade', body)
-export const findPlayer      = (body) => post('/analysis/find-player', body)
-export const teamEval        = (body) => post('/analysis/team-eval', body)
-export const keeperEval      = (body) => post('/analysis/keeper-eval', body)
-export const compareTeams    = (body) => post('/analysis/compare-teams', body)
-export const leaguePower     = (id)   => get(`/analysis/league-power/${id}`)
-export const extractPlayers  = (body) => post('/analysis/extract-players', body)
+export const comparePlayers  = (body) => post('/api/v1/analysis/compare', body)
+export const evaluateTrade   = (body) => post('/api/v1/analysis/trade', body)
+export const findPlayer      = (body) => post('/api/v1/analysis/find-player', body)
+export const teamEval        = (body) => post('/api/v1/analysis/team-eval', body)
+export const keeperEval      = (body) => post('/api/v1/analysis/keeper-eval', body)
+export const compareTeams    = (body) => post('/api/v1/analysis/compare-teams', body)
+export const leaguePower     = (id)   => get(`/api/v1/analysis/league-power/${id}`)
+export const extractPlayers  = (body) => post('/api/v1/analysis/extract-players', body)
 
 // ── Rankings ─────────────────────────────────────────────────────────────────
 export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, position, horizon } = {}) => {
@@ -67,5 +88,5 @@ export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, 
   if (season)   params.set('season', season)
   if (position) params.set('position', position)
   if (horizon)  params.set('horizon', horizon)
-  return get(`/rankings?${params}`)
+  return get(`/api/v1/rankings?${params}`)
 }
