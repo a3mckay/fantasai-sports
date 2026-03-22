@@ -11,6 +11,8 @@ from typing import Any
 
 import httpx
 import jwt
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from fantasai.config import settings
 
@@ -22,6 +24,12 @@ _ISSUER_PREFIX = "https://securetoken.google.com/"
 # Simple in-memory cache: (certs_dict, fetched_at_timestamp)
 _cert_cache: tuple[dict[str, str], float] | None = None
 _CACHE_TTL = 3600  # 1 hour
+
+
+def _cert_pem_to_public_key(cert_pem: str) -> str:
+    """Extract the RSA public key (SPKI/PEM) from an X.509 certificate string."""
+    cert = x509.load_pem_x509_certificate(cert_pem.encode())
+    return cert.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
 
 
 def _fetch_google_certs() -> dict[str, str]:
@@ -56,15 +64,19 @@ def verify_firebase_token(id_token: str) -> dict[str, Any]:
         raise ValueError("Firebase token missing 'kid' header")
 
     certs = _fetch_google_certs()
-    public_key_pem = certs.get(kid)
-    if not public_key_pem:
+    cert_pem = certs.get(kid)
+    if not cert_pem:
         # Key not in cache — refresh once and retry
         global _cert_cache
         _cert_cache = None
         certs = _fetch_google_certs()
-        public_key_pem = certs.get(kid)
-        if not public_key_pem:
+        cert_pem = certs.get(kid)
+        if not cert_pem:
             raise ValueError(f"Firebase token 'kid' {kid!r} not found in Google certs")
+
+    # Extract the RSA public key from the X.509 certificate so PyJWT can
+    # verify the RS256 signature without ambiguity about certificate format.
+    public_key_pem = _cert_pem_to_public_key(cert_pem)
 
     claims: dict[str, Any] = jwt.decode(
         id_token,
