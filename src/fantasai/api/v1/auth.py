@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from fantasai.api.deps import get_current_user, get_db
 from fantasai.config import settings
 from fantasai.models.user import User, UserSettings, YahooConnection
-from fantasai.services.encryption import encrypt_token
+from fantasai.services.encryption import decrypt_token, encrypt_token
 from fantasai.services.firebase_auth import verify_firebase_token
 from fantasai.services.yahoo_oauth import (
     exchange_code,
@@ -350,3 +350,119 @@ def yahoo_status(user: User = Depends(get_current_user)) -> dict[str, Any]:
         "team_key": conn.team_key,
         "last_synced": conn.last_synced.isoformat() if conn.last_synced else None,
     }
+
+
+@router.post("/yahoo/resync")
+def yahoo_resync(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Re-import league and team data from Yahoo using stored tokens.
+
+    Returns a detailed result for debugging — safe to call at any time.
+    """
+    conn = user.yahoo_connection
+    if not conn or not conn.encrypted_access_token:
+        raise HTTPException(status_code=400, detail="No Yahoo connection found")
+
+    try:
+        access_token = decrypt_token(conn.encrypted_access_token)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Token decryption failed: {exc}")
+
+    result: dict[str, Any] = {"steps": []}
+
+    try:
+        leagues = fetch_user_mlb_leagues(access_token)
+        result["steps"].append(f"fetch_user_mlb_leagues: {len(leagues)} league(s) found")
+        result["leagues"] = leagues
+    except Exception as exc:
+        result["steps"].append(f"fetch_user_mlb_leagues FAILED: {exc}")
+        return result
+
+    if not leagues:
+        result["steps"].append("No leagues — import skipped")
+        return result
+
+    league_info = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)[0]
+    league_key = league_info["league_key"]
+    result["league_key"] = league_key
+
+    try:
+        settings_data = fetch_league_settings(access_token, league_key)
+        result["steps"].append(f"fetch_league_settings: {len(settings_data.get('stat_categories', []))} cats, {len(settings_data.get('roster_positions', []))} positions")
+        result["settings_data"] = settings_data
+    except Exception as exc:
+        result["steps"].append(f"fetch_league_settings FAILED: {exc}")
+
+    from fantasai.models.league import League, Team  # noqa: PLC0415
+
+    try:
+        league = db.query(League).filter(League.league_id == league_key).first()
+        if league is None:
+            league = League(
+                league_id=league_key,
+                platform="yahoo",
+                sport="mlb",
+                league_type=league_info.get("scoring_type", "head"),
+            )
+            db.add(league)
+            result["steps"].append("League row created")
+        else:
+            result["steps"].append("League row already exists — updating")
+
+        league.owner_user_id = user.id
+        league.scoring_categories = settings_data.get("stat_categories") or []
+        league.roster_positions = settings_data.get("roster_positions") or []
+        league.settings = {
+            "num_teams": league_info.get("num_teams"),
+            "name": league_info.get("name"),
+            "season": league_info.get("season"),
+        }
+        conn.league_key = league_key
+        db.flush()
+        result["steps"].append("League flushed OK")
+    except Exception as exc:
+        db.rollback()
+        result["steps"].append(f"League upsert FAILED: {exc}")
+        return result
+
+    if conn.yahoo_guid:
+        try:
+            team_info = fetch_user_team(access_token, league_key, conn.yahoo_guid)
+            result["steps"].append(f"fetch_user_team: {'found' if team_info else 'not found'}")
+            if team_info:
+                team_key = team_info["team_key"]
+                conn.team_key = team_key
+                roster = fetch_team_roster(access_token, team_key)
+                result["steps"].append(f"fetch_team_roster: {len(roster)} players")
+                result["roster_sample"] = roster[:5]
+
+                team = db.query(Team).filter(
+                    Team.owner_user_id == user.id,
+                    Team.league_id == league_key,
+                ).first()
+                if team is None:
+                    team = Team(league_id=league_key, manager_name=user.name or "")
+                    db.add(team)
+                    result["steps"].append("Team row created")
+                else:
+                    result["steps"].append("Team row already exists — updating")
+                team.owner_user_id = user.id
+                team.manager_name = user.name or team_info.get("manager_name", "")
+                team.roster = roster
+        except Exception as exc:
+            result["steps"].append(f"Team import FAILED: {exc}")
+
+    try:
+        db.commit()
+        conn.last_synced = datetime.now(tz=timezone.utc)
+        db.commit()
+        result["steps"].append("Committed OK")
+        result["success"] = True
+    except Exception as exc:
+        db.rollback()
+        result["steps"].append(f"Commit FAILED: {exc}")
+        result["success"] = False
+
+    return result
