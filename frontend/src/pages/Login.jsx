@@ -5,7 +5,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
 } from 'firebase/auth'
-import { auth, googleProvider, appleProvider, facebookProvider } from '../lib/firebase'
+import { auth, googleProvider } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function Login() {
@@ -102,22 +102,6 @@ export default function Login() {
               <GoogleIcon />
               Continue with Google
             </button>
-            <button
-              onClick={() => handleSocialSignIn(appleProvider)}
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-black hover:bg-slate-900 text-white font-medium rounded-lg border border-slate-700 transition-colors disabled:opacity-50"
-            >
-              <AppleIcon />
-              Continue with Apple
-            </button>
-            <button
-              onClick={() => handleSocialSignIn(facebookProvider)}
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-3 px-4 py-2.5 bg-[#1877F2] hover:bg-[#166FE5] text-white font-medium rounded-lg transition-colors disabled:opacity-50"
-            >
-              <FacebookIcon />
-              Continue with Facebook
-            </button>
           </div>
 
           {/* Divider */}
@@ -188,18 +172,3 @@ function GoogleIcon() {
   )
 }
 
-function AppleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 814 1000" fill="white">
-      <path d="M788.1 340.9c-5.8 4.5-108.2 62.2-108.2 190.5 0 148.4 130.3 200.9 134.2 202.2-.6 3.2-20.7 71.9-68.7 141.9-42.8 61.6-87.5 123.1-155.5 123.1s-85.5-39.5-164-39.5c-76.5 0-103.7 40.8-165.9 40.8s-105-37.6-155.5-127.6C46.7 790.7 0 663 0 541.8c0-207.4 135.4-316.8 268.9-316.8 79.2 0 144.8 49.4 192 49.4 45.3 0 122.4-52.1 215.7-52.1zM550 48c11 40.8 17.1 81.8 17.1 123.9 0 72.8-32.3 146.5-83.6 196.9-43.4 42.8-107.6 71.9-172.2 71.9-8.4 0-16.9-.5-24.7-1.6-.6-2.6-1-5.2-1-7.7 0-59.8 31.7-121.9 79.8-162.2 49.7-41.5 121.3-68.8 185.5-71.2z"/>
-    </svg>
-  )
-}
-
-function FacebookIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
-      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-    </svg>
-  )
-}
