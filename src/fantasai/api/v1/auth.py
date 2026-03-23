@@ -204,10 +204,7 @@ def yahoo_callback(
     Exchanges the code for tokens, imports league/team data, then redirects
     the frontend to /onboarding?yahoo=connected (or ?yahoo=error on failure).
     """
-    frontend_base = settings.app_url.replace(":8000", ":5173") if settings.env == "development" else settings.app_url.replace("/api", "")
-    # For production the frontend is served separately; use APP_URL without the API path
-    if "railway.app" in settings.app_url or settings.env == "production":
-        frontend_base = "https://fantasaisports.com"
+    frontend_base = settings.app_url
 
     if error or not code:
         _log.warning("Yahoo OAuth error: %s", error)
@@ -313,7 +310,10 @@ def _import_yahoo_league(
             conn.team_key = team_key
             roster = fetch_team_roster(access_token, team_key)
 
-            team = db.query(Team).filter(Team.team_id == hash(team_key) % (2**31)).first()
+            team = db.query(Team).filter(
+                Team.owner_user_id == user.id,
+                Team.league_id == league_key,
+            ).first()
             if team is None:
                 team = Team(
                     league_id=league_key,
