@@ -14,6 +14,8 @@ export default function Profile() {
 
   const [yahooStatus, setYahooStatus] = useState(null)
   const [yahooLoading, setYahooLoading] = useState(true)
+  const [resyncing, setResyncing] = useState(false)
+  const [resyncMsg, setResyncMsg] = useState('')
 
   const [prefs, setPrefs] = useState({ weekly_digest: true, waiver_alerts: true })
   const [prefsLoading, setPrefsLoading] = useState(true)
@@ -44,6 +46,26 @@ export default function Profile() {
       window.location.href = data.auth_url
     } catch {
       alert('Could not connect to Yahoo. Please try again.')
+    }
+  }
+
+  async function resyncYahoo() {
+    setResyncing(true)
+    setResyncMsg('')
+    try {
+      const data = await req('POST', '/api/v1/auth/yahoo/resync')
+      if (data.success) {
+        setResyncMsg(`✓ Synced — ${data.roster_sample ? `${data.roster_sample.length}+ players imported` : 'league data updated'}`)
+        const status = await req('GET', '/api/v1/auth/yahoo/status')
+        setYahooStatus(status)
+      } else {
+        const lastStep = data.steps?.[data.steps.length - 1] || 'Unknown error'
+        setResyncMsg(`Failed: ${lastStep}`)
+      }
+    } catch {
+      setResyncMsg('Re-sync failed. Please try again.')
+    } finally {
+      setResyncing(false)
     }
   }
 
@@ -130,12 +152,27 @@ export default function Profile() {
                 <span className="text-slate-500 text-xs ml-1">· League: {yahooStatus.league_key}</span>
               )}
             </div>
-            <button
-              onClick={disconnectYahoo}
-              className="text-red-400 hover:text-red-300 text-sm transition-colors"
-            >
-              Disconnect Yahoo account
-            </button>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={resyncYahoo}
+                disabled={resyncing}
+                className="bg-[#6001d2] hover:bg-[#5200b8] text-white font-medium py-2 px-4 rounded-lg text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
+              >
+                <span className="font-bold">Y!</span>
+                {resyncing ? 'Syncing…' : 'Re-sync League Data'}
+              </button>
+              <button
+                onClick={disconnectYahoo}
+                className="text-red-400 hover:text-red-300 text-sm transition-colors"
+              >
+                Disconnect
+              </button>
+            </div>
+            {resyncMsg && (
+              <p className={`mt-3 text-xs ${resyncMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
+                {resyncMsg}
+              </p>
+            )}
           </div>
         ) : (
           <div>
