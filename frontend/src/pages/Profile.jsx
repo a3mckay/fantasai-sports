@@ -205,12 +205,12 @@ function Toggle({ label, description, checked, onChange }) {
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative w-10 h-6 rounded-full transition-colors flex-shrink-0 ${
-          checked ? 'bg-field-600' : 'bg-navy-700'
+        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 overflow-hidden ${
+          checked ? 'bg-field-600' : 'bg-navy-600'
         }`}
       >
-        <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-1'
+        <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-5' : 'translate-x-0'
         }`} />
       </button>
     </div>
