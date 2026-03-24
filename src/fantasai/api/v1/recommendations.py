@@ -36,6 +36,7 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 # ---------------------------------------------------------------------------
 
 _RANKINGS_CACHE: dict[str, tuple[float, tuple]] = {}
+_RANKINGS_RAW_CACHE: dict[str, tuple[float, tuple]] = {}  # non-deduped, for rankings display
 _RANKINGS_TTL = 1800  # 30 minutes — rankings change at most once per pipeline run
 
 
@@ -61,6 +62,21 @@ def _set_cached_rankings(
     categories: list[str], horizon: ProjectionHorizon, value: tuple
 ) -> None:
     _RANKINGS_CACHE[_rankings_cache_key(categories, horizon)] = (time.monotonic(), value)
+
+
+def _get_cached_raw_rankings(
+    categories: list[str], horizon: ProjectionHorizon
+) -> tuple | None:
+    """Return the non-deduped (raw) rankings from cache, used by the rankings display endpoint."""
+    key = _rankings_cache_key(categories, horizon)
+    entry = _RANKINGS_RAW_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > _RANKINGS_TTL:
+        del _RANKINGS_RAW_CACHE[key]
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +215,29 @@ def _compute_rankings(
             nd.injury_status = ir.status
             nd.injury_return_date = ir.return_date
 
+    import copy
+
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2025, players=players)
     predictive = engine.compute_predictive_rankings(
         2025, players=players, horizon=horizon, steamer_lookup=steamer_lookup,
     )
+
+    # Store non-deduped (raw) rankings before deduplication so the rankings
+    # display endpoint can show two-way players (e.g. Ohtani) as both a batter
+    # and a pitcher. Use shallow copies so _dedup's overall_rank mutations on
+    # the originals don't affect the raw copies.
+    def _rerank_raw(rnks: list) -> list:
+        raw = sorted([copy.copy(r) for r in rnks], key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(raw):
+            r.overall_rank = i + 1
+        return raw
+
+    lb_raw   = _rerank_raw(lookback)
+    pred_raw = _rerank_raw(predictive)
+    _key = _rankings_cache_key(categories, horizon)
+    _RANKINGS_RAW_CACHE[_key] = (time.monotonic(), (lb_raw, pred_raw))
 
     # Deduplicate: two-way players (e.g. Ohtani) have both batting and pitching
     # rows, producing two ranking entries with the same player_id. Keep the

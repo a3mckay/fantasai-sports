@@ -10,6 +10,12 @@ import PercentileBar from '../components/PercentileBar'
 import { useLeague } from '../contexts/LeagueContext'
 
 const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 'Batters', 'Pitchers']
+const LEVEL_FILTERS    = ['All', 'MLB', 'MiLB']
+const ROSTER_FILTERS   = [
+  { val: 'all',            label: 'All Players'         },
+  { val: 'mine',           label: 'My Team'             },
+  { val: 'available',      label: 'My Team + Free Agents' },
+]
 const PAGE_SIZES       = [50, 100, 250, 'All']
 const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
 
@@ -89,7 +95,7 @@ const HORIZON_OPTIONS = [
 ]
 
 export default function Rankings() {
-  const { league } = useLeague() || {}
+  const { league, myTeam } = useLeague() || {}
 
   // Build player_id → team_name ownership map from league context
   const ownedByMap = {}
@@ -104,6 +110,8 @@ export default function Rankings() {
   const [mode, setMode]             = useState('predictive')
   const [horizon, setHorizon]       = useState('season')
   const [posFilter, setPosFilter]   = useState('All')
+  const [levelFilter, setLevelFilter] = useState('All')
+  const [rosterFilter, setRosterFilter] = useState('all')
   const [search, setSearch]         = useState('')
   const [pageSize, setPageSize]     = useState(50)
   const [loading, setLoading]       = useState(false)
@@ -125,7 +133,7 @@ export default function Rankings() {
   }, [horizon])
 
   // Reset to first page whenever filters change
-  useEffect(() => { setPageSize(50) }, [mode, posFilter, search, horizon])
+  useEffect(() => { setPageSize(50) }, [mode, posFilter, levelFilter, rosterFilter, search, horizon])
 
   // Back-to-top button
   useEffect(() => {
@@ -164,24 +172,26 @@ export default function Rankings() {
     }
   }
 
-  // Rank-lookup maps for cross-referencing
+  // Rank-lookup maps for cross-referencing. Use player_id+stat_type as key
+  // so two-way players (e.g. Ohtani batting vs pitching) are tracked separately.
+  const rowKey  = p => `${p.player_id}_${p.stat_type}`
   const predMap = {}
   const lookMap = {}
-  if (predictive) predictive.forEach(p => { predMap[p.player_id] = p.overall_rank })
-  if (lookback)   lookback.forEach(p   => { lookMap[p.player_id] = p.overall_rank  })
+  if (predictive) predictive.forEach(p => { predMap[rowKey(p)] = p.overall_rank })
+  if (lookback)   lookback.forEach(p   => { lookMap[rowKey(p)] = p.overall_rank  })
 
   const activeList = mode === 'predictive' ? predictive : lookback
 
   function getPriorRank(player) {
     return mode === 'predictive'
-      ? (lookMap[player.player_id] ?? null)
-      : (predMap[player.player_id] ?? null)
+      ? (lookMap[rowKey(player)] ?? null)
+      : (predMap[rowKey(player)] ?? null)
   }
 
-  function toggleRow(playerId) {
+  function toggleRow(key) {
     setExpandedRows(prev => {
       const next = new Set(prev)
-      next.has(playerId) ? next.delete(playerId) : next.add(playerId)
+      next.has(key) ? next.delete(key) : next.add(key)
       return next
     })
   }
@@ -190,16 +200,30 @@ export default function Rankings() {
   // "Julio Rodríguez" → "julio rodriguez"
   const normalize = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 
-  // Filter by position + search
+  // Filter by position + level + roster + search
   const filtered = (activeList ?? []).filter(p => {
     const posOk =
-      posFilter === 'All'                                                        ? true
-      : posFilter === 'Batters'                                                  ? p.stat_type === 'batting'
-      : posFilter === 'Pitchers'                                                 ? p.stat_type === 'pitching'
+      posFilter === 'All'     ? true
+      : posFilter === 'Batters'  ? p.stat_type === 'batting'
+      : posFilter === 'Pitchers' ? p.stat_type === 'pitching'
       : displayPositions(p).some(pos => pos.toUpperCase() === posFilter.toUpperCase())
+
+    const levelOk =
+      levelFilter === 'All'  ? true
+      : levelFilter === 'MiLB' ? p.is_prospect === true
+      : /* MLB */               p.is_prospect !== true
+
+    const ownedBy = ownedByMap[p.player_id]
+    const myTeamName = myTeam?.team_name
+    const rosterOk =
+      rosterFilter === 'all'  ? true
+      : rosterFilter === 'mine' ? ownedBy === myTeamName
+      : /* available */          ownedBy === myTeamName || !ownedBy
+
     const searchOk = !search.trim() ||
       normalize(p.name).includes(normalize(search.trim()))
-    return posOk && searchOk
+
+    return posOk && levelOk && rosterOk && searchOk
   })
 
   // Pagination: show all when searching, otherwise slice
@@ -313,6 +337,51 @@ export default function Rankings() {
         ))}
       </div>
 
+      {/* ── Level + Roster filters ── */}
+      <div className="flex items-center gap-4 flex-wrap">
+        {/* MLB / MiLB toggle */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-500 shrink-0">Level:</span>
+          <div className="flex gap-1">
+            {LEVEL_FILTERS.map(lf => (
+              <button
+                key={lf}
+                onClick={() => setLevelFilter(lf)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                  levelFilter === lf
+                    ? 'bg-navy-600 border-navy-500 text-white'
+                    : 'bg-navy-900 border-navy-700 text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {lf}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Roster scope (only shown when league is connected) */}
+        {league && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-slate-500 shrink-0">Show:</span>
+            <div className="flex gap-1">
+              {ROSTER_FILTERS.map(rf => (
+                <button
+                  key={rf.val}
+                  onClick={() => setRosterFilter(rf.val)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+                    rosterFilter === rf.val
+                      ? 'bg-navy-600 border-navy-500 text-white'
+                      : 'bg-navy-900 border-navy-700 text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {rf.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       <ErrorBanner message={error} onClose={() => setError(null)} />
       {loading && <LoadingState message="Loading rankings…" />}
 
@@ -342,12 +411,13 @@ export default function Rankings() {
             </thead>
             <tbody>
               {displayed.map(player => {
+                const key        = rowKey(player)
                 const priorRank  = getPriorRank(player)
-                const isExpanded = expandedRows.has(player.player_id)
+                const isExpanded = expandedRows.has(key)
                 const hasCats    = Object.keys(player.category_contributions || {}).length > 0
                 return (
                   <tr
-                    key={player.player_id}
+                    key={key}
                     className="border-t border-navy-800 transition-colors hover:bg-navy-800/30"
                   >
                     {/* Rank */}
@@ -391,13 +461,10 @@ export default function Rankings() {
                             ⚠
                           </span>
                         )}
-                        {/* Ownership badge */}
+                        {/* Ownership badge — shows team name */}
                         {ownedByMap[player.player_id] && (
-                          <span
-                            className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5 leading-none"
-                            title={`Owned by ${ownedByMap[player.player_id]}`}
-                          >
-                            Owned
+                          <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5 leading-none">
+                            {ownedByMap[player.player_id]}
                           </span>
                         )}
                         {/* MiLB prospect badge — shown for minor-league players injected via PAV */}
@@ -415,6 +482,11 @@ export default function Rankings() {
                         <div className="mt-2 text-xs text-emerald-400/80">
                           PAV Score: <span className="font-semibold">{player.pav_score.toFixed(1)}</span>/100
                           <span className="text-slate-500 ml-2">— Prospect Adjusted Value</span>
+                        </div>
+                      )}
+                      {isExpanded && player.stat_type && (
+                        <div className="mt-1 text-[10px] text-slate-600 uppercase tracking-wide">
+                          {player.stat_type === 'batting' ? 'Batting stats' : 'Pitching stats'}
                         </div>
                       )}
                       {isExpanded && hasCats && (
@@ -447,7 +519,7 @@ export default function Rankings() {
                     <td className="py-3 pr-3 text-right align-top pt-2.5">
                       {hasCats && (
                         <button
-                          onClick={() => toggleRow(player.player_id)}
+                          onClick={() => toggleRow(key)}
                           className={`p-1 rounded transition-colors ${
                             isExpanded
                               ? 'text-field-400 bg-field-900/40 hover:bg-field-900/60'

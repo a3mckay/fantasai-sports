@@ -63,10 +63,14 @@ def list_rankings(
     # fresh uncached query — this path is only hit in tests / edge cases.
     _CACHED_SEASON = 2025
     if season == _CACHED_SEASON:
-        from fantasai.api.v1.recommendations import _compute_rankings
-        lookback, predictive = _compute_rankings(
-            db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon
-        )
+        from fantasai.api.v1.recommendations import _compute_rankings, _get_cached_raw_rankings
+        _compute_rankings(db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon)
+        raw = _get_cached_raw_rankings(RANKINGS_DEFAULT_CATEGORIES, proj_horizon)
+        if raw is not None:
+            lookback, predictive = raw
+        else:
+            from fantasai.api.v1.recommendations import _compute_rankings as _cr
+            lookback, predictive = _cr(db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon)
     else:
         from fantasai.adapters.base import NormalizedPlayerData
         from fantasai.adapters.mlb import MLBAdapter
@@ -189,9 +193,10 @@ def list_rankings(
 @router.post("/clear-cache", tags=["admin"])
 def clear_rankings_cache() -> dict:
     """Clear the in-process rankings cache, forcing a fresh compute on next request."""
-    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
     n = len(_RANKINGS_CACHE)
     _RANKINGS_CACHE.clear()
+    _RANKINGS_RAW_CACHE.clear()
     return {"cleared": n, "status": "ok"}
 
 
