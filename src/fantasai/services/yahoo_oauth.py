@@ -167,7 +167,7 @@ def fetch_user_mlb_leagues(access_token: str) -> list[dict[str, Any]]:
 
 
 def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
-    """Fetch detailed league settings: scoring categories, roster positions."""
+    """Fetch detailed league settings: scoring categories, roster positions, keeper count."""
     result: dict[str, Any] = {}
     try:
         root = _yahoo_get(access_token, f"league/{league_key}/settings")
@@ -184,6 +184,15 @@ def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
             if pos_elem.tag.endswith("position") and pos_elem.text:
                 roster_positions.append(pos_elem.text.strip())
         result["roster_positions"] = list(dict.fromkeys(roster_positions))  # deduplicate
+
+        # Extract keeper count (keeper leagues only — 0 for non-keeper leagues)
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag in ("max_keeper_positions", "num_keeper_positions", "keepers_count") and elem.text:
+                try:
+                    result["num_keepers"] = int(elem.text.strip())
+                except ValueError:
+                    pass
     except Exception:
         _log.warning("Could not fetch league settings for %s", league_key, exc_info=True)
     return result

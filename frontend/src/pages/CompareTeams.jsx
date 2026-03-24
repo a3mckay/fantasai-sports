@@ -11,6 +11,7 @@ import Blurb from '../components/Blurb'
 import PercentileBar from '../components/PercentileBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
+import { useLeague } from '../contexts/LeagueContext'
 
 // ── TeamCard result display ───────────────────────────────────────────────────
 
@@ -254,6 +255,7 @@ function newTeam(idx) {
 }
 
 export default function CompareTeams() {
+  const { league } = useLeague() || {}
   const [teams, setTeams]               = useState([newTeam(0), newTeam(1)])
   const [context, setContext]           = useState('')
   const [leagueSettings, setLeagueSettings] = useState(null)
@@ -261,6 +263,21 @@ export default function CompareTeams() {
   const [tradeLoading, setTradeLoading] = useState(false)
   const [error, setError]               = useState(null)
   const [result, setResult]             = useState(null)
+
+  const leagueInitialValues = league ? {
+    categories:      league.scoring_categories,
+    leagueType:      league.league_type,
+    numTeams:        league.num_teams,
+    rosterPositions: league.roster_positions,
+  } : null
+
+  function loadLeagueTeam(leagueTeam) {
+    const players = leagueTeam.roster.map(p => ({ name: p.name, playerId: p.player_id }))
+    return {
+      name:    leagueTeam.team_name,
+      players: players.length > 0 ? players : [{ name: '', playerId: null }],
+    }
+  }
 
   function updateTeam(idx, team) {
     setTeams(prev => prev.map((t, i) => i === idx ? team : t))
@@ -334,6 +351,28 @@ export default function CompareTeams() {
         onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
         className="space-y-5"
       >
+        {/* League team quick-load chips */}
+        {league?.teams?.length > 0 && (
+          <div className="p-3 bg-navy-800/50 rounded-xl border border-navy-700">
+            <p className="text-[10px] font-semibold text-[#6001d2] uppercase tracking-wider mb-2">Y! Add a team from your league</p>
+            <div className="flex flex-wrap gap-1.5">
+              {league.teams.map(lt => (
+                <button
+                  key={lt.team_id}
+                  type="button"
+                  onClick={() => {
+                    if (teams.length < 6) setTeams(prev => [...prev, loadLeagueTeam(lt)])
+                  }}
+                  disabled={teams.length >= 6}
+                  className="px-2.5 py-1 rounded-md text-xs border transition-colors bg-navy-700 border-navy-600 text-slate-300 hover:border-[#6001d2]/50 hover:text-white disabled:opacity-40"
+                >
+                  {lt.team_name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-4">
           {teams.map((team, idx) => (
             <TeamInputBlock
@@ -356,7 +395,7 @@ export default function CompareTeams() {
         )}
 
         <ContextInput value={context} onChange={setContext} />
-        <LeagueSettings onChange={setLeagueSettings} />
+        <LeagueSettings onChange={setLeagueSettings} initialValues={leagueInitialValues} />
 
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} /> Compare Teams

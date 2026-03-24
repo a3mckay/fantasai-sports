@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import { LeagueProvider } from './contexts/LeagueContext'
 import AuthGuard from './components/AuthGuard'
 import Layout from './components/Layout'
 import MeterBanner from './components/MeterBanner'
@@ -32,6 +33,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <LeagueProvider>
         <MeterBanner />
         <Routes>
           {/* Public routes — no auth required */}
@@ -59,6 +61,7 @@ export default function App() {
             </AuthGuard>
           } />
         </Routes>
+        </LeagueProvider>
       </AuthProvider>
     </BrowserRouter>
   )

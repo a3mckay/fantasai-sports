@@ -1391,7 +1391,7 @@ def compare_teams_endpoint(
             if not team:
                 raise HTTPException(status_code=404, detail=f"Team {tid} not found.")
             roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
-            team_data.append((tid, team.name or f"Team {tid}", roster_rankings))
+            team_data.append((tid, team.team_name or team.manager_name or f"Team {tid}", roster_rankings))
 
     if len(team_data) < 2:
         raise HTTPException(status_code=422, detail="At least 2 valid teams are required.")
@@ -1424,7 +1424,7 @@ def compare_teams_endpoint(
     summary="Full league power rankings: tiers, power scores, and top trade pairs",
 )
 def league_power_endpoint(
-    league_id: int,
+    league_id: str,
     db: Session = Depends(get_db),
     _limit: None = Depends(check_rate_limit("league-power")),
 ) -> LeaguePowerResponse:
@@ -1456,9 +1456,9 @@ def league_power_endpoint(
     team_names: dict[int, str] = {}
     for team in league.teams or []:
         roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
-        name = team.name or f"Team {team.id}"
-        team_data.append((team.id, name, roster_rankings))
-        team_names[team.id] = name
+        name = team.team_name or team.manager_name or f"Team {team.team_id}"
+        team_data.append((team.team_id, name, roster_rankings))
+        team_names[team.team_id] = name
 
     if not team_data:
         raise HTTPException(status_code=404, detail=f"No teams found for league {league_id}.")

@@ -26,7 +26,7 @@ class TeamEvalRequest(BaseModel):
         default=None,
         description="FanGraphs IDfg values for the team's players. Use if no team_id.",
     )
-    league_id: Optional[int] = Field(
+    league_id: Optional[str] = Field(
         default=None,
         description="League ID for category context and percentile grading.",
     )
@@ -114,7 +114,7 @@ class KeeperEvalRequest(BaseModel):
         default=5,
         description="Number of players to keep (plan_keepers mode only).",
     )
-    league_id: Optional[int] = Field(
+    league_id: Optional[str] = Field(
         default=None,
         description="League ID for category context and available pool.",
     )
@@ -221,7 +221,7 @@ class CompareTeamsRequest(BaseModel):
         default=None,
         description="Manual team input with player_ids.",
     )
-    league_id: Optional[int] = Field(
+    league_id: Optional[str] = Field(
         default=None,
         description="League ID for scoring category context.",
     )

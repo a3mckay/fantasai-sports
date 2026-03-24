@@ -330,6 +330,7 @@ def _import_yahoo_league(
         "num_teams": league_info.get("num_teams"),
         "name": league_info.get("name"),
         "season": league_info.get("season"),
+        "keepers_per_team": settings_data.get("num_keepers", 0),
     }
     db.flush()
 
@@ -337,9 +338,15 @@ def _import_yahoo_league(
     if conn.yahoo_guid:
         team_info = fetch_user_team(access_token, league_key, conn.yahoo_guid)
         if team_info:
+            from fantasai.services.name_resolver import resolve_player_names
+
             team_key = team_info["team_key"]
             conn.team_key = team_key
-            roster = fetch_team_roster(access_token, team_key)
+            roster_names = fetch_team_roster(access_token, team_key)
+
+            # Resolve names → FanGraphs IDs
+            resolved = resolve_player_names(roster_names, db)
+            roster_ids = [v for v in resolved.values() if v is not None]
 
             team = db.query(Team).filter(
                 Team.owner_user_id == user.id,
@@ -352,9 +359,14 @@ def _import_yahoo_league(
                 )
                 db.add(team)
             team.owner_user_id = user.id
+            team.team_name = team_info.get("name", "")
             team.manager_name = user.name or team_info.get("manager_name", "")
-            team.roster = roster
-            _log.info("Imported team %s with %d players", team_key, len(roster))
+            team.roster_names = roster_names
+            team.roster = roster_ids
+            _log.info(
+                "Imported team %s with %d players (%d resolved)",
+                team_key, len(roster_names), len(roster_ids),
+            )
 
 
 @router.delete("/yahoo/disconnect")
@@ -449,6 +461,7 @@ def yahoo_resync(
             "num_teams": league_info.get("num_teams"),
             "name": league_info.get("name"),
             "season": league_info.get("season"),
+            "keepers_per_team": settings_data.get("num_keepers", 0),
         }
         conn.league_key = league_key
         db.flush()
@@ -460,14 +473,20 @@ def yahoo_resync(
 
     if conn.yahoo_guid:
         try:
+            from fantasai.services.name_resolver import resolve_player_names
+
             team_info = fetch_user_team(access_token, league_key, conn.yahoo_guid)
             result["steps"].append(f"fetch_user_team: {'found' if team_info else 'not found'}")
             if team_info:
                 team_key = team_info["team_key"]
                 conn.team_key = team_key
-                roster = fetch_team_roster(access_token, team_key)
-                result["steps"].append(f"fetch_team_roster: {len(roster)} players")
-                result["roster_sample"] = roster[:5]
+                roster_names = fetch_team_roster(access_token, team_key)
+                result["steps"].append(f"fetch_team_roster: {len(roster_names)} players")
+                result["roster_sample"] = roster_names[:5]
+
+                resolved = resolve_player_names(roster_names, db)
+                roster_ids = [v for v in resolved.values() if v is not None]
+                result["steps"].append(f"name_resolver: {len(roster_ids)}/{len(roster_names)} resolved")
 
                 team = db.query(Team).filter(
                     Team.owner_user_id == user.id,
@@ -480,8 +499,10 @@ def yahoo_resync(
                 else:
                     result["steps"].append("Team row already exists — updating")
                 team.owner_user_id = user.id
+                team.team_name = team_info.get("name", "")
                 team.manager_name = user.name or team_info.get("manager_name", "")
-                team.roster = roster
+                team.roster_names = roster_names
+                team.roster = roster_ids
         except Exception as exc:
             result["steps"].append(f"Team import FAILED: {exc}")
 
@@ -497,3 +518,79 @@ def yahoo_resync(
         result["success"] = False
 
     return result
+
+
+@router.get("/league")
+def get_league(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the user's Yahoo league settings and all teams.
+
+    Used by the frontend LeagueContext to auto-populate league info.
+    Returns 404 if the user has no connected Yahoo league.
+    """
+    from fantasai.models.league import League, Team
+
+    conn = user.yahoo_connection
+    if not conn or not conn.league_key:
+        raise HTTPException(status_code=404, detail="No Yahoo league connected")
+
+    league = db.query(League).filter(League.league_id == conn.league_key).first()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found in database")
+
+    # Find user's team
+    my_team = db.query(Team).filter(
+        Team.owner_user_id == user.id,
+        Team.league_id == conn.league_key,
+    ).first()
+
+    # All teams in the league
+    all_teams = db.query(Team).filter(Team.league_id == conn.league_key).all()
+
+    # Enrich rosters with player names from DB
+    from fantasai.models.player import Player as PlayerModel
+
+    all_roster_ids: set[int] = set()
+    for t in all_teams:
+        all_roster_ids.update(t.roster or [])
+
+    player_name_map: dict[int, str] = {}
+    if all_roster_ids:
+        rows = (
+            db.query(PlayerModel.player_id, PlayerModel.name)
+            .filter(PlayerModel.player_id.in_(all_roster_ids))
+            .all()
+        )
+        player_name_map = {r.player_id: r.name for r in rows}
+
+    teams_out = [
+        {
+            "team_id": t.team_id,
+            "team_name": t.team_name or t.manager_name or f"Team {t.team_id}",
+            "manager_name": t.manager_name,
+            "is_mine": t.owner_user_id == user.id,
+            "roster": [
+                {"player_id": pid, "name": player_name_map.get(pid, f"Player {pid}")}
+                for pid in (t.roster or [])
+            ],
+            "roster_names": t.roster_names or [],
+        }
+        for t in all_teams
+    ]
+
+    return {
+        "league_id": league.league_id,
+        "league_name": (league.settings or {}).get("name", ""),
+        "platform": league.platform,
+        "sport": league.sport,
+        "league_type": league.league_type,
+        "num_teams": (league.settings or {}).get("num_teams"),
+        "season": (league.settings or {}).get("season"),
+        "keepers_per_team": (league.settings or {}).get("keepers_per_team", 0),
+        "scoring_categories": league.scoring_categories or [],
+        "roster_positions": league.roster_positions or [],
+        "my_team_id": my_team.team_id if my_team else None,
+        "teams": teams_out,
+    }

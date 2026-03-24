@@ -30,8 +30,10 @@ class Team(TimestampMixin, Base):
 
     team_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     league_id: Mapped[str] = mapped_column(ForeignKey("leagues.league_id"))
+    team_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     manager_name: Mapped[str] = mapped_column(String(200))
-    roster: Mapped[list] = mapped_column(JSON, default=list)  # list of player_ids
+    roster: Mapped[list] = mapped_column(JSON, default=list)  # list of resolved FanGraphs player_ids (int)
+    roster_names: Mapped[list] = mapped_column(JSON, default=list)  # original Yahoo player name strings
     owner_user_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

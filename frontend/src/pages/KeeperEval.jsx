@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { usePlayerListFocus } from '../hooks/usePlayerListFocus'
 import { Trophy, Play, Scissors, CheckCircle, Plus, X, Upload, ImageIcon, Loader2, AlertCircle, RotateCcw } from 'lucide-react'
 import { keeperEval, extractPlayers, searchPlayers } from '../lib/api'
@@ -9,6 +9,7 @@ import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
+import { useLeague } from '../contexts/LeagueContext'
 
 const GRADE_STYLE = {
   A: 'text-field-300',
@@ -88,6 +89,7 @@ function emptyPlayer() {
 }
 
 export default function KeeperEval() {
+  const { league, myTeam } = useLeague() || {}
   const [mode, setMode]               = useState('plan_keepers')
   const [players, setPlayers]         = useState([emptyPlayer()])
   const [nKeepers, setNKeepers]       = useState('5')
@@ -97,6 +99,20 @@ export default function KeeperEval() {
   const [loading, setLoading]         = useState(false)
   const [error, setError]             = useState(null)
   const [result, setResult]           = useState(null)
+
+  // Auto-populate from Yahoo league
+  const leagueInitialValues = league ? {
+    categories:      league.scoring_categories,
+    leagueType:      league.league_type,
+    numTeams:        league.num_teams,
+    rosterPositions: league.roster_positions,
+  } : null
+
+  useEffect(() => {
+    if (!league) return
+    if (league.num_teams) setNTeams(String(league.num_teams))
+    if (league.keepers_per_team > 0) setNKeepers(String(league.keepers_per_team))
+  }, [league?.league_id])
 
   // Screenshot upload state
   const [showUpload, setShowUpload]     = useState(false)
@@ -253,9 +269,23 @@ export default function KeeperEval() {
         onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
         className="card space-y-5"
       >
-        <div className="flex items-center gap-2 px-3 py-2 bg-field-950 border border-field-800/50 rounded-lg">
-          <Trophy size={13} className="text-field-500 shrink-0" />
-          <span className="text-xs text-field-400">{currentMode?.label}</span>
+        <div className="flex items-center justify-between gap-2 px-3 py-2 bg-field-950 border border-field-800/50 rounded-lg">
+          <div className="flex items-center gap-2">
+            <Trophy size={13} className="text-field-500 shrink-0" />
+            <span className="text-xs text-field-400">{currentMode?.label}</span>
+          </div>
+          {myTeam?.roster?.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                const loaded = myTeam.roster.map(p => ({ name: p.name, playerId: p.player_id }))
+                setPlayers(loaded.length > 0 ? loaded : [emptyPlayer()])
+              }}
+              className="text-[10px] font-semibold text-[#6001d2] bg-[#6001d2]/10 border border-[#6001d2]/30 rounded px-2 py-0.5 hover:bg-[#6001d2]/20 transition-colors"
+            >
+              Y! Load my roster
+            </button>
+          )}
         </div>
 
         {/* Player inputs */}
@@ -370,7 +400,7 @@ export default function KeeperEval() {
         </div>
 
         <ContextInput value={context} onChange={setContext} />
-        <LeagueSettings onChange={setLeagueSettings} />
+        <LeagueSettings onChange={setLeagueSettings} initialValues={leagueInitialValues} />
 
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} />

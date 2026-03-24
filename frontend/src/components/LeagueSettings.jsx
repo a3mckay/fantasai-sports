@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Settings, ChevronDown, ChevronUp } from 'lucide-react'
 
 const DEFAULT_CATEGORIES = ['R', 'HR', 'RBI', 'SB', 'AVG', 'W', 'SV', 'K', 'ERA', 'WHIP']
@@ -22,16 +22,47 @@ const DEFAULT_ROSTER = 'C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL, SP, SP, SP, RP, RP,
  * Collapsible league settings panel.
  *
  * Props:
- *   onChange — (settings) => void, called whenever any setting changes.
- *              settings = { categories: string[], leagueType: string,
- *                           numTeams: number, rosterPositions: string[] }
+ *   onChange      — (settings) => void, called whenever any setting changes.
+ *                   settings = { categories: string[], leagueType: string,
+ *                                numTeams: number, rosterPositions: string[] }
+ *   initialValues — optional { categories, leagueType, numTeams, rosterPositions }
+ *                   from the user's Yahoo league. When provided, the panel
+ *                   auto-opens and shows a "From Yahoo" badge.
  */
-export default function LeagueSettings({ onChange }) {
-  const [open, setOpen]                   = useState(false)
-  const [numTeams, setNumTeams]           = useState('12')
-  const [leagueType, setLeagueType]       = useState('h2h_categories')
-  const [categories, setCategories]       = useState(new Set(DEFAULT_CATEGORIES))
-  const [rosterRaw, setRosterRaw]         = useState(DEFAULT_ROSTER)
+export default function LeagueSettings({ onChange, initialValues }) {
+  const [open, setOpen]             = useState(false)
+  const [numTeams, setNumTeams]     = useState('12')
+  const [leagueType, setLeagueType] = useState('h2h_categories')
+  const [categories, setCategories] = useState(new Set(DEFAULT_CATEGORIES))
+  const [rosterRaw, setRosterRaw]   = useState(DEFAULT_ROSTER)
+  const [fromYahoo, setFromYahoo]   = useState(false)
+  const seeded = useRef(false)
+
+  // Seed from Yahoo league on first load
+  useEffect(() => {
+    if (!initialValues || seeded.current) return
+    seeded.current = true
+
+    const cats = initialValues.categories?.length
+      ? new Set(initialValues.categories)
+      : new Set(DEFAULT_CATEGORIES)
+    const lt  = initialValues.leagueType || 'h2h_categories'
+    const num = String(initialValues.numTeams || 12)
+    const roster = initialValues.rosterPositions?.join(', ') || DEFAULT_ROSTER
+
+    setCategories(cats)
+    setLeagueType(lt)
+    setNumTeams(num)
+    setRosterRaw(roster)
+    setFromYahoo(true)
+    setOpen(true)
+    onChange({
+      categories:      [...cats],
+      leagueType:      lt,
+      numTeams:        parseInt(num) || 12,
+      rosterPositions: roster.split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+    })
+  }, [initialValues])
 
   function emit(cats, lt, num, roster) {
     onChange({
@@ -85,7 +116,10 @@ export default function LeagueSettings({ onChange }) {
         <div className="flex items-center gap-2 text-sm text-slate-300">
           <Settings size={14} className="text-slate-500" />
           League Settings
-          <span className="text-slate-600 text-xs ml-0.5">(optional)</span>
+          {fromYahoo
+            ? <span className="text-[10px] font-semibold text-[#6001d2] bg-[#6001d2]/10 border border-[#6001d2]/30 rounded px-1.5 py-0.5 ml-0.5">Y! Auto-loaded</span>
+            : <span className="text-slate-600 text-xs ml-0.5">(optional)</span>
+          }
         </div>
         {open
           ? <ChevronUp size={14} className="text-slate-500" />

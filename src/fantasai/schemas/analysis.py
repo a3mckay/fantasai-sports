@@ -30,7 +30,7 @@ class CompareRequest(BaseModel):
         default=None,
         description='Optional user context, e.g. "I need stolen bases".',
     )
-    league_id: Optional[int] = Field(
+    league_id: Optional[str] = Field(
         default=None,
         description="League ID for category context. Uses default categories if omitted.",
     )
@@ -99,7 +99,7 @@ class TradeSide(BaseModel):
 class TradeRequest(BaseModel):
     """Request body for the trade-evaluation endpoint."""
 
-    league_id: Optional[int] = Field(
+    league_id: Optional[str] = Field(
         default=None,
         description="League ID for category context. Uses default categories if omitted.",
     )

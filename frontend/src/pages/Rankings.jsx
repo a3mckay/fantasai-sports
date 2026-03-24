@@ -7,6 +7,7 @@ import { getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PercentileBar from '../components/PercentileBar'
+import { useLeague } from '../contexts/LeagueContext'
 
 const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 'Batters', 'Pitchers']
 const PAGE_SIZES       = [50, 100, 250, 'All']
@@ -88,6 +89,18 @@ const HORIZON_OPTIONS = [
 ]
 
 export default function Rankings() {
+  const { league } = useLeague() || {}
+
+  // Build player_id → team_name ownership map from league context
+  const ownedByMap = {}
+  if (league?.teams) {
+    for (const team of league.teams) {
+      for (const p of team.roster || []) {
+        ownedByMap[p.player_id] = team.team_name
+      }
+    }
+  }
+
   const [mode, setMode]             = useState('predictive')
   const [horizon, setHorizon]       = useState('season')
   const [posFilter, setPosFilter]   = useState('All')
@@ -376,6 +389,15 @@ export default function Rankings() {
                             title={player.risk_note || (player.risk_flag === 'fragile' ? 'Injury-prone history' : 'Post-surgery risk')}
                           >
                             ⚠
+                          </span>
+                        )}
+                        {/* Ownership badge */}
+                        {ownedByMap[player.player_id] && (
+                          <span
+                            className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5 leading-none"
+                            title={`Owned by ${ownedByMap[player.player_id]}`}
+                          >
+                            Owned
                           </span>
                         )}
                         {/* MiLB prospect badge — shown for minor-league players injected via PAV */}
