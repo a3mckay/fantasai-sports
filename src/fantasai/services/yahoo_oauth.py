@@ -198,11 +198,12 @@ def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
     return result
 
 
-def fetch_user_team(access_token: str, league_key: str, yahoo_guid: str) -> Optional[dict[str, Any]]:
-    """Find the user's team within a league by their GUID.
+def fetch_all_league_teams(access_token: str, league_key: str) -> list[dict[str, Any]]:
+    """Fetch all teams in a league.
 
-    Returns dict with: team_key, name, manager_name or None if not found.
+    Returns a list of dicts with: team_key, name, manager_name, yahoo_guid
     """
+    teams: list[dict[str, Any]] = []
     try:
         root = _yahoo_get(access_token, f"league/{league_key}/teams")
         for team_elem in root.iter():
@@ -213,17 +214,32 @@ def fetch_user_team(access_token: str, league_key: str, yahoo_guid: str) -> Opti
                 tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
                 if child.text:
                     data[tag] = child.text.strip()
-            # Check manager GUID
+            # Extract manager GUID
+            guid = ""
             for manager_elem in team_elem.iter():
                 if manager_elem.tag.endswith("guid") and manager_elem.text:
-                    if manager_elem.text.strip() == yahoo_guid:
-                        return {
-                            "team_key": data.get("team_key", ""),
-                            "name": data.get("name", ""),
-                            "manager_name": data.get("manager_display_name", ""),
-                        }
+                    guid = manager_elem.text.strip()
+                    break
+            if data.get("team_key"):
+                teams.append({
+                    "team_key": data["team_key"],
+                    "name": data.get("name", ""),
+                    "manager_name": data.get("manager_display_name", ""),
+                    "yahoo_guid": guid,
+                })
     except Exception:
         _log.warning("Could not fetch teams for league %s", league_key, exc_info=True)
+    return teams
+
+
+def fetch_user_team(access_token: str, league_key: str, yahoo_guid: str) -> Optional[dict[str, Any]]:
+    """Find the user's team within a league by their GUID.
+
+    Returns dict with: team_key, name, manager_name or None if not found.
+    """
+    for team in fetch_all_league_teams(access_token, league_key):
+        if team["yahoo_guid"] == yahoo_guid:
+            return team
     return None
 
 

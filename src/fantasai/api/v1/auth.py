@@ -18,6 +18,7 @@ from fantasai.services.firebase_auth import verify_firebase_token
 from fantasai.services.yahoo_oauth import (
     _now_plus_seconds,
     exchange_code,
+    fetch_all_league_teams,
     fetch_league_settings,
     fetch_team_roster,
     fetch_user_guid,
@@ -296,8 +297,9 @@ def _import_yahoo_league(
     conn: YahooConnection,
     access_token: str,
 ) -> None:
-    """Pull the user's most recent MLB league + team from Yahoo and upsert into DB."""
+    """Pull the user's most recent MLB league + ALL teams from Yahoo and upsert into DB."""
     from fantasai.models.league import League, Team
+    from fantasai.services.name_resolver import resolve_player_names
 
     leagues = fetch_user_mlb_leagues(access_token)
     if not leagues:
@@ -334,39 +336,52 @@ def _import_yahoo_league(
     }
     db.flush()
 
-    # Find the user's team
-    if conn.yahoo_guid:
-        team_info = fetch_user_team(access_token, league_key, conn.yahoo_guid)
-        if team_info:
-            from fantasai.services.name_resolver import resolve_player_names
+    # Import ALL teams in the league
+    all_teams = fetch_all_league_teams(access_token, league_key)
+    _log.info("Importing %d teams for league %s", len(all_teams), league_key)
 
-            team_key = team_info["team_key"]
+    for team_info in all_teams:
+        team_key = team_info["team_key"]
+        is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
+
+        if is_my_team:
             conn.team_key = team_key
-            roster_names = fetch_team_roster(access_token, team_key)
 
-            # Resolve names → FanGraphs IDs
-            resolved = resolve_player_names(roster_names, db)
-            roster_ids = [v for v in resolved.values() if v is not None]
+        roster_names = fetch_team_roster(access_token, team_key)
+        resolved = resolve_player_names(roster_names, db)
+        roster_ids = [v for v in resolved.values() if v is not None]
 
-            team = db.query(Team).filter(
+        # Look up existing team row by team_key stored in team_name field,
+        # or by owner for the user's own team
+        existing = db.query(Team).filter(
+            Team.league_id == league_key,
+            Team.team_name == team_info["name"],
+        ).first()
+
+        if existing is None and is_my_team:
+            existing = db.query(Team).filter(
                 Team.owner_user_id == user.id,
                 Team.league_id == league_key,
             ).first()
-            if team is None:
-                team = Team(
-                    league_id=league_key,
-                    manager_name=user.name or team_info.get("manager_name", ""),
-                )
-                db.add(team)
-            team.owner_user_id = user.id
-            team.team_name = team_info.get("name", "")
-            team.manager_name = user.name or team_info.get("manager_name", "")
-            team.roster_names = roster_names
-            team.roster = roster_ids
-            _log.info(
-                "Imported team %s with %d players (%d resolved)",
-                team_key, len(roster_names), len(roster_ids),
+
+        if existing is None:
+            existing = Team(
+                league_id=league_key,
+                manager_name=team_info.get("manager_name", ""),
             )
+            db.add(existing)
+
+        existing.team_name = team_info["name"]
+        existing.manager_name = team_info.get("manager_name", "")
+        existing.roster_names = roster_names
+        existing.roster = roster_ids
+        if is_my_team:
+            existing.owner_user_id = user.id
+
+        _log.info(
+            "Imported team '%s' (%s) with %d players (%d resolved)",
+            team_info["name"], team_key, len(roster_names), len(roster_ids),
+        )
 
 
 @router.delete("/yahoo/disconnect")
@@ -471,40 +486,56 @@ def yahoo_resync(
         result["steps"].append(f"League upsert FAILED: {exc}")
         return result
 
-    if conn.yahoo_guid:
-        try:
-            from fantasai.services.name_resolver import resolve_player_names
+    try:
+        from fantasai.services.name_resolver import resolve_player_names
 
-            team_info = fetch_user_team(access_token, league_key, conn.yahoo_guid)
-            result["steps"].append(f"fetch_user_team: {'found' if team_info else 'not found'}")
-            if team_info:
-                team_key = team_info["team_key"]
+        all_teams = fetch_all_league_teams(access_token, league_key)
+        result["steps"].append(f"fetch_all_league_teams: {len(all_teams)} teams found")
+
+        my_team_sample = None
+        for team_info in all_teams:
+            team_key = team_info["team_key"]
+            is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
+
+            if is_my_team:
                 conn.team_key = team_key
-                roster_names = fetch_team_roster(access_token, team_key)
-                result["steps"].append(f"fetch_team_roster: {len(roster_names)} players")
-                result["roster_sample"] = roster_names[:5]
 
-                resolved = resolve_player_names(roster_names, db)
-                roster_ids = [v for v in resolved.values() if v is not None]
-                result["steps"].append(f"name_resolver: {len(roster_ids)}/{len(roster_names)} resolved")
+            roster_names = fetch_team_roster(access_token, team_key)
+            resolved = resolve_player_names(roster_names, db)
+            roster_ids = [v for v in resolved.values() if v is not None]
 
-                team = db.query(Team).filter(
+            if is_my_team:
+                my_team_sample = roster_names[:5]
+                result["steps"].append(
+                    f"my team '{team_info['name']}': {len(roster_names)} players, "
+                    f"{len(roster_ids)} resolved"
+                )
+
+            # Upsert team row — match by team_name within this league
+            existing = db.query(Team).filter(
+                Team.league_id == league_key,
+                Team.team_name == team_info["name"],
+            ).first()
+            if existing is None and is_my_team:
+                existing = db.query(Team).filter(
                     Team.owner_user_id == user.id,
                     Team.league_id == league_key,
                 ).first()
-                if team is None:
-                    team = Team(league_id=league_key, manager_name=user.name or "")
-                    db.add(team)
-                    result["steps"].append("Team row created")
-                else:
-                    result["steps"].append("Team row already exists — updating")
-                team.owner_user_id = user.id
-                team.team_name = team_info.get("name", "")
-                team.manager_name = user.name or team_info.get("manager_name", "")
-                team.roster_names = roster_names
-                team.roster = roster_ids
-        except Exception as exc:
-            result["steps"].append(f"Team import FAILED: {exc}")
+            if existing is None:
+                existing = Team(league_id=league_key, manager_name=team_info.get("manager_name", ""))
+                db.add(existing)
+
+            existing.team_name = team_info["name"]
+            existing.manager_name = team_info.get("manager_name", "")
+            existing.roster_names = roster_names
+            existing.roster = roster_ids
+            if is_my_team:
+                existing.owner_user_id = user.id
+
+        if my_team_sample is not None:
+            result["roster_sample"] = my_team_sample
+    except Exception as exc:
+        result["steps"].append(f"Team import FAILED: {exc}")
 
     try:
         db.commit()
