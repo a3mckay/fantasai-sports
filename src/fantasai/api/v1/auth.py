@@ -550,10 +550,13 @@ def yahoo_resync_team(
 
     db.commit()
 
+    unresolved = [name for name, pid in resolved.items() if pid is None]
+
     return {
         "team_name": team_name,
         "roster_count": len(roster_names),
         "resolved_count": len(roster_ids),
+        "unresolved_names": unresolved,
         "is_mine": is_my_team,
     }
 

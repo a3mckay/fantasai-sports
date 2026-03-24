@@ -82,9 +82,10 @@ export default function Profile() {
             team_name:    team.team_name,
             manager_name: team.manager_name || '',
           })
-          finishStep(
-            `${team.team_name}${team.is_mine ? ' (your team)' : ''} — ${result.resolved_count} players`
-          )
+          const unresolved = result.unresolved_names || []
+          const label = `${team.team_name}${team.is_mine ? ' (your team)' : ''} — ${result.resolved_count} players`
+            + (unresolved.length ? ` (unmatched: ${unresolved.join(', ')})` : '')
+          finishStep(label)
         } catch (err) {
           failStep(`${team.team_name} — failed: ${err.message}`)
         }
