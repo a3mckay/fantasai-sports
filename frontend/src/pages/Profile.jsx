@@ -15,7 +15,9 @@ export default function Profile() {
   const [yahooStatus, setYahooStatus] = useState(null)
   const [yahooLoading, setYahooLoading] = useState(true)
   const [resyncing, setResyncing] = useState(false)
-  const [resyncMsg, setResyncMsg] = useState('')
+  const [resyncSteps, setResyncSteps] = useState([])   // [{label, done, error}]
+  const [resyncProgress, setResyncProgress] = useState({ current: 0, total: 0 })
+  const [resyncDone, setResyncDone] = useState(false)
 
   const [prefs, setPrefs] = useState({ weekly_digest: true, waiver_alerts: true })
   const [prefsLoading, setPrefsLoading] = useState(true)
@@ -51,19 +53,49 @@ export default function Profile() {
 
   async function resyncYahoo() {
     setResyncing(true)
-    setResyncMsg('')
+    setResyncDone(false)
+    setResyncSteps([])
+    setResyncProgress({ current: 0, total: 0 })
+
+    const addStep = (label, done = false, error = false) =>
+      setResyncSteps(prev => [...prev, { label, done, error }])
+    const finishStep = (label) =>
+      setResyncSteps(prev => prev.map((s, i) => i === prev.length - 1 ? { ...s, label, done: true } : s))
+    const failStep = (label) =>
+      setResyncSteps(prev => prev.map((s, i) => i === prev.length - 1 ? { ...s, label, error: true } : s))
+
     try {
-      const data = await req('POST', '/api/v1/auth/yahoo/resync')
-      if (data.success) {
-        setResyncMsg(`✓ Synced — ${data.roster_sample ? `${data.roster_sample.length}+ players imported` : 'league data updated'}`)
-        const status = await req('GET', '/api/v1/auth/yahoo/status')
-        setYahooStatus(status)
-      } else {
-        const lastStep = data.steps?.[data.steps.length - 1] || 'Unknown error'
-        setResyncMsg(`Failed: ${lastStep}`)
+      // Step 1 — fetch league + team list
+      addStep('Connecting to Yahoo Fantasy…')
+      const start = await req('POST', '/api/v1/auth/yahoo/resync/start')
+      finishStep(`Connected — ${start.league_name}`)
+      setResyncProgress({ current: 1, total: start.teams.length + 1 })
+
+      // Step 2…N — import each team's roster
+      for (let i = 0; i < start.teams.length; i++) {
+        const team = start.teams[i]
+        addStep(`Importing ${team.team_name}…`)
+        setResyncProgress({ current: i + 1, total: start.teams.length + 1 })
+        try {
+          const result = await req('POST', '/api/v1/auth/yahoo/resync/team', {
+            team_key:     team.team_key,
+            team_name:    team.team_name,
+            manager_name: team.manager_name || '',
+          })
+          finishStep(
+            `${team.team_name}${team.is_mine ? ' (your team)' : ''} — ${result.resolved_count} players`
+          )
+        } catch (err) {
+          failStep(`${team.team_name} — failed: ${err.message}`)
+        }
+        setResyncProgress({ current: i + 2, total: start.teams.length + 1 })
       }
-    } catch {
-      setResyncMsg('Re-sync failed. Please try again.')
+
+      setResyncDone(true)
+      const status = await req('GET', '/api/v1/auth/yahoo/status')
+      setYahooStatus(status)
+    } catch (err) {
+      failStep(`Failed: ${err.message}`)
     } finally {
       setResyncing(false)
     }
@@ -168,10 +200,37 @@ export default function Profile() {
                 Disconnect
               </button>
             </div>
-            {resyncMsg && (
-              <p className={`mt-3 text-xs ${resyncMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
-                {resyncMsg}
-              </p>
+
+            {/* Progress UI */}
+            {resyncSteps.length > 0 && (
+              <div className="mt-4 space-y-2">
+                {/* Progress bar */}
+                {resyncProgress.total > 0 && (
+                  <div className="w-full bg-navy-700 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="h-full bg-[#6001d2] rounded-full transition-all duration-300"
+                      style={{ width: `${Math.round(100 * resyncProgress.current / resyncProgress.total)}%` }}
+                    />
+                  </div>
+                )}
+                {/* Step log */}
+                <div className="space-y-1">
+                  {resyncSteps.map((step, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      {step.error  ? <span className="text-red-400">✕</span>
+                       : step.done ? <span className="text-emerald-400">✓</span>
+                       :             <span className="text-slate-500 animate-pulse">·</span>
+                      }
+                      <span className={step.error ? 'text-red-400' : step.done ? 'text-slate-300' : 'text-slate-400'}>
+                        {step.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {resyncDone && (
+                  <p className="text-xs text-emerald-400 font-medium pt-1">All done — league data is up to date.</p>
+                )}
+              </div>
             )}
           </div>
         ) : (

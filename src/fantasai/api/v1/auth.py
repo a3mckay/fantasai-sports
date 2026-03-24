@@ -410,15 +410,25 @@ def yahoo_status(user: User = Depends(get_current_user)) -> dict[str, Any]:
     }
 
 
-@router.post("/yahoo/resync")
-def yahoo_resync(
+class ResyncTeamRequest(BaseModel):
+    team_key: str
+    team_name: str
+    manager_name: str = ""
+
+
+@router.post("/yahoo/resync/start")
+def yahoo_resync_start(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Re-import league and team data from Yahoo using stored tokens.
+    """Step 1 of a progressive resync.
 
-    Returns a detailed result for debugging — safe to call at any time.
+    Fetches league settings and the list of all teams (without their rosters).
+    Commits the league row and returns the team list so the frontend can drive
+    per-team imports with progress feedback.
     """
+    from fantasai.models.league import League
+
     conn = user.yahoo_connection
     if not conn or not conn.encrypted_access_token:
         raise HTTPException(status_code=400, detail="No Yahoo connection found")
@@ -426,129 +436,152 @@ def yahoo_resync(
     try:
         access_token = _get_valid_access_token(conn, db)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Token refresh/decryption failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {exc}")
 
-    result: dict[str, Any] = {"steps": []}
-
-    try:
-        leagues = fetch_user_mlb_leagues(access_token)
-        result["steps"].append(f"fetch_user_mlb_leagues: {len(leagues)} league(s) found")
-        result["leagues"] = leagues
-    except Exception as exc:
-        result["steps"].append(f"fetch_user_mlb_leagues FAILED: {exc}")
-        return result
-
+    leagues = fetch_user_mlb_leagues(access_token)
     if not leagues:
-        result["steps"].append("No leagues — import skipped")
-        return result
+        raise HTTPException(status_code=404, detail="No Yahoo MLB leagues found")
 
     league_info = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)[0]
     league_key = league_info["league_key"]
-    result["league_key"] = league_key
+
+    settings_data = fetch_league_settings(access_token, league_key)
+
+    league = db.query(League).filter(League.league_id == league_key).first()
+    if league is None:
+        league = League(
+            league_id=league_key,
+            platform="yahoo",
+            sport="mlb",
+            league_type=league_info.get("scoring_type", "head"),
+        )
+        db.add(league)
+
+    league.owner_user_id = user.id
+    league.scoring_categories = settings_data.get("stat_categories") or []
+    league.roster_positions = settings_data.get("roster_positions") or []
+    league.settings = {
+        "num_teams": league_info.get("num_teams"),
+        "name": league_info.get("name"),
+        "season": league_info.get("season"),
+        "keepers_per_team": settings_data.get("num_keepers", 0),
+    }
+    conn.league_key = league_key
+
+    # Fetch all team stubs (no rosters yet) and mark the user's team
+    all_teams = fetch_all_league_teams(access_token, league_key)
+    teams_out = []
+    for t in all_teams:
+        is_mine = t.get("yahoo_guid") == conn.yahoo_guid
+        if is_mine:
+            conn.team_key = t["team_key"]
+        teams_out.append({
+            "team_key": t["team_key"],
+            "team_name": t["name"],
+            "manager_name": t.get("manager_name", ""),
+            "is_mine": is_mine,
+        })
+
+    db.commit()
+
+    return {
+        "league_key": league_key,
+        "league_name": league_info.get("name", ""),
+        "num_teams": league_info.get("num_teams"),
+        "teams": teams_out,
+    }
+
+
+@router.post("/yahoo/resync/team")
+def yahoo_resync_team(
+    body: ResyncTeamRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Step 2 of a progressive resync — import one team's roster.
+
+    Called once per team by the frontend after resync/start.
+    Fetches the roster, resolves player names to FanGraphs IDs, and upserts
+    the Team row. Returns counts for progress display.
+    """
+    from fantasai.models.league import Team
+    from fantasai.services.name_resolver import resolve_player_names
+
+    conn = user.yahoo_connection
+    if not conn or not conn.league_key:
+        raise HTTPException(status_code=400, detail="Run resync/start first")
 
     try:
-        settings_data = fetch_league_settings(access_token, league_key)
-        result["steps"].append(f"fetch_league_settings: {len(settings_data.get('stat_categories', []))} cats, {len(settings_data.get('roster_positions', []))} positions")
-        result["settings_data"] = settings_data
+        access_token = _get_valid_access_token(conn, db)
     except Exception as exc:
-        result["steps"].append(f"fetch_league_settings FAILED: {exc}")
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {exc}")
 
-    from fantasai.models.league import League, Team  # noqa: PLC0415
+    team_key = body.team_key
+    team_name = body.team_name
+    manager_name = body.manager_name
+    is_my_team = team_key == conn.team_key
 
+    # Fetch and resolve roster
+    roster_names = fetch_team_roster(access_token, team_key)
+    resolved = resolve_player_names(roster_names, db)
+    roster_ids = [v for v in resolved.values() if v is not None]
+
+    # Upsert team row — match by team_name, fall back to owner lookup for user's team
+    team_row = db.query(Team).filter(
+        Team.league_id == conn.league_key,
+        Team.team_name == team_name,
+    ).first()
+    if team_row is None and is_my_team:
+        team_row = db.query(Team).filter(
+            Team.owner_user_id == user.id,
+            Team.league_id == conn.league_key,
+        ).first()
+    if team_row is None:
+        team_row = Team(league_id=conn.league_key, manager_name=manager_name)
+        db.add(team_row)
+
+    team_row.team_name = team_name
+    team_row.manager_name = manager_name
+    team_row.roster_names = roster_names
+    team_row.roster = roster_ids
+    if is_my_team:
+        team_row.owner_user_id = user.id
+        conn.last_synced = datetime.now(tz=timezone.utc)
+
+    db.commit()
+
+    return {
+        "team_name": team_name,
+        "roster_count": len(roster_names),
+        "resolved_count": len(roster_ids),
+        "is_mine": is_my_team,
+    }
+
+
+@router.post("/yahoo/resync")
+def yahoo_resync(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Legacy single-shot resync kept for backwards compatibility.
+
+    Prefer the progressive resync/start + resync/team endpoints for UI use.
+    """
+    conn = user.yahoo_connection
+    if not conn or not conn.encrypted_access_token:
+        raise HTTPException(status_code=400, detail="No Yahoo connection found")
     try:
-        league = db.query(League).filter(League.league_id == league_key).first()
-        if league is None:
-            league = League(
-                league_id=league_key,
-                platform="yahoo",
-                sport="mlb",
-                league_type=league_info.get("scoring_type", "head"),
-            )
-            db.add(league)
-            result["steps"].append("League row created")
-        else:
-            result["steps"].append("League row already exists — updating")
-
-        league.owner_user_id = user.id
-        league.scoring_categories = settings_data.get("stat_categories") or []
-        league.roster_positions = settings_data.get("roster_positions") or []
-        league.settings = {
-            "num_teams": league_info.get("num_teams"),
-            "name": league_info.get("name"),
-            "season": league_info.get("season"),
-            "keepers_per_team": settings_data.get("num_keepers", 0),
-        }
-        conn.league_key = league_key
-        db.flush()
-        result["steps"].append("League flushed OK")
+        access_token = _get_valid_access_token(conn, db)
     except Exception as exc:
-        db.rollback()
-        result["steps"].append(f"League upsert FAILED: {exc}")
-        return result
-
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {exc}")
     try:
-        from fantasai.services.name_resolver import resolve_player_names
-
-        all_teams = fetch_all_league_teams(access_token, league_key)
-        result["steps"].append(f"fetch_all_league_teams: {len(all_teams)} teams found")
-
-        my_team_sample = None
-        for team_info in all_teams:
-            team_key = team_info["team_key"]
-            is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
-
-            if is_my_team:
-                conn.team_key = team_key
-
-            roster_names = fetch_team_roster(access_token, team_key)
-            resolved = resolve_player_names(roster_names, db)
-            roster_ids = [v for v in resolved.values() if v is not None]
-
-            if is_my_team:
-                my_team_sample = roster_names[:5]
-                result["steps"].append(
-                    f"my team '{team_info['name']}': {len(roster_names)} players, "
-                    f"{len(roster_ids)} resolved"
-                )
-
-            # Upsert team row — match by team_name within this league
-            existing = db.query(Team).filter(
-                Team.league_id == league_key,
-                Team.team_name == team_info["name"],
-            ).first()
-            if existing is None and is_my_team:
-                existing = db.query(Team).filter(
-                    Team.owner_user_id == user.id,
-                    Team.league_id == league_key,
-                ).first()
-            if existing is None:
-                existing = Team(league_id=league_key, manager_name=team_info.get("manager_name", ""))
-                db.add(existing)
-
-            existing.team_name = team_info["name"]
-            existing.manager_name = team_info.get("manager_name", "")
-            existing.roster_names = roster_names
-            existing.roster = roster_ids
-            if is_my_team:
-                existing.owner_user_id = user.id
-
-        if my_team_sample is not None:
-            result["roster_sample"] = my_team_sample
-    except Exception as exc:
-        result["steps"].append(f"Team import FAILED: {exc}")
-
-    try:
-        db.commit()
+        _import_yahoo_league(db, user, conn, access_token)
         conn.last_synced = datetime.now(tz=timezone.utc)
         db.commit()
-        result["steps"].append("Committed OK")
-        result["success"] = True
+        return {"success": True}
     except Exception as exc:
         db.rollback()
-        result["steps"].append(f"Commit FAILED: {exc}")
-        result["success"] = False
-
-    return result
+        return {"success": False, "error": str(exc)}
 
 
 @router.get("/league")
