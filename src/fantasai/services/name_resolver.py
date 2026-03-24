@@ -51,17 +51,38 @@ def resolve_player_names(
     """
     from fantasai.models.player import Player  # local import to avoid circular deps
 
+    from fantasai.models.player import PlayerStats
+
     # Load all players once
     all_players: list[Player] = db.query(Player.player_id, Player.name).all()
+
+    # Player IDs that have current-season stats — used to break ties when the
+    # same player name maps to multiple player_ids (e.g. two-way players whose
+    # batting and pitching pipeline rows received different IDfg values).
+    stat_player_ids: set[int] = {
+        r.player_id
+        for r in db.query(PlayerStats.player_id)
+        .filter(PlayerStats.season == 2025)
+        .distinct()
+        .all()
+    }
+
+    # Group candidates by normalized name, then pick the best:
+    # prefer a candidate that has 2025 stats over one that doesn't.
+    name_to_candidates: dict[str, list[int]] = {}
+    for row in all_players:
+        norm = _normalize(row.name)
+        name_to_candidates.setdefault(norm, []).append(row.player_id)
 
     # Build lookup structures
     exact: dict[str, int] = {}  # normalized_name → player_id
     normalized_list: list[tuple[str, int]] = []  # (normalized_name, player_id)
 
-    for row in all_players:
-        norm = _normalize(row.name)
-        exact[norm] = row.player_id
-        normalized_list.append((norm, row.player_id))
+    for norm, candidates in name_to_candidates.items():
+        with_stats = [pid for pid in candidates if pid in stat_player_ids]
+        chosen = (with_stats or candidates)[0]
+        exact[norm] = chosen
+        normalized_list.append((norm, chosen))
 
     all_norms = [n for n, _ in normalized_list]
     norm_to_id = {n: pid for n, pid in normalized_list}
