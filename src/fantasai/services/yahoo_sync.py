@@ -191,6 +191,10 @@ def import_yahoo_league(
         roster_ids = [v for v in resolved.values() if v is not None]
         # Update Player.positions in the DB from Yahoo's eligible_positions data
         _update_player_positions_from_yahoo(db, roster_data, resolved)
+        _log.debug(
+            "Position update: %d roster entries processed for team %s",
+            len(roster_data), team_key,
+        )
 
         existing = db.query(Team).filter(
             Team.league_id == league_key,
@@ -221,6 +225,17 @@ def import_yahoo_league(
             "Synced team '%s' (%s): %d players (%d resolved)",
             team_info["name"], team_key, len(roster_names), len(roster_ids),
         )
+
+    # Player.positions in the DB have been updated from Yahoo's eligible_positions
+    # data — bust the rankings cache so the next rankings request reflects the
+    # new multi-position data immediately rather than waiting for TTL expiry.
+    try:
+        from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+        _RANKINGS_CACHE.clear()
+        _RANKINGS_RAW_CACHE.clear()
+        _log.info("Rankings cache cleared after Yahoo sync — positions updated")
+    except Exception:
+        _log.debug("Could not clear rankings cache (non-fatal)", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
