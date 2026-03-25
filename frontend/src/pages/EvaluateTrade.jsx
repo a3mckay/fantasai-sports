@@ -90,7 +90,7 @@ function TradeSummaryBar({
                 onClick={() => onRemoveGivingPlayer(p.playerId)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-stitch-900/60 border border-stitch-700 text-stitch-300 max-w-[11rem] hover:bg-stitch-900/80 group transition-colors"
               >
-                <span className="truncate">{p.name}{p.positions?.[0] ? ` · ${p.positions[0]}` : ''}</span>
+                <span className="truncate">{p.name}{p.positions?.length ? ` · ${p.positions.join('/')}` : ''}</span>
                 <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
               </button>
             ))}
@@ -130,7 +130,7 @@ function TradeSummaryBar({
                 onClick={() => onRemoveReceivingPlayer(p.playerId)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-field-900/60 border border-field-700 text-field-300 max-w-[11rem] hover:bg-field-900/80 group transition-colors"
               >
-                <span className="truncate">{p.name}{p.positions?.[0] ? ` · ${p.positions[0]}` : ''}</span>
+                <span className="truncate">{p.name}{p.positions?.length ? ` · ${p.positions.join('/')}` : ''}</span>
                 <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
               </button>
             ))}
@@ -242,9 +242,11 @@ function PlayerCard({ player, rankData, inTrade, side, onAdd, onRemove }) {
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-navy-700 bg-navy-800/50 opacity-50">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white truncate">{player.name}</div>
-          <div className="text-xs text-slate-500 flex items-center gap-2">
-            {positions.length > 0 && <span>{positions.join('/')}</span>}
-            {value != null && <span className="text-field-500 font-mono">{value.toFixed(1)}</span>}
+          <div className="text-xs text-slate-500 flex items-center gap-1.5 flex-wrap">
+            {positions.map(pos => (
+              <span key={pos} className="stat-pill bg-navy-700 text-slate-500 text-[10px] px-1.5 py-0.5">{pos}</span>
+            ))}
+            {value != null && <span className="text-field-500 font-mono ml-1">{value.toFixed(1)}</span>}
           </div>
         </div>
         <button
@@ -266,9 +268,11 @@ function PlayerCard({ player, rankData, inTrade, side, onAdd, onRemove }) {
     >
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-white truncate">{player.name}</div>
-        <div className="text-xs text-slate-500 flex items-center gap-2">
-          {positions.length > 0 && <span>{positions.join('/')}</span>}
-          {value != null && <span className="text-field-500 font-mono">{value.toFixed(1)}</span>}
+        <div className="text-xs text-slate-500 flex items-center gap-1.5 flex-wrap">
+          {positions.map(pos => (
+            <span key={pos} className="stat-pill bg-navy-700 text-slate-400 text-[10px] px-1.5 py-0.5">{pos}</span>
+          ))}
+          {value != null && <span className="text-field-500 font-mono ml-1">{value.toFixed(1)}</span>}
         </div>
       </div>
       <ChevronRight size={14} className="shrink-0 text-slate-600" />

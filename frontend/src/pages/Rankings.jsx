@@ -503,7 +503,7 @@ export default function Rankings() {
                     {/* Position pills */}
                     <td className="py-3 px-2 text-center align-top pt-3.5">
                       <div className="flex flex-wrap gap-0.5 justify-center">
-                        {displayPositions(player).slice(0, 2).map(pos => (
+                        {displayPositions(player).map(pos => (
                           <span
                             key={pos}
                             className="stat-pill bg-navy-700 text-slate-400 text-[10px] px-1.5 py-0.5"
