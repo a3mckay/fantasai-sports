@@ -38,8 +38,11 @@ const PlayerSearch = forwardRef(function PlayerSearch({ value, onChange, onEnter
     focus: () => inputRef.current?.focus(),
   }))
 
-  // Keep query in sync when parent resets value
+  // Keep query in sync when parent resets value.
+  // Mark as "just selected" so the search effect doesn't fire for externally-set
+  // values (e.g. pre-loaded Yahoo rosters) — the player is already resolved.
   useEffect(() => {
+    justSelectedRef.current = true
     setQuery(value || '')
   }, [value])
 

@@ -154,22 +154,24 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
   const colorCls = TEAM_COLORS[teamIdx % TEAM_COLORS.length]
 
   return (
-    <div className={'rounded-xl border p-4 space-y-3 ' + colorCls}>
-      {/* Team name + remove */}
-      <div className="flex items-center gap-2">
+    <div className={'rounded-xl border overflow-hidden ' + colorCls}>
+      {/* Team name header */}
+      <div className="flex items-center gap-2 px-4 py-2.5 bg-navy-800/60 border-b border-white/5">
+        <Users size={13} className="text-slate-500 shrink-0" />
         <input
-          className="field-input flex-1 font-medium"
+          className="flex-1 bg-transparent text-sm font-semibold text-white placeholder-slate-500 outline-none"
           placeholder={'Team ' + (teamIdx + 1) + ' name…'}
           value={team.name}
           onChange={e => onChange({ ...team, name: e.target.value })}
         />
         {canRemove && (
           <button type="button" onClick={onRemove}
-            className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1">
-            <X size={15} />
+            className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors">
+            <X size={14} />
           </button>
         )}
       </div>
+      <div className="p-4 space-y-3">
 
       {/* Player list */}
       <div className="space-y-2">
@@ -244,6 +246,7 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
           )}
         </div>
       )}
+      </div>{/* end p-4 space-y-3 */}
     </div>
   )
 }
