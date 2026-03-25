@@ -562,6 +562,43 @@ def yahoo_resync_team(
     }
 
 
+@router.get("/debug/ownership")
+def debug_ownership(
+    player_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """DEBUG: show which teams have this player_id in their stored roster.
+
+    Example: GET /api/v1/auth/debug/ownership?player_id=19755
+    """
+    from fantasai.models.league import Team
+
+    conn = user.yahoo_connection
+    if not conn or not conn.league_key:
+        raise HTTPException(status_code=400, detail="No league connected")
+
+    all_teams = db.query(Team).filter(Team.league_id == conn.league_key).all()
+    matches = []
+    all_rosters = []
+    for t in all_teams:
+        roster = t.roster or []
+        all_rosters.append({
+            "team_name": t.team_name or t.manager_name,
+            "roster_ids": roster,
+            "roster_names": t.roster_names or [],
+            "has_player": player_id in roster,
+        })
+        if player_id in roster:
+            matches.append(t.team_name or t.manager_name)
+
+    return {
+        "player_id": player_id,
+        "found_on_teams": matches,
+        "all_teams": all_rosters,
+    }
+
+
 @router.get("/debug/resolve")
 def debug_resolve_name(
     name: str,
