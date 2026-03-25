@@ -9,6 +9,7 @@ import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
 import CategoryStrengthBar from '../components/CategoryStrengthBar'
+import RadarChart from '../components/RadarChart'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -435,6 +436,15 @@ export default function TeamEval() {
                 <span className="ml-2 text-[10px] font-normal text-slate-600 normal-case tracking-normal">vs league</span>
               )}
             </div>
+            {result.league_category_percentiles && (
+              <div className="mb-4">
+                <RadarChart
+                  data={result.league_category_percentiles}
+                  numTeams={league?.num_teams || 12}
+                  asPercentiles
+                />
+              </div>
+            )}
             <CategoryStrengthBar
               data={result.league_category_percentiles || result.category_strengths}
               numTeams={league?.num_teams || 12}
