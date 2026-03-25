@@ -61,6 +61,7 @@ from fantasai.engine.projection import ProjectionHorizon
 from fantasai.engine.scoring import PlayerRanking
 from fantasai.models.league import Team
 from fantasai.models.player import Player
+from fantasai.models.prospect import ProspectProfile
 from fantasai.models.recommendation import Recommendation
 from fantasai.schemas.analysis import (
     ComparePlayerResultRead,
@@ -635,45 +636,115 @@ def find_player_endpoint(
     db: Session = Depends(get_db),
     _limit: None = Depends(check_rate_limit("find-player")),
 ) -> FindPlayerResponse:
-    """Find the best available player for a given roster slot.
+    """Find the best available player for a given roster slot and/or priority categories.
 
-    Tracks suggestion history for this team + position so that repeated
-    calls always return a fresh (previously unseen) suggestion. History
-    is stored in the Recommendation table with rec_type='find_player_{slot}'.
+    Tracks suggestion history for this team so repeat calls always return a
+    fresh (previously unseen) suggestion.  History older than 1 day is
+    auto-purged.  Pass ``extra_exclude_ids`` to manually exclude players.
 
-    Pass ``extra_exclude_ids`` to manually exclude additional players.
+    player_pool:
+      - "mlb"   — standard recommender flow (default)
+      - "milb"  — returns top unseen prospect sorted by PAV score
+      - "both"  — MLB suggestion + top MiLB prospect in milb_suggestion
     """
+    from datetime import timedelta
+
     team, league = _fetch_team_and_league(body.team_id, db)
     categories = league.scoring_categories or DEFAULT_CATEGORIES
 
-    rec_type = f"find_player_{body.position_slot}"
+    # ── Auto-purge history older than 1 day ───────────────────────────────────
+    cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+    db.query(Recommendation).filter(
+        Recommendation.team_id == body.team_id,
+        Recommendation.rec_type.like("find_player_%"),
+        Recommendation.created_at < cutoff,
+    ).delete(synchronize_session=False)
+    db.commit()
 
-    # Load previous suggestions for this team + position
-    prev_recs = (
-        db.query(Recommendation)
-        .filter(
-            Recommendation.team_id == body.team_id,
-            Recommendation.rec_type == rec_type,
-        )
-        .order_by(Recommendation.created_at.desc())
-        .all()
-    )
-    seen_player_ids: set[int] = {r.player_id for r in prev_recs}
+    # ── Human-readable label for the search parameters ────────────────────────
+    label_parts = [p for p in [body.position_slot] + list(body.priority_categories) if p]
+    search_params_label = " + ".join(label_parts) if label_parts else "Best Available"
 
-    # Build all-excluded set: league rostered + previously seen + manual excludes
+    # ── Build rostered + seen exclusion set ──────────────────────────────────
     all_rostered: set[int] = set()
     for t in league.teams:
         all_rostered.update(t.roster or [])
 
-    all_excluded = all_rostered | seen_player_ids | set(body.extra_exclude_ids)
+    seen_mlb: set[int] = {
+        r.player_id for r in db.query(Recommendation).filter(
+            Recommendation.team_id == body.team_id,
+            Recommendation.rec_type.like("find_player_mlb%"),
+        ).all()
+    }
+    seen_milb: set[int] = {
+        r.player_id for r in db.query(Recommendation).filter(
+            Recommendation.team_id == body.team_id,
+            Recommendation.rec_type == "find_player_milb",
+        ).all()
+    }
 
-    # Compute rankings
+    all_excluded_mlb  = all_rostered | seen_mlb  | set(body.extra_exclude_ids)
+    all_excluded_milb = all_rostered | seen_milb | set(body.extra_exclude_ids)
+
+    # ── MiLB prospect helper ──────────────────────────────────────────────────
+    def _get_top_prospect(slot: Optional[str]) -> Optional[FindPlayerSuggestionRead]:
+        """Return the highest-PAV unseen prospect that fits slot (if given)."""
+        rows = (
+            db.query(ProspectProfile)
+            .filter(ProspectProfile.player_id.notin_(all_excluded_milb))
+            .filter(ProspectProfile.pav_score.isnot(None))
+            .order_by(ProspectProfile.pav_score.desc())
+            .limit(100)
+            .all()
+        )
+        for pp in rows:
+            player = db.get(Player, pp.player_id)
+            if not player:
+                continue
+            positions = player.positions or (["SP"] if pp.stat_type == "pitching" else ["Util"])
+            if slot and not _player_eligible_for_slot(positions, slot):
+                continue
+            # Persist to avoid re-recommending
+            db.add(Recommendation(
+                team_id=body.team_id,
+                rec_type="find_player_milb",
+                player_id=pp.player_id,
+                action=f"search:{search_params_label}",
+                rationale_blurb=None,
+                category_impact={},
+                priority_score=pp.pav_score or 0.0,
+                created_at=datetime.now(timezone.utc),
+                expires_at=None,
+            ))
+            db.commit()
+            return FindPlayerSuggestionRead(
+                player_id=pp.player_id,
+                player_name=player.name,
+                positions=positions,
+                priority_score=pp.pav_score or 0.0,
+                category_impact={},
+                blurb=None,
+                created_at=datetime.now(timezone.utc),
+                search_params_label=search_params_label,
+                is_prospect=True,
+                pav_score=pp.pav_score,
+            )
+        return None
+
+    # ── MiLB-only path ────────────────────────────────────────────────────────
+    if body.player_pool == "milb":
+        prospect = _get_top_prospect(body.position_slot)
+        if not prospect:
+            raise HTTPException(
+                status_code=404,
+                detail="No MiLB prospects found. Prospect data may not be synced yet.",
+            )
+        return FindPlayerResponse(suggestion=prospect, milb_suggestion=None, all_suggestions=[])
+
+    # ── MLB path ──────────────────────────────────────────────────────────────
     lookback, predictive = _compute_rankings(db, categories)
     if not lookback:
-        raise HTTPException(
-            status_code=404,
-            detail="No player stats available.",
-        )
+        raise HTTPException(status_code=404, detail="No player stats available.")
 
     max_acq = (league.settings or {}).get("max_acquisitions_per_week", 4)
     roster_ids = team.roster or []
@@ -687,47 +758,54 @@ def find_player_endpoint(
         max_acquisitions_remaining=max_acq,
         all_rankings=lookback,
         predictive_rankings=predictive or lookback,
-        all_rostered_ids=all_excluded,
+        all_rostered_ids=all_excluded_mlb,
         build_preferences=BuildPreferences(),
     )
 
     recommender = Recommender(categories, league_type=league.league_type)
-    # Get more than 1 in case some don't match the target position
     recommendations = recommender.get_waiver_recommendations(ctx, limit=50)
 
-    # Filter to players who can fill the target position slot
-    position_recs = [
-        r for r in recommendations
-        if _player_eligible_for_slot(r.positions, body.position_slot)
-    ]
+    # Filter by position slot (if provided)
+    position_recs = (
+        [r for r in recommendations if _player_eligible_for_slot(r.positions, body.position_slot)]
+        if body.position_slot
+        else list(recommendations)
+    )
+
+    # Re-sort by priority categories if requested
+    if body.priority_categories:
+        position_recs.sort(
+            key=lambda r: sum(r.category_impact.get(c, 0.0) for c in body.priority_categories),
+            reverse=True,
+        )
 
     if not position_recs:
+        slot_desc = f"position '{body.position_slot}'" if body.position_slot else "any position"
         raise HTTPException(
             status_code=404,
             detail=(
-                f"No available players found for position '{body.position_slot}'. "
-                "All suggestions may have been exhausted — try resetting history "
-                "or check that players are available."
+                f"No available players found for {slot_desc}. "
+                "All suggestions may have been exhausted — history resets daily."
             ),
         )
 
     best = position_recs[0]
 
-    # Look up predictive ranking for blurb generation
+    # Blurb generation
     pred_map = {r.player_id: r for r in (predictive or lookback)}
     pred_ranking = pred_map.get(best.player_id)
-
-    # Generate blurb
     blurb = ""
     if pred_ranking:
-        blurb = _generate_find_player_blurb(pred_ranking, categories, body.position_slot)
+        blurb = _generate_find_player_blurb(pred_ranking, categories, body.position_slot or "")
 
-    # Persist the new suggestion
+    # Persist MLB suggestion
+    slot_part = body.position_slot or "any"
+    rec_type_mlb = f"find_player_mlb_{slot_part}"
     new_rec = Recommendation(
         team_id=body.team_id,
-        rec_type=rec_type,
+        rec_type=rec_type_mlb,
         player_id=best.player_id,
-        action=best.action,
+        action=f"search:{search_params_label}",
         rationale_blurb=blurb or best.rationale_blurb,
         category_impact=best.category_impact,
         priority_score=best.priority_score,
@@ -738,36 +816,6 @@ def find_player_endpoint(
     db.commit()
     db.refresh(new_rec)
 
-    # Build suggestion read objects
-    def _to_suggestion(rec: Recommendation, positions: list[str], cat_impact: dict) -> FindPlayerSuggestionRead:
-        return FindPlayerSuggestionRead(
-            player_id=rec.player_id,
-            player_name=_get_player_name(db, rec.player_id),
-            positions=positions,
-            priority_score=rec.priority_score,
-            category_impact=cat_impact,
-            blurb=rec.rationale_blurb,
-            created_at=rec.created_at,
-        )
-
-    # Build a position lookup for historical recommendations
-    # (we need positions for each previously seen player)
-    all_recs = db.query(Recommendation).filter(
-        Recommendation.team_id == body.team_id,
-        Recommendation.rec_type == rec_type,
-    ).order_by(Recommendation.created_at.desc()).all()
-
-    lookback_map = {r.player_id: r for r in lookback}
-    pred_map_full = {r.player_id: r for r in (predictive or lookback)}
-
-    all_suggestions = []
-    for rec in all_recs:
-        ranking = pred_map_full.get(rec.player_id) or lookback_map.get(rec.player_id)
-        positions = ranking.positions if ranking else []
-        cat_impact = rec.category_impact or {}
-        all_suggestions.append(_to_suggestion(rec, positions, cat_impact))
-
-    # Current suggestion is the newly-persisted record
     current_suggestion = FindPlayerSuggestionRead(
         player_id=best.player_id,
         player_name=best.player_name,
@@ -776,11 +824,19 @@ def find_player_endpoint(
         category_impact=best.category_impact,
         blurb=blurb or best.rationale_blurb,
         created_at=new_rec.created_at,
+        search_params_label=search_params_label,
+        is_prospect=False,
     )
+
+    # MiLB suggestion for "both" mode
+    milb_suggestion: Optional[FindPlayerSuggestionRead] = None
+    if body.player_pool == "both":
+        milb_suggestion = _get_top_prospect(body.position_slot)
 
     return FindPlayerResponse(
         suggestion=current_suggestion,
-        all_suggestions=all_suggestions,
+        milb_suggestion=milb_suggestion,
+        all_suggestions=[],
     )
 
 

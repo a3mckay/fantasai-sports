@@ -168,11 +168,26 @@ class TradeResponse(BaseModel):
 
 
 class FindPlayerRequest(BaseModel):
-    """Request body for the find-player endpoint."""
+    """Request body for the find-player endpoint.
+
+    At least one of ``position_slot`` or ``priority_categories`` must be
+    provided (unless ``player_pool`` is ``"milb"``, in which case top
+    prospects by PAV are returned regardless).
+    """
 
     team_id: int
-    position_slot: str = Field(
-        description='Position slot to fill, e.g. "SP", "RP", "OF", "C", "UTIL".',
+    position_slot: Optional[str] = Field(
+        default=None,
+        description='Position slot to fill, e.g. "SP", "RP", "OF", "C", "UTIL". Optional.',
+    )
+    priority_categories: list[str] = Field(
+        default_factory=list,
+        description='Scoring categories to bias toward, e.g. ["SB", "HR"]. Multi-select.',
+    )
+    player_pool: str = Field(
+        default="mlb",
+        pattern="^(mlb|milb|both)$",
+        description='"mlb" (default), "milb" (prospects only, sorted by PAV), or "both".',
     )
     context: Optional[str] = Field(
         default=None,
@@ -196,13 +211,24 @@ class FindPlayerSuggestionRead(BaseModel):
     category_impact: dict[str, float]
     blurb: Optional[str] = None
     created_at: datetime
+    search_params_label: str = Field(
+        default="",
+        description='Human-readable label of the search that produced this suggestion, e.g. "SS + SB".',
+    )
+    is_prospect: bool = Field(default=False, description="True if this is a MiLB prospect.")
+    pav_score: Optional[float] = Field(default=None, description="PAV score for MiLB prospects.")
 
 
 class FindPlayerResponse(BaseModel):
     """Response for the find-player endpoint."""
 
     suggestion: FindPlayerSuggestionRead
+    milb_suggestion: Optional[FindPlayerSuggestionRead] = Field(
+        default=None,
+        description="Top MiLB prospect when player_pool='both'.",
+    )
     all_suggestions: list[FindPlayerSuggestionRead] = Field(
+        default_factory=list,
         description="Full suggestion history for this team + position, newest first.",
     )
 
