@@ -14,6 +14,17 @@ const LEAGUE_TYPES = [
   { value: 'points',         label: 'Points'         },
 ]
 
+/** Yahoo sometimes returns raw type strings — normalise them to our enum values. */
+const LEAGUE_TYPE_NORMALISE = {
+  head:         'h2h_categories',
+  headone:      'h2h_categories',
+  head_one_win: 'h2h_categories',
+  rotisserie:   'roto',
+}
+
+/** Yahoo composite / slot-header categories that should never appear as scoring cats. */
+const SKIP_YAHOO_CATS = new Set(['H/AB', 'Batting', 'Pitching', 'AB'])
+
 const DEFAULT_ROSTER = 'C, 1B, 2B, 3B, SS, OF, OF, OF, UTIL, SP, SP, SP, RP, RP, BN, BN, BN'
 
 /** Remove empty strings and purely-numeric tokens (Yahoo slot type codes like "0", "1"). */
@@ -36,8 +47,10 @@ export default function LeagueSettings({ onChange, initialValues }) {
   useEffect(() => {
     if (!initialValues || seeded.current) return
     seeded.current = true
-    const cats   = initialValues.categories?.length ? new Set(initialValues.categories) : new Set(DEFAULT_CATEGORIES)
-    const lt     = initialValues.leagueType || 'h2h_categories'
+    const rawCats = (initialValues.categories || []).filter(c => !SKIP_YAHOO_CATS.has(c))
+    const cats    = rawCats.length ? new Set(rawCats) : new Set(DEFAULT_CATEGORIES)
+    const rawType = initialValues.leagueType || ''
+    const lt      = LEAGUE_TYPE_NORMALISE[rawType] || rawType || 'h2h_categories'
     const num    = String(initialValues.numTeams || 12)
     const cleaned = cleanPositions(initialValues.rosterPositions)
     const roster = cleaned.length ? cleaned.join(', ') : DEFAULT_ROSTER

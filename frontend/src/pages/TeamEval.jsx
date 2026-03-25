@@ -91,8 +91,8 @@ export default function TeamEval() {
     setPlayers(loaded.length > 0 ? loaded : [emptyPlayer()])
     setSelectedTeam(team)
     setShowManual(false)
-    setResult(null)
     setError(null)
+    // Don't clear result — previous eval stays visible until user clicks Evaluate again
   }
 
   function clearTeam() {
@@ -193,6 +193,10 @@ export default function TeamEval() {
   const gradeCls = result ? (GRADE_STYLE[result.letter_grade] || GRADE_STYLE.C) : ''
   const resolvedCount = players.filter(p => p.playerId != null).length
 
+  // When a result exists for a league team, collapse the form to just
+  // the team picker + evaluate button so results appear near the top.
+  const compactForm = !!(result && hasLeague)
+
   return (
     <div className="space-y-8">
       <div>
@@ -230,7 +234,7 @@ export default function TeamEval() {
               selectedTeamId={selectedTeam?.team_id}
               onSelect={loadTeam}
             />
-            {selectedTeam && (
+            {selectedTeam && !compactForm && (
               <div className="flex items-center gap-2 text-xs text-slate-500 pt-1">
                 <Users size={12} className="text-field-500" />
                 <span>
@@ -242,161 +246,167 @@ export default function TeamEval() {
           </div>
         )}
 
-        {/* ── Divider / secondary toggle ────────────────────────────────────── */}
-        {hasLeague && (
-          <div>
-            <button
-              type="button"
-              onClick={() => setShowManual(v => !v)}
-              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
-            >
-              {showManual
-                ? <ChevronDown size={13} />
-                : <ChevronRight size={13} />
-              }
-              {showManual ? 'Hide' : 'Or add players manually / upload screenshots'}
-            </button>
-          </div>
-        )}
-
-        {/* ── Manual entry + screenshot upload ──────────────────────────────── */}
-        {(!hasLeague || showManual) && (
-          <div className="space-y-4">
-            {/* Screenshot upload toggle */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="section-label">
-                  {hasLeague ? 'Add or replace players' : 'Your Roster *'}
-                </label>
+        {/* ── Everything below is hidden in compact (post-result) mode ─────── */}
+        {!compactForm && (
+          <>
+            {/* ── Divider / secondary toggle ──────────────────────────────── */}
+            {hasLeague && (
+              <div>
                 <button
                   type="button"
-                  onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
+                  onClick={() => setShowManual(v => !v)}
                   className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
                 >
-                  <Upload size={12} />
-                  {showUpload ? 'Hide upload' : 'Upload screenshots'}
+                  {showManual
+                    ? <ChevronDown size={13} />
+                    : <ChevronRight size={13} />
+                  }
+                  {showManual ? 'Hide' : 'Or add players manually / upload screenshots'}
                 </button>
               </div>
+            )}
 
-              {/* Screenshot upload area */}
-              {showUpload && (
-                <div className="mb-3 space-y-2">
-                  <div
-                    className="border-2 border-dashed border-navy-600 rounded-xl p-5 text-center cursor-pointer hover:border-field-600 transition-colors"
-                    onClick={() => fileRef.current?.click()}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
-                  >
-                    <ImageIcon size={28} className="mx-auto text-slate-600 mb-2" />
-                    <p className="text-sm text-slate-400">Upload roster screenshots</p>
-                    <p className="text-xs text-slate-600 mt-0.5">
-                      Drag & drop or click · Select multiple files to cover the full roster
-                    </p>
-                    <input
-                      ref={fileRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      className="hidden"
-                      onChange={e => handleFiles(e.target.files)}
-                    />
+            {/* ── Manual entry + screenshot upload ──────────────────────── */}
+            {(!hasLeague || showManual) && (
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="section-label">
+                      {hasLeague ? 'Add or replace players' : 'Your Roster *'}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      <Upload size={12} />
+                      {showUpload ? 'Hide upload' : 'Upload screenshots'}
+                    </button>
                   </div>
-                  {extracting && (
-                    <div className="flex items-center gap-2 text-xs text-field-400">
-                      <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
+
+                  {showUpload && (
+                    <div className="mb-3 space-y-2">
+                      <div
+                        className="border-2 border-dashed border-navy-600 rounded-xl p-5 text-center cursor-pointer hover:border-field-600 transition-colors"
+                        onClick={() => fileRef.current?.click()}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
+                      >
+                        <ImageIcon size={28} className="mx-auto text-slate-600 mb-2" />
+                        <p className="text-sm text-slate-400">Upload roster screenshots</p>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Drag & drop or click · Select multiple files to cover the full roster
+                        </p>
+                        <input
+                          ref={fileRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={e => handleFiles(e.target.files)}
+                        />
+                      </div>
+                      {extracting && (
+                        <div className="flex items-center gap-2 text-xs text-field-400">
+                          <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
+                        </div>
+                      )}
+                      {extractError && (
+                        <div className="flex items-center gap-2 text-xs text-stitch-400">
+                          <AlertCircle size={13} /> {extractError}
+                        </div>
+                      )}
                     </div>
                   )}
-                  {extractError && (
-                    <div className="flex items-center gap-2 text-xs text-stitch-400">
-                      <AlertCircle size={13} /> {extractError}
-                    </div>
+
+                  <div className="space-y-2">
+                    {players.map((p, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <PlayerSearch
+                          ref={el => { playerRefs.current[idx] = el }}
+                          value={p.name}
+                          playerId={p.playerId}
+                          onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                          onEnterKey={() => focusNextOrAdd(idx)}
+                          placeholder={`Player ${idx + 1}…`}
+                          className="flex-1"
+                        />
+                        {players.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removePlayer(idx)}
+                            className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+                          >
+                            <X size={15} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {players.length < 30 && (
+                    <button
+                      type="button"
+                      onClick={addPlayer}
+                      className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
+                    >
+                      <Plus size={13} /> Add player
+                    </button>
                   )}
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* Player list */}
-              <div className="space-y-2">
-                {players.map((p, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <PlayerSearch
-                      ref={el => { playerRefs.current[idx] = el }}
-                      value={p.name}
-                      playerId={p.playerId}
-                      onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-                      onEnterKey={() => focusNextOrAdd(idx)}
-                      placeholder={`Player ${idx + 1}…`}
-                      className="flex-1"
-                    />
-                    {players.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removePlayer(idx)}
-                        className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
-                      >
-                        <X size={15} />
-                      </button>
+            {/* Compact roster preview when league team loaded and manual hidden */}
+            {hasLeague && !showManual && selectedTeam && (
+              <div className="rounded-lg bg-navy-800/50 border border-navy-700 px-3 py-2 space-y-1 max-h-48 overflow-y-auto">
+                {players.filter(p => p.name).map((p, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-300 truncate">{p.name}</span>
+                    {!p.playerId && (
+                      <span className="text-[10px] text-stitch-500 shrink-0">unresolved</span>
                     )}
                   </div>
                 ))}
-              </div>
-              {players.length < 30 && (
-                <button
-                  type="button"
-                  onClick={addPlayer}
-                  className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
-                >
-                  <Plus size={13} /> Add player
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* When a league team is loaded but manual section is hidden, show a compact
-            player count summary so the user knows what roster will be evaluated */}
-        {hasLeague && !showManual && selectedTeam && (
-          <div className="rounded-lg bg-navy-800/50 border border-navy-700 px-3 py-2 space-y-1 max-h-48 overflow-y-auto">
-            {players.filter(p => p.name).map((p, i) => (
-              <div key={i} className="flex items-center justify-between gap-2">
-                <span className="text-xs text-slate-300 truncate">{p.name}</span>
-                {!p.playerId && (
-                  <span className="text-[10px] text-stitch-500 shrink-0">unresolved</span>
+                {players.filter(p => p.name).length === 0 && (
+                  <span className="text-xs text-slate-600 italic">No players loaded.</span>
                 )}
               </div>
-            ))}
-            {players.filter(p => p.name).length === 0 && (
-              <span className="text-xs text-slate-600 italic">No players loaded.</span>
             )}
-          </div>
+
+            {/* ── Ranking type ──────────────────────────────────────────── */}
+            <div>
+              <label className="section-label">Ranking type</label>
+              <select
+                className="field-input"
+                value={rankingType}
+                onChange={e => setRankingType(e.target.value)}
+              >
+                <option value="predictive">Projected (forward-looking)</option>
+                <option value="lookback">Current (season-to-date)</option>
+              </select>
+            </div>
+
+            <ContextInput value={context} onChange={setContext} />
+          </>
         )}
 
-        {/* ── Ranking type ───────────────────────────────────────────────────── */}
-        <div>
-          <label className="section-label">Ranking type</label>
-          <select
-            className="field-input"
-            value={rankingType}
-            onChange={e => setRankingType(e.target.value)}
-          >
-            <option value="predictive">Projected (forward-looking)</option>
-            <option value="lookback">Current (season-to-date)</option>
-          </select>
-        </div>
-
-        <ContextInput value={context} onChange={setContext} />
-        <LeagueSettings
-          onChange={setLeagueSettings}
-          initialValues={league ? {
-            categories: league.scoring_categories,
-            leagueType: league.league_type,
-            numTeams: league.num_teams,
-            rosterPositions: league.roster_positions,
-          } : null}
-        />
-
+        {/* ── Evaluate button ── always visible ────────────────────────────── */}
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} /> Evaluate Team
         </button>
+
+        {/* ── League settings ── last item, collapsed by default ───────────── */}
+        {!compactForm && (
+          <LeagueSettings
+            onChange={setLeagueSettings}
+            initialValues={league ? {
+              categories: league.scoring_categories,
+              leagueType: league.league_type,
+              numTeams: league.num_teams,
+              rosterPositions: league.roster_positions,
+            } : null}
+          />
+        )}
       </form>
 
       <ErrorBanner message={error} onClose={() => setError(null)} />
