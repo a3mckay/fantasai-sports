@@ -59,7 +59,7 @@ export default function LeagueSettings({ onChange, initialValues }) {
     setNumTeams(num)
     setRosterRaw(roster)
     setFromYahoo(true)
-    setOpen(true)
+    // Keep collapsed by default even when auto-loaded from Yahoo
     onChange({ categories: [...cats], leagueType: lt, numTeams: parseInt(num) || 12, rosterPositions: cleaned })
   }, [initialValues])
 
