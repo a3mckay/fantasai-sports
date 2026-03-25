@@ -7,15 +7,15 @@ import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 const NAV = [
-  { to: '/',              icon: Activity,       label: 'Home'            },
-  { to: '/rankings',      icon: TrendingUp,     label: 'Rankings'        },
-  { to: '/compare',       icon: BarChart2,      label: 'Compare Players' },
-  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'  },
-  { to: '/team-eval',     icon: Star,           label: 'Team Eval'       },
-  { to: '/compare-teams', icon: Users,          label: 'Compare Teams'   },
-  { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning' },
-  { to: '/find-player',   icon: Search,         label: 'Find a Player'   },
-  { to: '/league-power',  icon: Zap,            label: 'League Power'    },
+  { to: '/',              icon: Activity,       label: 'Home'               },
+  { to: '/rankings',      icon: TrendingUp,     label: 'Rankings'           },
+  { to: '/find-player',   icon: Search,         label: 'Recommend a Player' },
+  { to: '/compare',       icon: BarChart2,      label: 'Compare Players'    },
+  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'     },
+  { to: '/team-eval',     icon: Star,           label: 'Team Eval'          },
+  { to: '/compare-teams', icon: Users,          label: 'Compare Teams'      },
+  { to: '/league-power',  icon: Zap,            label: 'League Power'       },
+  { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning'    },
 ]
 
 function NavLink({ to, icon: Icon, label, onClick }) {

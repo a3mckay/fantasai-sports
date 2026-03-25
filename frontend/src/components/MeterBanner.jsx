@@ -5,7 +5,7 @@ import { X } from 'lucide-react'
 const FEATURE_LABELS = {
   'compare': 'Player Comparison',
   'trade': 'Trade Evaluation',
-  'find-player': 'Find a Player',
+  'find-player': 'Recommend a Player',
   'team-eval': 'Team Evaluation',
   'keeper-eval': 'Keeper Planning',
   'compare-teams': 'Compare Teams',

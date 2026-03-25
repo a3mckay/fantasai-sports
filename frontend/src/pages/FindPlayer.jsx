@@ -94,7 +94,7 @@ export default function FindPlayer() {
       <div>
         <div className="flex items-center gap-2 mb-1">
           <Search size={18} className="text-field-400" />
-          <h1 className="text-2xl font-bold text-white">Find a Player</h1>
+          <h1 className="text-2xl font-bold text-white">Recommend a Player</h1>
         </div>
         <p className="text-slate-500 text-sm">
           AI recommends the best available player for a roster slot based on your team's needs.
@@ -135,7 +135,7 @@ export default function FindPlayer() {
         />
 
         <button type="submit" className="btn-primary" disabled={loading || !myTeam}>
-          <Play size={14} /> Find a Player
+          <Play size={14} /> Recommend a Player
         </button>
       </form>
 
