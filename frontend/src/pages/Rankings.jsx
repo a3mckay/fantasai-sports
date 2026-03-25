@@ -107,11 +107,6 @@ export default function Rankings() {
     }
   }
 
-  // DEBUG: log SHO TIME roster IDs and Ohtani lookup
-  if (Object.keys(ownedByMap).length > 0) {
-    const shoTimeIds = Object.entries(ownedByMap).filter(([,t]) => t === 'SHO TIME').map(([id]) => Number(id))
-    console.log('[DEBUG] SHO TIME player_ids:', shoTimeIds)
-  }
 
   const [mode, setMode]             = useState('predictive')
   const [horizon, setHorizon]       = useState('season')
@@ -443,8 +438,7 @@ export default function Rankings() {
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-medium text-white text-sm">{player.name}</span>
-                        <span className="text-[10px] text-slate-500 font-mono">id:{player.player_id}</span>
-                        {player.team && (
+{player.team && (
                           <span className="text-xs text-slate-500 hidden sm:inline">({player.team})</span>
                         )}
                         {/* Current IL badge */}

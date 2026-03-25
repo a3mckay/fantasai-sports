@@ -557,88 +557,9 @@ def yahoo_resync_team(
         "roster_count": len(roster_names),
         "resolved_count": len(roster_ids),
         "unresolved_names": unresolved,
-        "resolved_map": {name: pid for name, pid in resolved.items()},  # DEBUG
-        "is_mine": is_my_team,
+"is_mine": is_my_team,
     }
 
-
-@router.get("/debug/ownership")
-def debug_ownership(
-    player_id: int,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """DEBUG: show which teams have this player_id in their stored roster.
-
-    Example: GET /api/v1/auth/debug/ownership?player_id=19755
-    """
-    from fantasai.models.league import Team
-
-    conn = user.yahoo_connection
-    if not conn or not conn.league_key:
-        raise HTTPException(status_code=400, detail="No league connected")
-
-    all_teams = db.query(Team).filter(Team.league_id == conn.league_key).all()
-    matches = []
-    all_rosters = []
-    for t in all_teams:
-        roster = t.roster or []
-        all_rosters.append({
-            "team_name": t.team_name or t.manager_name,
-            "roster_ids": roster,
-            "roster_names": t.roster_names or [],
-            "has_player": player_id in roster,
-        })
-        if player_id in roster:
-            matches.append(t.team_name or t.manager_name)
-
-    return {
-        "player_id": player_id,
-        "found_on_teams": matches,
-        "all_teams": all_rosters,
-    }
-
-
-@router.get("/debug/resolve")
-def debug_resolve_name(
-    name: str,
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    """DEBUG: resolve a single player name and show all candidates.
-
-    Example: GET /api/v1/auth/debug/resolve?name=Shohei+Ohtani
-    """
-    from fantasai.models.player import Player, PlayerStats
-    from fantasai.services.name_resolver import _normalize
-
-    norm = _normalize(name)
-
-    # All players with this normalized name
-    all_players = db.query(Player.player_id, Player.name).all()
-    candidates = [
-        {"player_id": r.player_id, "name": r.name}
-        for r in all_players
-        if _normalize(r.name) == norm
-    ]
-
-    # Which of those have stats?
-    stat_ids = {
-        r.player_id
-        for r in db.query(PlayerStats.player_id).distinct().all()
-    }
-    for c in candidates:
-        c["has_stats"] = c["player_id"] in stat_ids
-
-    # What does the resolver return?
-    from fantasai.services.name_resolver import resolve_player_names
-    resolved = resolve_player_names([name], db)
-
-    return {
-        "input": name,
-        "normalized": norm,
-        "candidates_in_db": candidates,
-        "resolver_result": resolved.get(name),
-    }
 
 
 @router.post("/yahoo/resync")
