@@ -52,6 +52,17 @@ export function AuthProvider({ children }) {
           setUser(data.user)
           setAuthError(null)
           setLoading(false)
+
+          // If the user has a Yahoo connection, a background sync was queued on
+          // the server.  Dispatch yahoo:synced after 15 s so LeagueContext
+          // re-fetches with the freshly-imported roster data.
+          if (data.user?.yahoo_connected) {
+            setTimeout(
+              () => window.dispatchEvent(new CustomEvent('yahoo:synced')),
+              15_000,
+            )
+          }
+
           return
         }
 

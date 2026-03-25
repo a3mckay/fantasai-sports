@@ -73,7 +73,31 @@ async def lifespan(app: FastAPI):
     # Warm the rankings cache in a background thread so startup is non-blocking
     t = threading.Thread(target=_warm_rankings_cache, daemon=True, name="cache-warmer")
     t.start()
+
+    # Start the Yahoo league sync scheduler.
+    # Syncs all connected users every 2 hours so roster data stays fresh
+    # without manual intervention.
+    # NOTE: This runs in-process.  If Railway ever scales to multiple instances,
+    # replace with a dedicated job queue or Railway's native cron feature.
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from fantasai.services.yahoo_sync import sync_all_yahoo_users
+
+    scheduler = BackgroundScheduler(timezone="UTC", daemon=True)
+    scheduler.add_job(
+        sync_all_yahoo_users,
+        trigger="interval",
+        hours=2,
+        id="yahoo-sync",
+        max_instances=1,          # prevent overlap if a sync takes > 2 hours
+        misfire_grace_time=300,   # allow 5-minute late starts
+    )
+    scheduler.start()
+    _log.info("Yahoo sync scheduler started (interval=2h)")
+
     yield
+
+    scheduler.shutdown(wait=False)
+    _log.info("Yahoo sync scheduler stopped")
 
 
 app = FastAPI(

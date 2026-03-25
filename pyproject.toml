@@ -19,6 +19,7 @@ dependencies = [
     "PyJWT>=2.8",
     "cryptography>=41",
     "resend>=2.0",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]

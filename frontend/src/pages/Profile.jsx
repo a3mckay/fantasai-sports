@@ -3,6 +3,18 @@ import { useAuth } from '../contexts/AuthContext'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
 
+function formatRelativeTime(isoString) {
+  if (!isoString) return null
+  const diff = Date.now() - new Date(isoString).getTime()
+  const minutes = Math.floor(diff / 60_000)
+  if (minutes < 1)   return 'just now'
+  if (minutes < 60)  return `${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24)    return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
 export default function Profile() {
   const { user, refreshProfile, signOut } = useAuth()
 
@@ -26,6 +38,14 @@ export default function Profile() {
   useEffect(() => {
     req('GET', '/api/v1/auth/yahoo/status').then(setYahooStatus).catch(() => {}).finally(() => setYahooLoading(false))
     req('GET', '/api/v1/settings').then(data => setPrefs(data.notification_prefs || prefs)).catch(() => {}).finally(() => setPrefsLoading(false))
+  }, [])
+
+  // Refresh yahoo status when a background sync completes
+  useEffect(() => {
+    const handler = () =>
+      req('GET', '/api/v1/auth/yahoo/status').then(setYahooStatus).catch(() => {})
+    window.addEventListener('yahoo:synced', handler)
+    return () => window.removeEventListener('yahoo:synced', handler)
   }, [])
 
   async function saveProfile(e) {
@@ -178,13 +198,18 @@ finishStep(label)
           <Spinner />
         ) : yahooStatus?.connected ? (
           <div>
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-1">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
               <span className="text-emerald-400 text-sm font-medium">Connected</span>
               {yahooStatus.league_key && (
                 <span className="text-slate-500 text-xs ml-1">· League: {yahooStatus.league_key}</span>
               )}
             </div>
+            {yahooStatus.last_synced && (
+              <p className="text-xs text-slate-500 mb-3">
+                Last synced {formatRelativeTime(yahooStatus.last_synced)}
+              </p>
+            )}
             <div className="flex items-center gap-3 flex-wrap">
               <button
                 onClick={resyncYahoo}

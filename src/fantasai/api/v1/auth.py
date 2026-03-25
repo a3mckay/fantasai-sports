@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -27,6 +27,12 @@ from fantasai.services.yahoo_oauth import (
     generate_state,
     get_auth_url,
     refresh_access_token,
+)
+from fantasai.services.yahoo_sync import (
+    get_valid_access_token as _get_valid_access_token_sync,
+    import_yahoo_league as _import_yahoo_league,
+    should_sync,
+    sync_user_yahoo,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -79,11 +85,17 @@ def _user_response(user: User) -> dict[str, Any]:
 
 
 @router.post("/verify")
-def verify(body: VerifyRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def verify(
+    body: VerifyRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """Verify a Firebase ID token and create/retrieve the corresponding User row.
 
     Called by the frontend immediately after Firebase sign-in.
-    Returns the user profile and onboarding status.
+    Returns the user profile and onboarding status.  If the user has a Yahoo
+    connection whose data is stale (> 30 min old), a background sync is queued
+    so roster data is fresh without blocking the login response.
     """
     try:
         claims = verify_firebase_token(body.id_token)
@@ -133,6 +145,13 @@ def verify(body: VerifyRequest, db: Session = Depends(get_db)) -> dict[str, Any]
         if name and user.name != name and not user.name:
             user.name = name
         db.commit()
+
+    # Trigger a background Yahoo sync if the user's data is stale.
+    # This is non-blocking — the response returns immediately and the sync
+    # runs after the HTTP response has been sent.
+    if user.yahoo_connection and should_sync(user.yahoo_connection.last_synced):
+        background_tasks.add_task(sync_user_yahoo, str(user.id))
+        _log.info("Queued background Yahoo sync for user %s", user.id)
 
     return {"user": _user_response(user), "is_new": is_new}
 
@@ -262,126 +281,17 @@ def yahoo_callback(
 
 
 def _get_valid_access_token(conn: YahooConnection, db: Session) -> str:
-    """Return a valid Yahoo access token, refreshing automatically if expired.
+    """Return a valid Yahoo access token, refreshing automatically if expiring.
 
-    Yahoo access tokens expire after 1 hour. This checks the stored expiry and
-    refreshes proactively if within 5 minutes of expiry.
+    Delegates to yahoo_sync.get_valid_access_token — kept here so existing
+    callers within this file continue to work unchanged.
     """
-    from datetime import timedelta
-
-    needs_refresh = (
-        conn.token_expiry is None
-        or conn.token_expiry <= datetime.now(tz=timezone.utc) + timedelta(minutes=5)
-    )
-
-    if needs_refresh and conn.encrypted_refresh_token:
-        _log.info("Yahoo access token expired/expiring — refreshing for connection %s", conn.id)
-        refresh_tok = decrypt_token(conn.encrypted_refresh_token)
-        token_data = refresh_access_token(refresh_tok)
-        access_token: str = token_data["access_token"]
-        new_refresh = token_data.get("refresh_token", refresh_tok)
-        expires_in = int(token_data.get("expires_in", 3600))
-
-        conn.encrypted_access_token = encrypt_token(access_token)
-        conn.encrypted_refresh_token = encrypt_token(new_refresh)
-        conn.token_expiry = _now_plus_seconds(expires_in)
-        db.flush()
-        return access_token
-
-    return decrypt_token(conn.encrypted_access_token)
+    return _get_valid_access_token_sync(conn, db)
 
 
-def _import_yahoo_league(
-    db: Session,
-    user: User,
-    conn: YahooConnection,
-    access_token: str,
-) -> None:
-    """Pull the user's most recent MLB league + ALL teams from Yahoo and upsert into DB."""
-    from fantasai.models.league import League, Team
-    from fantasai.services.name_resolver import resolve_player_names
-
-    leagues = fetch_user_mlb_leagues(access_token)
-    if not leagues:
-        _log.info("No Yahoo MLB leagues found for user %s", user.id)
-        return
-
-    # Pick the most-recent-season league
-    league_info = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)[0]
-    league_key = league_info["league_key"]
-    conn.league_key = league_key
-
-    # Fetch detailed settings
-    settings_data = fetch_league_settings(access_token, league_key)
-
-    # Upsert League
-    league = db.query(League).filter(League.league_id == league_key).first()
-    if league is None:
-        league = League(
-            league_id=league_key,
-            platform="yahoo",
-            sport="mlb",
-            league_type=league_info.get("scoring_type", "head"),
-        )
-        db.add(league)
-
-    league.owner_user_id = user.id
-    league.scoring_categories = settings_data.get("stat_categories") or []
-    league.roster_positions = settings_data.get("roster_positions") or []
-    league.settings = {
-        "num_teams": league_info.get("num_teams"),
-        "name": league_info.get("name"),
-        "season": league_info.get("season"),
-        "keepers_per_team": settings_data.get("num_keepers", 0),
-    }
-    db.flush()
-
-    # Import ALL teams in the league
-    all_teams = fetch_all_league_teams(access_token, league_key)
-    _log.info("Importing %d teams for league %s", len(all_teams), league_key)
-
-    for team_info in all_teams:
-        team_key = team_info["team_key"]
-        is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
-
-        if is_my_team:
-            conn.team_key = team_key
-
-        roster_names = fetch_team_roster(access_token, team_key)
-        resolved = resolve_player_names(roster_names, db)
-        roster_ids = [v for v in resolved.values() if v is not None]
-
-        # Look up existing team row by team_key stored in team_name field,
-        # or by owner for the user's own team
-        existing = db.query(Team).filter(
-            Team.league_id == league_key,
-            Team.team_name == team_info["name"],
-        ).first()
-
-        if existing is None and is_my_team:
-            existing = db.query(Team).filter(
-                Team.owner_user_id == user.id,
-                Team.league_id == league_key,
-            ).first()
-
-        if existing is None:
-            existing = Team(
-                league_id=league_key,
-                manager_name=team_info.get("manager_name", ""),
-            )
-            db.add(existing)
-
-        existing.team_name = team_info["name"]
-        existing.manager_name = team_info.get("manager_name", "")
-        existing.roster_names = roster_names
-        existing.roster = roster_ids
-        if is_my_team:
-            existing.owner_user_id = user.id
-
-        _log.info(
-            "Imported team '%s' (%s) with %d players (%d resolved)",
-            team_info["name"], team_key, len(roster_names), len(roster_ids),
-        )
+# _import_yahoo_league is now defined in fantasai.services.yahoo_sync and re-exported
+# via the import alias _import_yahoo_league at the top of this file.
+# Kept as a local alias so the yahoo_callback route below can call it unchanged.
 
 
 @router.delete("/yahoo/disconnect")
