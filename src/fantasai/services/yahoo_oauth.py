@@ -245,10 +245,12 @@ def fetch_user_team(access_token: str, league_key: str, yahoo_guid: str) -> Opti
     return None
 
 
-# Roster slot labels that appear in eligible_positions but are not real playing
-# positions — exclude these so only actual position eligibility chips remain.
+# Bench/injury slot labels that carry no useful position information and should
+# be excluded from eligible_positions.  "Util" is intentionally kept — it is the
+# only meaningful position token for DH-only players (e.g. Ohtani as a batter
+# in leagues that use Util instead of DH) and is canonicalised in the sync step.
 _ROSTER_SLOT_LABELS = {
-    "Util", "UTIL", "BN", "IL", "IL10", "IL15", "IL60",
+    "BN", "IL", "IL10", "IL15", "IL60",
     "IR", "NA", "DL", "Hitters", "Pitchers",
 }
 

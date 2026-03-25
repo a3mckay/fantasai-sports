@@ -85,18 +85,42 @@ def _update_player_positions_from_yahoo(
 ) -> None:
     """Write Yahoo-sourced eligible positions back to Player.positions in the DB.
 
-    Positions come directly from Yahoo's ``eligible_positions`` elements, so
-    they already reflect this league's roster format (e.g. "OF" vs "LF/CF/RF").
-    Two-way players like Ohtani appear twice in roster_data with different
-    qualifiers — their positions are merged into a single deduplicated list.
+    Canonicalisation rules applied per entry before merging:
+      • DH → Util   (DH is displayed as the Util slot in fantasy)
+      • P  removed when SP or RP is already present (P is a generic pitcher
+        slot — redundant and confusing alongside the specific SP/RP labels)
+      • Util removed when the player has other, more specific positions
+        (e.g. SS, 1B, OF) — Util is only kept for DH-only / utility players
+        who have no real field position
+
+    Two-way players (Ohtani) appear twice with different qualifiers; their
+    batting and pitching eligible positions are merged into one deduplicated
+    list so that Rankings can later filter by stat_type for display.
     """
     import re
 
     from fantasai.models.player import Player
 
     _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+    _PITCHING = {"SP", "RP"}
+    _FIELD_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
 
-    # Group eligible positions by player_id, merging duplicates (two-way players)
+    def _canonicalise(raw: list[str]) -> list[str]:
+        # Step 1: DH → Util
+        mapped = ["Util" if p == "DH" else p for p in raw]
+        # Step 2: drop P when SP or RP present
+        has_specific_pitcher = any(p in _PITCHING for p in mapped)
+        if has_specific_pitcher:
+            mapped = [p for p in mapped if p != "P"]
+        # Step 3: drop Util when real field positions exist
+        has_field_pos = any(p in _FIELD_POSITIONS for p in mapped)
+        if has_field_pos:
+            mapped = [p for p in mapped if p != "Util"]
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        return [p for p in mapped if not (p in seen or seen.add(p))]  # type: ignore[func-returns-value]
+
+    # Group by player_id, merging two-way player entries
     player_positions: dict[int, list[str]] = {}
     for entry in roster_data:
         raw_pos = entry.get("eligible_positions") or []
@@ -105,13 +129,13 @@ def _update_player_positions_from_yahoo(
         name = entry["name"]
         player_id = resolved.get(name)
         if player_id is None:
-            # Try with qualifier stripped (e.g. "Ohtani (Batter)" → "Ohtani")
             stripped = _PAREN.sub("", name).strip()
             player_id = resolved.get(stripped)
         if player_id is None:
             continue
+        canonical = _canonicalise(raw_pos)
         existing = player_positions.setdefault(player_id, [])
-        for pos in raw_pos:
+        for pos in canonical:
             if pos not in existing:
                 existing.append(pos)
 

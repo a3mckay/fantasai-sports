@@ -19,14 +19,22 @@ const ROSTER_FILTERS   = [
 const PAGE_SIZES       = [50, 100, 250, 'All']
 const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
 
-const PITCHING_POS = new Set(['SP', 'RP'])
+const PITCHING_POS = new Set(['SP', 'RP', 'P'])
 
-// For two-way players (e.g. Ohtani): show DH when appearing in a batting row.
+// Return the subset of positions relevant for the row's stat_type.
+// Two-way players (Ohtani) store merged positions ["Util","SP"] in the DB —
+// batting rows should only show the batting side, pitching rows the pitching side.
 function displayPositions(player) {
-  if (player.stat_type === 'batting' && player.positions?.every(p => PITCHING_POS.has(p))) {
-    return ['DH']
+  const positions = player.positions ?? []
+  if (player.stat_type === 'batting') {
+    const filtered = positions.filter(p => !PITCHING_POS.has(p))
+    return filtered.length > 0 ? filtered : positions
   }
-  return player.positions ?? []
+  if (player.stat_type === 'pitching') {
+    const filtered = positions.filter(p => PITCHING_POS.has(p))
+    return filtered.length > 0 ? filtered : positions
+  }
+  return positions
 }
 
 // ---------------------------------------------------------------------------
