@@ -56,19 +56,17 @@ def resolve_player_names(
     # Load all players once
     all_players: list[Player] = db.query(Player.player_id, Player.name).all()
 
-    # Player IDs that have current-season stats — used to break ties when the
-    # same player name maps to multiple player_ids (e.g. two-way players whose
-    # batting and pitching pipeline rows received different IDfg values).
+    # Player IDs that have any stats — used to break ties when the same player
+    # name maps to multiple player_ids (e.g. two-way players whose batting and
+    # pitching pipeline rows received different IDfg values).  We prefer the ID
+    # that actually has stat rows over a stale/orphan player record.
     stat_player_ids: set[int] = {
         r.player_id
-        for r in db.query(PlayerStats.player_id)
-        .filter(PlayerStats.season == 2025)
-        .distinct()
-        .all()
+        for r in db.query(PlayerStats.player_id).distinct().all()
     }
 
     # Group candidates by normalized name, then pick the best:
-    # prefer a candidate that has 2025 stats over one that doesn't.
+    # prefer a candidate that has stats over one that doesn't.
     name_to_candidates: dict[str, list[int]] = {}
     for row in all_players:
         norm = _normalize(row.name)
