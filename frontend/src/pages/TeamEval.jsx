@@ -72,6 +72,7 @@ export default function TeamEval() {
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState(null)
   const [result, setResult]                 = useState(null)
+  const [evaluatedTeamName, setEvaluatedTeamName] = useState(null)  // team name at time of last eval
   const [showManual, setShowManual]         = useState(false)  // collapse manual entry when team loaded
 
   // Screenshot upload state
@@ -169,6 +170,7 @@ export default function TeamEval() {
       return
     }
     setLoading(true); setError(null); setResult(null)
+    setEvaluatedTeamName(selectedTeam?.team_name || null)
     try {
       const body = {
         player_ids:   resolved,
@@ -424,8 +426,8 @@ export default function TeamEval() {
                 {result.grade_percentile.toFixed(0)}th percentile · overall score{' '}
                 <span className="font-mono text-white">{result.overall_score.toFixed(2)}</span>
               </div>
-              {selectedTeam && (
-                <div className="text-xs text-slate-500 mt-0.5">{selectedTeam.team_name}</div>
+              {evaluatedTeamName && (
+                <div className="text-xs text-slate-500 mt-0.5">{evaluatedTeamName}</div>
               )}
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {result.strong_categories.map(c => (
