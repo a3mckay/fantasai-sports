@@ -275,12 +275,20 @@ def _compute_group_scores(
     mean_player_score — mean composite score across players (league comparison).
     """
     groups: dict[str, list[PlayerRanking]] = {}
+    _PITCHER_SLOTS = {"SP", "RP", "P"}
     for ranking in roster_rankings:
-        primary = ranking.positions[0] if ranking.positions else "UTIL"
-        if primary in ("LF", "CF", "RF"):
-            primary = "OF"
-        if primary not in POSITION_GROUPS:
-            primary = "Util" if primary in HITTER_POSITIONS else "P"
+        if ranking.stat_type == "pitching":
+            # For two-way players the positions list mixes batter + pitcher slots.
+            # Always pick the first pitcher-appropriate slot so the batting entry
+            # and pitching entry land in different groups.
+            pitcher_pos = next((p for p in ranking.positions if p in _PITCHER_SLOTS), None)
+            primary = pitcher_pos if pitcher_pos else "P"
+        else:
+            primary = ranking.positions[0] if ranking.positions else "UTIL"
+            if primary in ("LF", "CF", "RF"):
+                primary = "OF"
+            if primary not in POSITION_GROUPS:
+                primary = "Util" if primary in HITTER_POSITIONS else "P"
         groups.setdefault(primary, []).append(ranking)
 
     result = {}
