@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import re
 import unicodedata
 from typing import Optional
 
@@ -21,6 +22,20 @@ from sqlalchemy.orm import Session
 _log = logging.getLogger(__name__)
 
 _SIMILARITY_THRESHOLD = 0.82  # difflib ratio threshold
+
+
+_PAREN_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _strip_qualifier(name: str) -> str:
+    """Remove trailing parenthetical qualifiers Yahoo appends to player names.
+
+    Examples:
+      "Shohei Ohtani (Batter)"  → "Shohei Ohtani"
+      "Shohei Ohtani (Pitcher)" → "Shohei Ohtani"
+      "José Ramírez (3B)"       → "José Ramírez"
+    """
+    return _PAREN_SUFFIX.sub("", name).strip()
 
 
 def _normalize(name: str) -> str:
@@ -88,7 +103,10 @@ def resolve_player_names(
     results: dict[str, Optional[int]] = {}
 
     for name in names:
-        norm = _normalize(name)
+        # Strip Yahoo positional qualifiers before matching:
+        # "Shohei Ohtani (Batter)" → "Shohei Ohtani"
+        lookup_name = _strip_qualifier(name)
+        norm = _normalize(lookup_name)
 
         # 1. Exact match
         if norm in exact:
@@ -96,7 +114,7 @@ def resolve_player_names(
             continue
 
         # 2. Token-set Jaccard similarity
-        name_tokens = _token_set(name)
+        name_tokens = _token_set(lookup_name)
         best_jaccard: float = 0.0
         best_jaccard_id: Optional[int] = None
 
@@ -116,13 +134,13 @@ def resolve_player_names(
             continue
 
         # 3. difflib ratio
-        close = difflib.get_close_matches(norm, all_norms, n=1, cutoff=_SIMILARITY_THRESHOLD)
+        close = difflib.get_close_matches(norm, all_norms, n=1, cutoff=_SIMILARITY_THRESHOLD)  # norm already uses lookup_name
         if close:
             results[name] = norm_to_id[close[0]]
             _log.debug("Fuzzy resolved '%s' → '%s' (%.2f)", name, close[0], _SIMILARITY_THRESHOLD)
             continue
 
-        _log.warning("Could not resolve player name: '%s'", name)
+        _log.warning("Could not resolve player name: '%s' (stripped: '%s')", name, lookup_name)
         results[name] = None
 
     resolved = sum(1 for v in results.values() if v is not None)
