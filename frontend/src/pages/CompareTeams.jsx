@@ -250,19 +250,20 @@ function TeamInputBlock({ team, teamIdx, onChange, onRemove, canRemove }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-function newTeam(idx) {
-  return { name: 'Team ' + (idx + 1), players: [{ name: '', playerId: null }] }
+function newManualTeam(idx) {
+  return { name: '', players: [{ name: '', playerId: null }] }
 }
 
 export default function CompareTeams() {
   const { league } = useLeague() || {}
-  const [teams, setTeams]               = useState([newTeam(0), newTeam(1)])
-  const [context, setContext]           = useState('')
-  const [leagueSettings, setLeagueSettings] = useState(null)
-  const [loading, setLoading]           = useState(false)
-  const [tradeLoading, setTradeLoading] = useState(false)
-  const [error, setError]               = useState(null)
-  const [result, setResult]             = useState(null)
+  const [selectedTeamIds, setSelectedTeamIds] = useState(new Set())
+  const [manualTeams, setManualTeams]         = useState([])
+  const [context, setContext]                 = useState('')
+  const [leagueSettings, setLeagueSettings]   = useState(null)
+  const [loading, setLoading]                 = useState(false)
+  const [tradeLoading, setTradeLoading]       = useState(false)
+  const [error, setError]                     = useState(null)
+  const [result, setResult]                   = useState(null)
 
   const leagueInitialValues = league ? {
     categories:      league.scoring_categories,
@@ -271,29 +272,30 @@ export default function CompareTeams() {
     rosterPositions: league.roster_positions,
   } : null
 
-  function loadLeagueTeam(leagueTeam) {
-    const players = leagueTeam.roster.map(p => ({ name: p.name, playerId: p.player_id }))
-    return {
-      name:    leagueTeam.team_name,
-      players: players.length > 0 ? players : [{ name: '', playerId: null }],
-    }
-  }
-
-  function updateTeam(idx, team) {
-    setTeams(prev => prev.map((t, i) => i === idx ? team : t))
+  function toggleLeagueTeam(teamId) {
+    setSelectedTeamIds(prev => {
+      const next = new Set(prev)
+      next.has(teamId) ? next.delete(teamId) : next.add(teamId)
+      return next
+    })
   }
 
   function buildBody(includeTrades) {
-    const manualTeams = teams.map(team => ({
-      name:       team.name || 'Unnamed Team',
-      player_ids: team.players.filter(p => p.playerId != null).map(p => p.playerId),
-    })).filter(t => t.player_ids.length > 0)
-    if (manualTeams.length < 2) return null
-    const body = {
-      manual_teams:              manualTeams,
-      context:                   context || null,
-      include_trade_suggestions: includeTrades,
-    }
+    const leagueTeamsList = (league?.teams || [])
+      .filter(t => selectedTeamIds.has(t.team_id))
+      .map(t => ({
+        name: t.team_name,
+        player_ids: (t.roster || []).map(p => p.player_id),
+      }))
+    const manualList = manualTeams
+      .map(team => ({
+        name: team.name || 'Unnamed Team',
+        player_ids: team.players.filter(p => p.playerId != null).map(p => p.playerId),
+      }))
+      .filter(t => t.player_ids.length > 0)
+    const allTeams = [...leagueTeamsList, ...manualList]
+    if (allTeams.length < 2) return null
+    const body = { manual_teams: allTeams, context: context || null, include_trade_suggestions: includeTrades }
     if (leagueSettings) {
       body.custom_categories  = leagueSettings.categories
       body.custom_league_type = leagueSettings.leagueType
@@ -305,7 +307,7 @@ export default function CompareTeams() {
     e.preventDefault()
     const body = buildBody(false)
     if (!body) {
-      setError('Each team needs at least one resolved player. Search and select players by name.')
+      setError('Select at least 2 teams to compare.')
       return
     }
     setLoading(true); setError(null); setResult(null)
@@ -351,55 +353,71 @@ export default function CompareTeams() {
         onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
         className="space-y-5"
       >
-        {/* League team quick-load chips */}
+        {/* League team selector */}
         {league?.teams?.length > 0 && (
           <div className="p-3 bg-navy-800/50 rounded-xl border border-navy-700">
-            <p className="text-[10px] font-semibold text-[#6001d2] uppercase tracking-wider mb-2">Y! Add a team from your league</p>
+            <p className="text-xs font-semibold text-slate-300 mb-2">Select teams to compare</p>
             <div className="flex flex-wrap gap-1.5">
-              {league.teams.map(lt => (
-                <button
-                  key={lt.team_id}
-                  type="button"
-                  onClick={() => {
-                    if (teams.length < 6) setTeams(prev => [...prev, loadLeagueTeam(lt)])
-                  }}
-                  disabled={teams.length >= 6}
-                  className="px-2.5 py-1 rounded-md text-xs border transition-colors bg-navy-700 border-navy-600 text-slate-300 hover:border-[#6001d2]/50 hover:text-white disabled:opacity-40"
-                >
-                  {lt.team_name}
-                </button>
-              ))}
+              {league.teams.map(lt => {
+                const selected = selectedTeamIds.has(lt.team_id)
+                return (
+                  <button
+                    key={lt.team_id}
+                    type="button"
+                    onClick={() => toggleLeagueTeam(lt.team_id)}
+                    className={`px-2.5 py-1 rounded-md text-xs border transition-colors font-medium ${
+                      selected
+                        ? 'bg-field-700 border-field-600 text-white'
+                        : 'bg-navy-700 border-navy-600 text-slate-400 hover:border-field-600/50 hover:text-slate-200'
+                    }`}
+                  >
+                    {lt.team_name}
+                  </button>
+                )
+              })}
             </div>
+            {selectedTeamIds.size > 0 && (
+              <p className="text-[10px] text-slate-500 mt-2">{selectedTeamIds.size} team{selectedTeamIds.size !== 1 ? 's' : ''} selected</p>
+            )}
           </div>
         )}
 
-        <div className="space-y-4">
-          {teams.map((team, idx) => (
-            <TeamInputBlock
-              key={idx}
-              team={team}
-              teamIdx={idx}
-              onChange={t => updateTeam(idx, t)}
-              onRemove={() => setTeams(prev => prev.filter((_, i) => i !== idx))}
-              canRemove={teams.length > 2}
-            />
-          ))}
-        </div>
+        {/* Manual team input blocks */}
+        {manualTeams.length > 0 && (
+          <div className="space-y-4">
+            {manualTeams.map((team, idx) => (
+              <TeamInputBlock
+                key={idx}
+                team={team}
+                teamIdx={idx}
+                onChange={t => setManualTeams(prev => prev.map((mt, i) => i === idx ? t : mt))}
+                onRemove={() => setManualTeams(prev => prev.filter((_, i) => i !== idx))}
+                canRemove={true}
+              />
+            ))}
+          </div>
+        )}
 
-        {teams.length < 6 && (
+        {/* Add team manually button */}
+        {manualTeams.length < 6 && (
           <button type="button"
-            onClick={() => setTeams(prev => [...prev, newTeam(prev.length)])}
-            className="flex items-center gap-1.5 text-sm text-field-400 hover:text-field-300 transition-colors">
-            <Plus size={14} /> Add another team
+            onClick={() => setManualTeams(prev => [...prev, newManualTeam(prev.length)])}
+            className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 transition-colors">
+            <Plus size={14} /> Add team manually
           </button>
         )}
 
         <ContextInput value={context} onChange={setContext} />
         <LeagueSettings onChange={setLeagueSettings} initialValues={leagueInitialValues} />
 
-        <button type="submit" className="btn-primary" disabled={loading}>
-          <Play size={14} /> Compare Teams
-        </button>
+        <div className="space-y-2">
+          <button type="submit" className="btn-primary" disabled={loading || (selectedTeamIds.size + manualTeams.length < 2)}>
+            <Play size={14} /> Compare Teams
+          </button>
+          {(selectedTeamIds.size + manualTeams.length) < 2 && (
+            <p className="text-xs text-slate-600">Select at least 2 teams above to compare.</p>
+          )}
+        </div>
       </form>
 
       <ErrorBanner message={error} onClose={() => setError(null)} />

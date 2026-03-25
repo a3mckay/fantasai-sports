@@ -183,6 +183,8 @@ def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
         for pos_elem in root.iter():
             if pos_elem.tag.endswith("position") and pos_elem.text:
                 roster_positions.append(pos_elem.text.strip())
+        # Filter out empty strings and purely-numeric Yahoo slot type codes (e.g. "0", "1")
+        roster_positions = [p for p in roster_positions if p and not p.isdigit()]
         result["roster_positions"] = list(dict.fromkeys(roster_positions))  # deduplicate
 
         # Extract keeper count (keeper leagues only — 0 for non-keeper leagues)
