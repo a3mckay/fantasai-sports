@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, X, ChevronDown, ChevronRight, Search, Plus } from 'lucide-react'
-import { evaluateTrade, searchPlayers } from '../lib/api'
+import { evaluateTrade, searchPlayers, getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
@@ -62,51 +62,92 @@ function VerdictBadge({ verdict, confidence }) {
 
 // ── TradeSummaryBar ───────────────────────────────────────────────────────────
 
-function TradeSummaryBar({ givingPlayers, givingPicks, receivingPlayers, receivingPicks, onEvaluate, loading, pickError }) {
-  const bothEmpty = givingPlayers.length === 0 && givingPicks.length === 0 && receivingPlayers.length === 0 && receivingPicks.length === 0
+function TradeSummaryBar({
+  givingPlayers, givingPicks,
+  receivingPlayers, receivingPicks,
+  givingValue, receivingValue, valueDiff, hasValueData,
+  onRemoveGivingPlayer, onRemoveGivingPick,
+  onRemoveReceivingPlayer, onRemoveReceivingPick,
+  pickValue,
+  onEvaluate, loading,
+}) {
+  const bothEmpty = givingPlayers.length === 0 && givingPicks.length === 0 &&
+    receivingPlayers.length === 0 && receivingPicks.length === 0
+  const showValues = hasValueData && (givingValue > 0 || receivingValue > 0)
 
   return (
-    <div className="sticky top-0 z-30 bg-navy-950/95 backdrop-blur border-b border-navy-700 px-4 py-3">
-      <div className="flex items-center gap-3">
-        {/* Giving side */}
+    <div className="sticky top-0 z-30 bg-navy-950/95 backdrop-blur border-b border-navy-700 px-4 py-3 space-y-2">
+      {/* Row 1: pills + evaluate */}
+      <div className="flex items-start gap-3">
+        {/* Giving */}
         <div className="flex-1 min-w-0">
           <div className="text-xs font-semibold text-stitch-400 uppercase tracking-wider mb-1">Giving</div>
           <div className="flex flex-wrap gap-1">
             {givingPlayers.map(p => (
-              <span key={p.playerId} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-stitch-900/60 border border-stitch-700 text-stitch-300 truncate max-w-[10rem]">
-                {p.name}
-              </span>
+              <button
+                key={p.playerId}
+                type="button"
+                onClick={() => onRemoveGivingPlayer(p.playerId)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-stitch-900/60 border border-stitch-700 text-stitch-300 max-w-[11rem] hover:bg-stitch-900/80 group transition-colors"
+              >
+                <span className="truncate">{p.name}{p.positions?.[0] ? ` · ${p.positions[0]}` : ''}</span>
+                <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
+              </button>
             ))}
-            {givingPicks.map(r => (
-              <span key={r} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-stitch-900/40 border border-stitch-800 text-stitch-400">
-                R{r}
-              </span>
-            ))}
+            {givingPicks.map(r => {
+              const pv = pickValue(r)
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => onRemoveGivingPick(r)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-stitch-900/40 border border-stitch-800 text-stitch-400 hover:bg-stitch-900/60 group transition-colors"
+                >
+                  <span>R{r}{pv > 0 ? ` ~${pv.toFixed(0)}` : ''}</span>
+                  <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )
+            })}
             {givingPlayers.length === 0 && givingPicks.length === 0 && (
               <span className="text-xs text-slate-600 italic">none selected</span>
             )}
           </div>
         </div>
 
-        {/* Center icon */}
-        <div className="shrink-0 text-slate-500">
+        {/* Center arrow */}
+        <div className="shrink-0 text-slate-500 mt-5">
           <ArrowLeftRight size={18} />
         </div>
 
-        {/* Receiving side */}
+        {/* Receiving */}
         <div className="flex-1 min-w-0">
           <div className="text-xs font-semibold text-field-400 uppercase tracking-wider mb-1">Receiving</div>
           <div className="flex flex-wrap gap-1">
             {receivingPlayers.map(p => (
-              <span key={p.playerId} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-field-900/60 border border-field-700 text-field-300 truncate max-w-[10rem]">
-                {p.name}
-              </span>
+              <button
+                key={p.playerId}
+                type="button"
+                onClick={() => onRemoveReceivingPlayer(p.playerId)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-field-900/60 border border-field-700 text-field-300 max-w-[11rem] hover:bg-field-900/80 group transition-colors"
+              >
+                <span className="truncate">{p.name}{p.positions?.[0] ? ` · ${p.positions[0]}` : ''}</span>
+                <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
+              </button>
             ))}
-            {receivingPicks.map(r => (
-              <span key={r} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-field-900/40 border border-field-800 text-field-400">
-                R{r}
-              </span>
-            ))}
+            {receivingPicks.map(r => {
+              const pv = pickValue(r)
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => onRemoveReceivingPick(r)}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-field-900/40 border border-field-800 text-field-400 hover:bg-field-900/60 group transition-colors"
+                >
+                  <span>R{r}{pv > 0 ? ` ~${pv.toFixed(0)}` : ''}</span>
+                  <X size={9} className="shrink-0 opacity-40 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )
+            })}
             {receivingPlayers.length === 0 && receivingPicks.length === 0 && (
               <span className="text-xs text-slate-600 italic">none selected</span>
             )}
@@ -114,7 +155,7 @@ function TradeSummaryBar({ givingPlayers, givingPicks, receivingPlayers, receivi
         </div>
 
         {/* Evaluate button */}
-        <div className="shrink-0">
+        <div className="shrink-0 mt-4">
           <button
             onClick={onEvaluate}
             disabled={loading || bothEmpty}
@@ -126,8 +167,22 @@ function TradeSummaryBar({ givingPlayers, givingPicks, receivingPlayers, receivi
         </div>
       </div>
 
-      {pickError && (
-        <div className="mt-2 text-xs text-amber-400">{pickError}</div>
+      {/* Row 2: Live value estimates */}
+      {showValues && (
+        <div className="flex items-center gap-3 pt-1 border-t border-navy-800">
+          <div className="flex-1 text-xs font-mono text-stitch-400">
+            ~{givingValue.toFixed(1)}
+          </div>
+          <div className={`shrink-0 text-xs font-mono font-bold ${valueDiff >= 0 ? 'text-field-400' : 'text-stitch-400'}`}>
+            {valueDiff >= 0 ? '+' : ''}{valueDiff.toFixed(1)}
+          </div>
+          <div className="flex-1 text-xs font-mono text-field-400 text-right">
+            ~{receivingValue.toFixed(1)}
+          </div>
+        </div>
+      )}
+      {showValues && (
+        <div className="text-[10px] text-slate-600 -mt-1">est. projected season value</div>
       )}
     </div>
   )
@@ -135,7 +190,7 @@ function TradeSummaryBar({ givingPlayers, givingPicks, receivingPlayers, receivi
 
 // ── DraftPickSelector ─────────────────────────────────────────────────────────
 
-function DraftPickSelector({ selected, onChange, side }) {
+function DraftPickSelector({ selected, onChange, side, pickValueFn }) {
   function toggle(round) {
     if (selected.includes(round)) {
       onChange(selected.filter(r => r !== round))
@@ -153,16 +208,20 @@ function DraftPickSelector({ selected, onChange, side }) {
     <div className="space-y-2">
       <div className="section-label">{TRADE_YEAR} Draft Picks</div>
       <div className="flex flex-wrap gap-1.5">
-        {TRADEABLE_ROUNDS.map(r => (
-          <button
-            key={r}
-            type="button"
-            onClick={() => toggle(r)}
-            className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${selected.includes(r) ? selectedCls : unselectedCls}`}
-          >
-            R{r}
-          </button>
-        ))}
+        {TRADEABLE_ROUNDS.map(r => {
+          const pv = pickValueFn ? pickValueFn(r) : 0
+          return (
+            <button
+              key={r}
+              type="button"
+              onClick={() => toggle(r)}
+              className={`flex flex-col items-center px-2 py-1 rounded text-xs font-medium border transition-colors ${selected.includes(r) ? selectedCls : unselectedCls}`}
+            >
+              <span>R{r}</span>
+              {pv > 0 && <span className="text-[9px] opacity-60 leading-none mt-0.5">~{pv.toFixed(0)}</span>}
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -170,19 +229,23 @@ function DraftPickSelector({ selected, onChange, side }) {
 
 // ── PlayerCard ────────────────────────────────────────────────────────────────
 
-function PlayerCard({ player, inTrade, side, onAdd, onRemove }) {
+function PlayerCard({ player, rankData, inTrade, side, onAdd, onRemove }) {
   const hoverBorder = side === 'give'
     ? 'hover:border-stitch-700 hover:bg-stitch-900/20'
     : 'hover:border-field-700 hover:bg-field-900/20'
+
+  const positions = rankData?.positions || player.positions || []
+  const value = rankData?.score
 
   if (inTrade) {
     return (
       <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-navy-700 bg-navy-800/50 opacity-50">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white truncate">{player.name}</div>
-          {player.positions?.length > 0 && (
-            <div className="text-xs text-slate-500">{player.positions.join('/')}</div>
-          )}
+          <div className="text-xs text-slate-500 flex items-center gap-2">
+            {positions.length > 0 && <span>{positions.join('/')}</span>}
+            {value != null && <span className="text-field-500 font-mono">{value.toFixed(1)}</span>}
+          </div>
         </div>
         <button
           type="button"
@@ -203,9 +266,10 @@ function PlayerCard({ player, inTrade, side, onAdd, onRemove }) {
     >
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-white truncate">{player.name}</div>
-        {player.positions?.length > 0 && (
-          <div className="text-xs text-slate-500">{player.positions.join('/')}</div>
-        )}
+        <div className="text-xs text-slate-500 flex items-center gap-2">
+          {positions.length > 0 && <span>{positions.join('/')}</span>}
+          {value != null && <span className="text-field-500 font-mono">{value.toFixed(1)}</span>}
+        </div>
       </div>
       <ChevronRight size={14} className="shrink-0 text-slate-600" />
     </button>
@@ -214,7 +278,7 @@ function PlayerCard({ player, inTrade, side, onAdd, onRemove }) {
 
 // ── TeamRosterPanel ───────────────────────────────────────────────────────────
 
-function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePlayer, picks, onPicksChange }) {
+function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePlayer, picks, onPicksChange, rankingsMap, pickValueFn }) {
   const roster = team?.roster || []
 
   return (
@@ -224,6 +288,7 @@ function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePla
           <PlayerCard
             key={player.player_id}
             player={player}
+            rankData={rankingsMap?.[player.player_id]}
             inTrade={tradedPlayerIds.has(player.player_id)}
             side={side}
             onAdd={onAddPlayer}
@@ -234,14 +299,14 @@ function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePla
           <div className="text-xs text-slate-600 italic px-2">No roster players found.</div>
         )}
       </div>
-      <DraftPickSelector selected={picks} onChange={onPicksChange} side={side} />
+      <DraftPickSelector selected={picks} onChange={onPicksChange} side={side} pickValueFn={pickValueFn} />
     </div>
   )
 }
 
 // ── Team2SearchPanel ──────────────────────────────────────────────────────────
 
-function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlayerIds, receivingPicks, onPicksChange }) {
+function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlayerIds, receivingPicks, onPicksChange, rankingsMap, pickValueFn }) {
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -272,10 +337,11 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
       try {
         const data = await searchPlayers(q, 8)
         const list = Array.isArray(data) ? data : (data?.players || [])
-        // Annotate with ownership
+        // Annotate with ownership and rankData
         const annotated = list.map(p => ({
           ...p,
           ownedByTeam: ownedByMap[p.player_id] || null,
+          rankData: rankingsMap?.[p.player_id] || null,
         }))
         setSearchResults(annotated)
         setSearchOpen(annotated.length > 0)
@@ -343,6 +409,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                     <div className="text-xs text-slate-500">
                       {player.team}
                       {player.positions?.length > 0 && ` · ${player.positions.join('/')}`}
+                      {player.rankData?.score != null && <span className="ml-1 text-field-500 font-mono">{player.rankData.score.toFixed(1)}</span>}
                     </div>
                   </div>
                   {player.ownedByTeam ? (
@@ -388,6 +455,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                     <PlayerCard
                       key={player.player_id}
                       player={player}
+                      rankData={rankingsMap?.[player.player_id]}
                       inTrade={tradedPlayerIds.has(player.player_id)}
                       side="receive"
                       onAdd={p => onLoadTeam(team, p)}
@@ -398,7 +466,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                     <div className="text-xs text-slate-600 italic px-2 py-1">No roster players.</div>
                   )}
                   <div className="pt-2">
-                    <DraftPickSelector selected={receivingPicks} onChange={onPicksChange} side="receive" />
+                    <DraftPickSelector selected={receivingPicks} onChange={onPicksChange} side="receive" pickValueFn={pickValueFn} />
                   </div>
                 </div>
               )}
@@ -461,6 +529,20 @@ export default function EvaluateTrade() {
   const [mobileTab, setMobileTab] = useState('team1')
   const touchStartX = useRef(null)
 
+  // Rankings state for live value data
+  const [rankingsList, setRankingsList] = useState([])
+  useEffect(() => {
+    getRankings({ limit: 500, ranking_type: 'predictive' })
+      .then(data => setRankingsList(data?.rankings || (Array.isArray(data) ? data : [])))
+      .catch(() => {})
+  }, [])
+
+  const rankingsMap = useMemo(() => {
+    const m = {}
+    rankingsList.forEach(p => { m[p.player_id] = p })
+    return m
+  }, [rankingsList])
+
   // Derived values
   const leagueInitialValues = league ? {
     categories: league.scoring_categories,
@@ -469,25 +551,59 @@ export default function EvaluateTrade() {
     rosterPositions: league.roster_positions,
   } : null
 
+  const numTeams = league?.num_teams || 12
+  const keepersPerTeam = league?.keepers_per_team || 0
+
+  function pickValue(round) {
+    // For keeper leagues: keepers fill the first N rounds of the draft.
+    // The "1st round pick" is actually the (keepersPerTeam + 1)th round.
+    // Average pick rank in tradeable round R = (keepersPerTeam + R - 0.5) * numTeams
+    const avgRank = Math.round((keepersPerTeam + round - 0.5) * numTeams)
+    return rankingsList[avgRank - 1]?.score || 0
+  }
+
+  const givingValue = (() => {
+    let total = 0
+    givingIds.forEach(id => { total += rankingsMap[id]?.score || 0 })
+    manualGiving.filter(p => p.playerId).forEach(p => { total += rankingsMap[p.playerId]?.score || 0 })
+    givingPicks.forEach(r => { total += pickValue(r) })
+    return total
+  })()
+
+  const receivingValue = (() => {
+    let total = 0
+    receivingIds.forEach(id => { total += rankingsMap[id]?.score || 0 })
+    manualReceiving.filter(p => p.playerId).forEach(p => { total += rankingsMap[p.playerId]?.score || 0 })
+    receivingPicks.forEach(r => { total += pickValue(r) })
+    return total
+  })()
+
+  const valueDiff = receivingValue - givingValue
+  const hasValueData = rankingsList.length > 0
+
   const givingPlayers = [
     ...Array.from(givingIds).map(id => {
       const p = myTeam?.roster?.find(r => r.player_id === id)
-      return p ? { playerId: id, name: p.name } : null
+      const rd = rankingsMap[id]
+      return p ? { playerId: id, name: p.name, positions: rd?.positions || [] } : null
     }).filter(Boolean),
-    ...manualGiving.filter(p => p.playerId),
+    ...manualGiving.filter(p => p.playerId).map(p => {
+      const rd = rankingsMap[p.playerId]
+      return { playerId: p.playerId, name: p.name, positions: rd?.positions || [] }
+    }),
   ]
 
   const receivingPlayers = [
     ...Array.from(receivingIds).map(id => {
       const p = team2?.roster?.find(r => r.player_id === id)
-      return p ? { playerId: id, name: p.name } : null
+      const rd = rankingsMap[id]
+      return p ? { playerId: id, name: p.name, positions: rd?.positions || [] } : null
     }).filter(Boolean),
-    ...manualReceiving.filter(p => p.playerId),
+    ...manualReceiving.filter(p => p.playerId).map(p => {
+      const rd = rankingsMap[p.playerId]
+      return { playerId: p.playerId, name: p.name, positions: rd?.positions || [] }
+    }),
   ]
-
-  const pickParityError = (givingPicks.length !== receivingPicks.length && (givingPicks.length > 0 || receivingPicks.length > 0))
-    ? "Trade is incompatible with your league settings — number of draft picks must match."
-    : null
 
   // Player add/remove helpers
   function addGivingPlayer(player) {
@@ -521,7 +637,10 @@ export default function EvaluateTrade() {
   }
 
   async function evaluate() {
-    if (pickParityError) { setError(pickParityError); return }
+    if (givingPicks.length !== receivingPicks.length && (givingPicks.length > 0 || receivingPicks.length > 0)) {
+      setError("Trade is incompatible with your league settings — number of draft picks must match.")
+      return
+    }
     const allGivingIds = [...givingIds, ...manualGiving.filter(p => p.playerId).map(p => p.playerId)]
     const allReceivingIds = [...receivingIds, ...manualReceiving.filter(p => p.playerId).map(p => p.playerId)]
     if (allGivingIds.length + givingPicks.length === 0) {
@@ -576,6 +695,8 @@ export default function EvaluateTrade() {
       onRemovePlayer={removeGivingPlayer}
       picks={givingPicks}
       onPicksChange={setGivingPicks}
+      rankingsMap={rankingsMap}
+      pickValueFn={pickValue}
     />
   ) : (
     <div className="space-y-2">
@@ -608,7 +729,7 @@ export default function EvaluateTrade() {
       >
         <Plus size={13} /> Add player
       </button>
-      <DraftPickSelector selected={givingPicks} onChange={setGivingPicks} side="give" />
+      <DraftPickSelector selected={givingPicks} onChange={setGivingPicks} side="give" pickValueFn={pickValue} />
     </div>
   )
 
@@ -621,6 +742,8 @@ export default function EvaluateTrade() {
       onRemovePlayer={removeReceivingPlayer}
       picks={receivingPicks}
       onPicksChange={setReceivingPicks}
+      rankingsMap={rankingsMap}
+      pickValueFn={pickValue}
     />
   ) : league ? (
     <Team2SearchPanel
@@ -631,6 +754,8 @@ export default function EvaluateTrade() {
       tradedPlayerIds={receivingIds}
       receivingPicks={receivingPicks}
       onPicksChange={setReceivingPicks}
+      rankingsMap={rankingsMap}
+      pickValueFn={pickValue}
     />
   ) : (
     <div className="space-y-2">
@@ -662,7 +787,7 @@ export default function EvaluateTrade() {
       >
         <Plus size={13} /> Add player
       </button>
-      <DraftPickSelector selected={receivingPicks} onChange={setReceivingPicks} side="receive" />
+      <DraftPickSelector selected={receivingPicks} onChange={setReceivingPicks} side="receive" pickValueFn={pickValue} />
     </div>
   )
 
@@ -683,26 +808,80 @@ export default function EvaluateTrade() {
         givingPicks={givingPicks}
         receivingPlayers={receivingPlayers}
         receivingPicks={receivingPicks}
+        givingValue={givingValue}
+        receivingValue={receivingValue}
+        valueDiff={valueDiff}
+        hasValueData={hasValueData}
+        onRemoveGivingPlayer={removeGivingPlayer}
+        onRemoveGivingPick={r => setGivingPicks(prev => prev.filter(x => x !== r))}
+        onRemoveReceivingPlayer={removeReceivingPlayer}
+        onRemoveReceivingPick={r => setReceivingPicks(prev => prev.filter(x => x !== r))}
+        pickValue={pickValue}
         onEvaluate={evaluate}
         loading={loading}
-        pickError={pickParityError}
       />
 
+      {/* Error + Loading + Results — above the panels so they're immediately visible */}
+      <ErrorBanner message={error} onClose={() => setError(null)} />
+      {loading && <div className="mt-6"><LoadingState message="Evaluating trade…" /></div>}
+      {result && (
+        <div className="space-y-5 mt-6">
+          <VerdictBadge verdict={result.verdict} confidence={result.confidence} />
+
+          {/* Value comparison */}
+          <div className="card grid grid-cols-3 gap-4 text-center">
+            <div>
+              <div className="section-label">Giving value</div>
+              <div className="text-2xl font-bold font-mono text-stitch-400">
+                {result.give_value.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div className="section-label">Differential</div>
+              <div className={`text-2xl font-bold font-mono ${result.value_differential >= 0 ? 'text-field-400' : 'text-stitch-400'}`}>
+                {result.value_differential >= 0 ? '+' : ''}{result.value_differential.toFixed(2)}
+              </div>
+              <div className="text-xs text-slate-600 mt-1">density-adjusted</div>
+            </div>
+            <div>
+              <div className="section-label">Receiving value</div>
+              <div className="text-2xl font-bold font-mono text-field-400">
+                {result.receive_value.toFixed(2)}
+              </div>
+            </div>
+          </div>
+
+          {result.talent_density_note && (
+            <div className="text-xs text-slate-500 italic px-1">{result.talent_density_note}</div>
+          )}
+
+          <div className="card">
+            <div className="section-label">Category impact after trade</div>
+            <PercentileBar data={result.category_impact} />
+          </div>
+
+          <ProsCons pros={result.pros} cons={result.cons} />
+          <Blurb text={result.analysis_blurb} />
+        </div>
+      )}
+
       {/* DESKTOP layout */}
-      <div className="hidden md:grid grid-cols-2 gap-4 mt-4">
+      <div className="hidden md:grid grid-cols-2 gap-4 mt-8">
         {/* Left: giving side */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
+        <div className="bg-navy-900 border border-navy-700 rounded-xl overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-navy-700/60 bg-navy-800/40 flex items-center justify-between">
             <span className="text-xs font-semibold text-stitch-400 uppercase tracking-wider">
               You're Giving · {myTeam?.team_name || 'Your Team'}
             </span>
           </div>
-          {givingSideContent}
+          <div className="p-4 flex-1">
+            {givingSideContent}
+          </div>
         </div>
 
         {/* Right: receiving side */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
+        <div className="bg-navy-900 border border-navy-700 rounded-xl overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b border-navy-700/60 bg-navy-800/40 flex items-center justify-between">
             <span className="text-xs font-semibold text-field-400 uppercase tracking-wider">
               You're Receiving{team2 ? ` · ${team2.team_name}` : ''}
             </span>
@@ -716,12 +895,14 @@ export default function EvaluateTrade() {
               </button>
             )}
           </div>
-          {receivingSideContent}
+          <div className="p-4 flex-1">
+            {receivingSideContent}
+          </div>
         </div>
       </div>
 
       {/* MOBILE layout */}
-      <div className="md:hidden mt-4">
+      <div className="md:hidden mt-8">
         {/* Tab switcher */}
         <div className="flex gap-2 mb-3">
           <button
@@ -841,51 +1022,6 @@ export default function EvaluateTrade() {
           onConfirm={confirmReplaceTeam}
           onCancel={() => setReplaceModal(null)}
         />
-      )}
-
-      <ErrorBanner message={error} onClose={() => setError(null)} />
-      {loading && <LoadingState message="Evaluating trade…" />}
-
-      {/* Results */}
-      {result && (
-        <div className="space-y-6 mt-6">
-          <VerdictBadge verdict={result.verdict} confidence={result.confidence} />
-
-          {/* Value comparison */}
-          <div className="card grid grid-cols-3 gap-4 text-center">
-            <div>
-              <div className="section-label">Giving value</div>
-              <div className="text-2xl font-bold font-mono text-stitch-400">
-                {result.give_value.toFixed(2)}
-              </div>
-            </div>
-            <div>
-              <div className="section-label">Differential</div>
-              <div className={`text-2xl font-bold font-mono ${result.value_differential >= 0 ? 'text-field-400' : 'text-stitch-400'}`}>
-                {result.value_differential >= 0 ? '+' : ''}{result.value_differential.toFixed(2)}
-              </div>
-              <div className="text-xs text-slate-600 mt-1">density-adjusted</div>
-            </div>
-            <div>
-              <div className="section-label">Receiving value</div>
-              <div className="text-2xl font-bold font-mono text-field-400">
-                {result.receive_value.toFixed(2)}
-              </div>
-            </div>
-          </div>
-
-          {result.talent_density_note && (
-            <div className="text-xs text-slate-500 italic px-1">{result.talent_density_note}</div>
-          )}
-
-          <div className="card">
-            <div className="section-label">Category impact after trade</div>
-            <PercentileBar data={result.category_impact} />
-          </div>
-
-          <ProsCons pros={result.pros} cons={result.cons} />
-          <Blurb text={result.analysis_blurb} />
-        </div>
       )}
     </div>
   )
