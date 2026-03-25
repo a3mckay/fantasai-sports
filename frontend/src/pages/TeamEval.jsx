@@ -173,6 +173,7 @@ export default function TeamEval() {
         player_ids:   resolved,
         context:      context || null,
         ranking_type: rankingType,
+        league_id:    league?.league_id || null,
       }
       if (leagueSettings) {
         body.custom_categories        = leagueSettings.categories
@@ -382,7 +383,15 @@ export default function TeamEval() {
         </div>
 
         <ContextInput value={context} onChange={setContext} />
-        <LeagueSettings onChange={setLeagueSettings} />
+        <LeagueSettings
+          onChange={setLeagueSettings}
+          initialValues={league ? {
+            categories: league.scoring_categories,
+            leagueType: league.league_type,
+            numTeams: league.num_teams,
+            rosterPositions: league.roster_positions,
+          } : null}
+        />
 
         <button type="submit" className="btn-primary" disabled={loading}>
           <Play size={14} /> Evaluate Team
@@ -420,8 +429,16 @@ export default function TeamEval() {
 
           {/* Category strengths */}
           <div className="card">
-            <div className="section-label">Category strength</div>
-            <PercentileBar data={result.category_strengths} />
+            <div className="section-label">
+              Category strength
+              {result.league_category_percentiles && (
+                <span className="ml-2 text-[10px] font-normal text-slate-600 normal-case tracking-normal">vs league</span>
+              )}
+            </div>
+            <PercentileBar
+              data={result.league_category_percentiles || result.category_strengths}
+              asPercentiles={!!result.league_category_percentiles}
+            />
           </div>
 
           {/* Position breakdown */}
@@ -431,7 +448,7 @@ export default function TeamEval() {
               {result.position_breakdown.map(g => (
                 <div key={g.position} className="flex items-center gap-3">
                   <span className="w-10 text-right font-mono text-xs text-slate-500 shrink-0">{g.position}</span>
-                  <span className={`stat-pill w-16 justify-center text-[10px] ${ASSESSMENT_PILL[g.assessment] || ''}`}>
+                  <span className={`stat-pill w-16 justify-center text-[10px] capitalize ${ASSESSMENT_PILL[g.assessment] || ''}`}>
                     {g.assessment}
                   </span>
                   <span className="text-xs text-slate-400 truncate">{g.players.join(', ') || '—'}</span>

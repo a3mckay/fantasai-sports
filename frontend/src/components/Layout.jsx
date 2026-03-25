@@ -77,7 +77,7 @@ export default function Layout({ children }) {
   const { user } = useAuth()
 
   return (
-    <div className="min-h-screen flex">
+    <div className="h-screen flex overflow-hidden">
       {/* ── Sidebar (desktop) ── */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 bg-navy-950 border-r border-navy-700 sticky top-0 h-screen">
         <div className="p-5 border-b border-navy-700">

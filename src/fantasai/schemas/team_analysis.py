@@ -84,6 +84,14 @@ class TeamEvalResponse(BaseModel):
     pros: list[str]
     cons: list[str]
     analysis_blurb: str
+    league_category_percentiles: Optional[dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Per-category percentile rank (0–100) vs other league teams. "
+            "Provided when league_id is supplied; use for category bar display "
+            "instead of raw z-score conversion."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

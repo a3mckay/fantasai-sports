@@ -44,27 +44,34 @@ ASSESSMENT_THRESHOLDS = [
 ]
 
 
-def _assess_group(group_score: float, group_scores: list[float]) -> str:
-    """Classify a position group as elite/solid/average/weak/empty.
+def _assess_group(
+    mean_score: float,
+    league_mean_scores: Optional[list[float]] = None,
+) -> str:
+    """Classify a position group as elite/solid/average/weak.
 
-    Uses the team's own distribution so every team's worst group reads
-    "weak" and the best reads "elite" — relative to themselves.
+    When ``league_mean_scores`` is provided (mean player score for this
+    position across all league teams), uses league-relative quartile ranking
+    so the label reflects genuine quality vs the rest of the league.
+
+    Falls back to absolute per-player z-score thresholds when no league
+    data is available.
     """
-    if not group_scores:
-        return "empty"
-    sorted_scores = sorted(group_scores)
-    n = len(sorted_scores)
-    if n == 0:
-        return "empty"
+    if league_mean_scores and len(league_mean_scores) >= 2:
+        rank = sum(1 for s in league_mean_scores if s < mean_score)
+        pct = rank / len(league_mean_scores)
+        if pct >= 0.75:
+            return "elite"
+        if pct >= 0.50:
+            return "solid"
+        if pct >= 0.25:
+            return "average"
+        return "weak"
 
-    # Simple quartile-relative classification
-    pct = sorted_scores.index(min(sorted_scores, key=lambda x: abs(x - group_score))) / max(n - 1, 1)
-    if pct >= 0.75:
-        return "elite"
-    if pct >= 0.5:
-        return "solid"
-    if pct >= 0.25:
-        return "average"
+    # Absolute: ASSESSMENT_THRESHOLDS calibrated for individual player z-scores
+    for threshold, tier in ASSESSMENT_THRESHOLDS:
+        if mean_score >= threshold:
+            return tier
     return "weak"
 
 
@@ -255,54 +262,64 @@ class KeeperEvaluation:
 # ---------------------------------------------------------------------------
 
 
-def _build_position_breakdown(
+def _compute_group_scores(
     roster_rankings: list[PlayerRanking],
     categories: list[str],
-) -> list[PositionGroupScore]:
-    """Group players by primary position and score each group."""
-    groups: dict[str, list[PlayerRanking]] = {}
+) -> "dict[str, tuple[list[PlayerRanking], float, float]]":
+    """Return {pos: (players, group_score, mean_player_score)} for each group.
 
+    group_score       — sum of per-category z-score contributions (display/sorting).
+    mean_player_score — mean composite score across players (league comparison).
+    """
+    groups: dict[str, list[PlayerRanking]] = {}
     for ranking in roster_rankings:
         primary = ranking.positions[0] if ranking.positions else "UTIL"
-
-        # Normalise OF sub-positions
         if primary in ("LF", "CF", "RF"):
             primary = "OF"
-
-        # Map hitters without a specific slot to Util
         if primary not in POSITION_GROUPS:
             primary = "Util" if primary in HITTER_POSITIONS else "P"
-
         groups.setdefault(primary, []).append(ranking)
 
-    # Compute group scores
-    group_scores_raw: list[tuple[str, list[PlayerRanking], float]] = []
+    result = {}
     for pos, players in groups.items():
-        score = sum(
+        group_score = sum(
             sum(r.category_contributions.get(c, 0.0) for c in categories)
             for r in players
         )
-        group_scores_raw.append((pos, players, round(score, 3)))
+        mean_score = sum(r.score for r in players) / len(players)
+        result[pos] = (players, round(group_score, 3), round(mean_score, 3))
+    return result
 
-    # Assess each group relative to the team
-    all_scores = [s for _, _, s in group_scores_raw]
+
+def _build_position_breakdown(
+    roster_rankings: list[PlayerRanking],
+    categories: list[str],
+    league_position_mean_scores: Optional[dict[str, list[float]]] = None,
+) -> list[PositionGroupScore]:
+    """Group players by primary position and score each group.
+
+    When ``league_position_mean_scores`` maps each position to the list of
+    per-player mean scores across all league teams, assessments are
+    league-relative (top quartile = Elite, etc.). Without league data, falls
+    back to absolute z-score thresholds.
+    """
+    group_data = _compute_group_scores(roster_rankings, categories)
 
     result: list[PositionGroupScore] = []
-    for pos, players, score in group_scores_raw:
-        assessment = _assess_group(score, all_scores)
+    for pos, (players, group_score, mean_score) in group_data.items():
+        league_means = (league_position_mean_scores or {}).get(pos)
+        assessment = _assess_group(mean_score, league_means)
         result.append(
             PositionGroupScore(
                 position=pos,
                 players=[r.name for r in players],
-                group_score=score,
+                group_score=group_score,
                 assessment=assessment,
             )
         )
 
-    # Sort by group score descending
     result.sort(key=lambda g: g.group_score, reverse=True)
 
-    # Add explicit "empty" entries for required positions with no players
     populated = {g.position for g in result}
     for pos in ["C", "SP", "RP"]:
         if pos not in populated:
@@ -371,6 +388,7 @@ def evaluate_team(
     roster_positions: list[str],
     league_type: str,
     league_team_scores: Optional[list[float]] = None,
+    league_position_mean_scores: Optional[dict[str, list[float]]] = None,
     context: Optional[str] = None,
 ) -> TeamEvaluation:
     """Evaluate a roster holistically.
@@ -434,7 +452,9 @@ def evaluate_team(
     strong_cats = [c for c, _ in sorted_cats[:n_strong] if c not in punted_cats]
 
     # Position breakdown
-    position_breakdown = _build_position_breakdown(roster_rankings, categories)
+    position_breakdown = _build_position_breakdown(
+        roster_rankings, categories, league_position_mean_scores
+    )
 
     # Improvement suggestions
     suggestions = _compute_improvement_suggestions(

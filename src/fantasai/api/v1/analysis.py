@@ -1107,16 +1107,34 @@ def team_eval_endpoint(
 
     roster_rankings = [ranking_map[pid] for pid in player_ids if pid in ranking_map]
 
-    # Optionally gather all teams' scores for league-relative grading
+    # Compute league-wide distributions for relative grading.
+    # Score each team's position groups and category strengths so assessment
+    # labels (Elite/Solid/Average/Weak) and category percentiles are
+    # league-relative rather than vs the full player pool.
     league_team_scores: Optional[list[float]] = None
+    league_position_mean_scores: Optional[dict[str, list[float]]] = None
+    _league_category_scores: dict[str, list[float]] = {}
+
     if league:
-        all_teams = league.teams or []
+        from fantasai.brain.team_evaluator import _compute_group_scores as _cgs
         league_team_scores = []
-        for t in all_teams:
+        _lp_means: dict[str, list[float]] = {}
+
+        for t in (league.teams or []):
             t_rankings = [ranking_map[pid] for pid in (t.roster or []) if pid in ranking_map]
-            if t_rankings:
-                t_score = sum(r.score for r in t_rankings) / len(t_rankings)
-                league_team_scores.append(t_score)
+            if not t_rankings:
+                continue
+            t_score = sum(r.score for r in t_rankings) / len(t_rankings)
+            league_team_scores.append(t_score)
+
+            for pos, (_players, _gscore, mean_s) in _cgs(t_rankings, categories).items():
+                _lp_means.setdefault(pos, []).append(mean_s)
+
+            for cat, score in _compute_team_strengths(t_rankings, categories).items():
+                _league_category_scores.setdefault(cat, []).append(score)
+
+        if _lp_means:
+            league_position_mean_scores = _lp_means
 
     evaluation = evaluate_team(
         roster_rankings=roster_rankings,
@@ -1124,8 +1142,22 @@ def team_eval_endpoint(
         roster_positions=roster_positions,
         league_type=league_type,
         league_team_scores=league_team_scores if league_team_scores else None,
+        league_position_mean_scores=league_position_mean_scores,
         context=body.context,
     )
+
+    # Per-category league percentile rank (computed post-evaluation)
+    league_category_percentiles: Optional[dict[str, float]] = None
+    if _league_category_scores:
+        league_category_percentiles = {}
+        for cat, team_score in evaluation.category_strengths.items():
+            scores = _league_category_scores.get(cat, [])
+            if scores:
+                rank = sum(1 for s in scores if s < team_score)
+                pct = round(rank / len(scores) * 100, 1)
+            else:
+                pct = 50.0
+            league_category_percentiles[cat] = pct
 
     blurb = _generate_team_eval_blurb(evaluation, categories, body.context)
 
@@ -1149,6 +1181,7 @@ def team_eval_endpoint(
         pros=evaluation.pros,
         cons=evaluation.cons,
         analysis_blurb=blurb,
+        league_category_percentiles=league_category_percentiles,
     )
 
 

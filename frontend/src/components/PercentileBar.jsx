@@ -37,13 +37,19 @@ function ordinal(n) {
   }
 }
 
-export default function PercentileBar({ data = {} }) {
+export default function PercentileBar({ data = {}, asPercentiles = false }) {
   if (!Object.keys(data).length) return null
 
-  // Sort by absolute z-score so the most impactful categories appear first
+  // When asPercentiles=true, values are already 0–100 league percentile ranks.
+  // Otherwise interpret as z-scores and convert via the normal CDF.
   const entries = Object.entries(data)
-    .map(([cat, z]) => [cat, z, zToPercentile(z)])
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .map(([cat, val]) => {
+      const pct = asPercentiles
+        ? Math.round(Math.min(99, Math.max(1, val)))
+        : zToPercentile(val)
+      return [cat, val, pct]
+    })
+    .sort((a, b) => Math.abs(b[2] - 50) - Math.abs(a[2] - 50))
 
   return (
     <div className="space-y-1.5">
