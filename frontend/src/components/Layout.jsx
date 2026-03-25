@@ -79,7 +79,7 @@ export default function Layout({ children }) {
   return (
     <div className="min-h-screen flex">
       {/* ── Sidebar (desktop) ── */}
-      <aside className="hidden md:flex flex-col w-56 shrink-0 bg-navy-950 border-r border-navy-700">
+      <aside className="hidden md:flex flex-col w-56 shrink-0 bg-navy-950 border-r border-navy-700 sticky top-0 h-screen">
         <div className="p-5 border-b border-navy-700">
           <div className="flex items-center gap-2.5">
             {/* Baseball icon */}
