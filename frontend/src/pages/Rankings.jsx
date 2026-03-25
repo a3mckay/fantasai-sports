@@ -322,7 +322,9 @@ export default function Rankings() {
       )}
 
       {/* ── Position filter pills ── */}
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-xs text-slate-300 font-semibold shrink-0 uppercase tracking-wide">Position:</span>
+        <div className="flex flex-wrap gap-1.5">
         {POSITION_FILTERS.map(pos => (
           <button
             key={pos}
@@ -336,13 +338,14 @@ export default function Rankings() {
             {pos}
           </button>
         ))}
+        </div>
       </div>
 
       {/* ── Level + Roster filters ── */}
       <div className="flex items-center gap-4 flex-wrap">
         {/* MLB / MiLB toggle */}
         <div className="flex items-center gap-1.5">
-          <span className="text-xs text-slate-500 shrink-0">Level:</span>
+          <span className="text-xs text-slate-300 font-semibold shrink-0 uppercase tracking-wide">Level:</span>
           <div className="flex gap-1">
             {LEVEL_FILTERS.map(lf => (
               <button
@@ -363,7 +366,7 @@ export default function Rankings() {
         {/* Roster scope (only shown when league is connected) */}
         {league && (
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-slate-500 shrink-0">Show:</span>
+            <span className="text-xs text-slate-300 font-semibold shrink-0 uppercase tracking-wide">Show:</span>
             <div className="flex gap-1">
               {ROSTER_FILTERS.map(rf => (
                 <button
