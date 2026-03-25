@@ -96,6 +96,7 @@ from fantasai.api.v1.recommendations import (
     _compute_projection_rankings,
     _compute_rankings,
     _fetch_team_and_league,
+    _get_cached_raw_rankings,
 )
 from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
 
@@ -1094,7 +1095,19 @@ def team_eval_endpoint(
     if not source:
         raise HTTPException(status_code=404, detail="No player stats available for rankings.")
 
-    ranking_map = {r.player_id: r for r in source}
+    # Build roster rankings using *raw* (non-deduped) rankings so that two-way
+    # players like Ohtani retain separate batting and pitching entries.
+    # The deduped `source` is used for league-wide comparisons below.
+    from fantasai.api.v1.recommendations import ProjectionHorizon as _PH
+    raw_pair = _get_cached_raw_rankings(categories, _PH.SEASON)
+    raw_source = (raw_pair[1] if body.ranking_type == "predictive" else raw_pair[0]) if raw_pair else source
+
+    # Multimap: player_id → list of raw ranking entries (sorted best-first).
+    # Ohtani will have two entries; single-way players have one.
+    from collections import defaultdict
+    _raw_multi: dict = defaultdict(list)
+    for r in raw_source:
+        _raw_multi[r.player_id].append(r)
 
     # Build roster rankings
     if body.team_id:
@@ -1105,7 +1118,18 @@ def team_eval_endpoint(
     else:
         player_ids = body.player_ids or []
 
-    roster_rankings = [ranking_map[pid] for pid in player_ids if pid in ranking_map]
+    # For each slot in the roster, consume the next available raw entry for
+    # that player_id so duplicate IDs (two-way players) each get their own
+    # correctly-typed ranking rather than the same deduped entry twice.
+    _consumed: dict = defaultdict(int)
+    roster_rankings = []
+    for pid in player_ids:
+        entries = _raw_multi.get(pid)
+        if not entries:
+            continue
+        idx = _consumed[pid]
+        roster_rankings.append(entries[idx % len(entries)])
+        _consumed[pid] += 1
 
     # Compute league-wide distributions for relative grading.
     # Score each team's position groups and category strengths so assessment
