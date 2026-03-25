@@ -1120,6 +1120,10 @@ def team_eval_endpoint(
         league_team_scores = []
         _lp_means: dict[str, list[float]] = {}
 
+        # Positions that every team should have — teams with no coverage get 0
+        # in the distribution so the comparison pool is always the full league.
+        _REQUIRED_POS = {"C", "SP", "RP"}
+
         for t in (league.teams or []):
             t_rankings = [ranking_map[pid] for pid in (t.roster or []) if pid in ranking_map]
             if not t_rankings:
@@ -1127,8 +1131,16 @@ def team_eval_endpoint(
             t_score = sum(r.score for r in t_rankings) / len(t_rankings)
             league_team_scores.append(t_score)
 
-            for pos, (_players, _gscore, mean_s) in _cgs(t_rankings, categories).items():
+            t_groups = _cgs(t_rankings, categories)
+            covered_pos = set(t_groups.keys())
+            for pos, (_players, _gscore, mean_s) in t_groups.items():
                 _lp_means.setdefault(pos, []).append(mean_s)
+
+            # Teams missing a required position count as 0 so the pool
+            # reflects all 12 teams (not just those with a catcher, etc.)
+            for req_pos in _REQUIRED_POS:
+                if req_pos not in covered_pos:
+                    _lp_means.setdefault(req_pos, []).append(0.0)
 
             for cat, score in _compute_team_strengths(t_rankings, categories).items():
                 _league_category_scores.setdefault(cat, []).append(score)

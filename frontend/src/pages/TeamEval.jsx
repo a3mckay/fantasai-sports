@@ -8,7 +8,7 @@ import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
-import PercentileBar from '../components/PercentileBar'
+import CategoryStrengthBar from '../components/CategoryStrengthBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 
@@ -429,14 +429,15 @@ export default function TeamEval() {
 
           {/* Category strengths */}
           <div className="card">
-            <div className="section-label">
+            <div className="section-label mb-3">
               Category strength
               {result.league_category_percentiles && (
                 <span className="ml-2 text-[10px] font-normal text-slate-600 normal-case tracking-normal">vs league</span>
               )}
             </div>
-            <PercentileBar
+            <CategoryStrengthBar
               data={result.league_category_percentiles || result.category_strengths}
+              numTeams={league?.num_teams || 12}
               asPercentiles={!!result.league_category_percentiles}
             />
           </div>
@@ -444,17 +445,28 @@ export default function TeamEval() {
           {/* Position breakdown */}
           <div className="card">
             <div className="section-label mb-3">Position breakdown</div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {result.position_breakdown.map(g => (
-                <div key={g.position} className="flex items-center gap-3">
-                  <span className="w-10 text-right font-mono text-xs text-slate-500 shrink-0">{g.position}</span>
-                  <span className={`stat-pill w-16 justify-center text-[10px] capitalize ${ASSESSMENT_PILL[g.assessment] || ''}`}>
-                    {g.assessment}
-                  </span>
-                  <span className="text-xs text-slate-400 truncate">{g.players.join(', ') || '—'}</span>
-                  <span className="ml-auto font-mono text-xs text-slate-600 shrink-0">
-                    {g.group_score.toFixed(1)}
-                  </span>
+                <div key={g.position} className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <span className="w-10 text-right font-mono text-xs font-semibold text-slate-300 shrink-0">{g.position}</span>
+                    <span className={`stat-pill w-16 justify-center text-[10px] capitalize shrink-0 ${ASSESSMENT_PILL[g.assessment] || ''}`}>
+                      {g.assessment}
+                    </span>
+                    <span className="ml-auto text-[10px] text-slate-600 shrink-0 font-mono">
+                      Position Score: {g.group_score.toFixed(1)}
+                    </span>
+                  </div>
+                  {g.players.length > 0 && (
+                    <div className="pl-13 flex flex-wrap gap-x-3 gap-y-0.5 pl-14">
+                      {g.players.map((name, i) => (
+                        <span key={i} className="text-xs text-slate-400">{name}</span>
+                      ))}
+                    </div>
+                  )}
+                  {g.players.length === 0 && (
+                    <div className="pl-14 text-xs text-slate-600 italic">Empty</div>
+                  )}
                 </div>
               ))}
             </div>

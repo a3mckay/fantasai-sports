@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Each roster player is bucketed by their primary position.
 POSITION_GROUPS = ["C", "1B", "2B", "SS", "3B", "OF", "Util", "DH", "SP", "RP", "P"]
 
+# Display order for the position breakdown (UI canonical order).
+POSITION_DISPLAY_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "Util", "DH", "SP", "RP", "P"]
+
 # Assessment tiers for a position group based on the group's z-score sum
 # relative to the team's own distribution.
 ASSESSMENT_THRESHOLDS = [
@@ -318,12 +321,17 @@ def _build_position_breakdown(
             )
         )
 
-    result.sort(key=lambda g: g.group_score, reverse=True)
+    # Sort by canonical display order, not by score
+    order_map = {pos: i for i, pos in enumerate(POSITION_DISPLAY_ORDER)}
+    result.sort(key=lambda g: order_map.get(g.position, 99))
 
     populated = {g.position for g in result}
     for pos in ["C", "SP", "RP"]:
         if pos not in populated:
             result.append(PositionGroupScore(pos, [], 0.0, "empty"))
+
+    # Re-sort after adding empties so they land in canonical position
+    result.sort(key=lambda g: order_map.get(g.position, 99))
 
     return result
 
