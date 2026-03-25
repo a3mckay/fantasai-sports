@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react'
 import { usePlayerListFocus } from '../hooks/usePlayerListFocus'
-import { Star, Play, Plus, X, Upload, ImageIcon, Loader2, AlertCircle } from 'lucide-react'
+import { Star, Play, Plus, X, Upload, ImageIcon, Loader2, AlertCircle, Users, ChevronDown, ChevronRight } from 'lucide-react'
 import { teamEval, extractPlayers, searchPlayers } from '../lib/api'
+import { useLeague } from '../contexts/LeagueContext'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
@@ -31,14 +32,46 @@ function emptyPlayer() {
   return { name: '', playerId: null }
 }
 
+// ── TeamChips ─────────────────────────────────────────────────────────────────
+// Horizontal scrolling chips for each league team. Selected team is highlighted.
+
+function TeamChips({ teams, selectedTeamId, onSelect }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {teams.map(team => {
+        const selected = team.team_id === selectedTeamId
+        return (
+          <button
+            key={team.team_id}
+            type="button"
+            onClick={() => onSelect(team)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+              selected
+                ? 'bg-field-700 border-field-600 text-white'
+                : 'bg-navy-800 border-navy-700 text-slate-400 hover:border-navy-500 hover:text-slate-200'
+            }`}
+          >
+            <Users size={11} className={selected ? 'text-field-300' : 'text-slate-600'} />
+            {team.team_name}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function TeamEval() {
+  const { league, myTeam } = useLeague() || {}
+
   const [players, setPlayers]               = useState([emptyPlayer()])
+  const [selectedTeam, setSelectedTeam]     = useState(null)  // league team loaded into roster
   const [rankingType, setRankingType]       = useState('predictive')
   const [context, setContext]               = useState('')
   const [leagueSettings, setLeagueSettings] = useState(null)
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState(null)
   const [result, setResult]                 = useState(null)
+  const [showManual, setShowManual]         = useState(false)  // collapse manual entry when team loaded
 
   // Screenshot upload state
   const [showUpload, setShowUpload]         = useState(false)
@@ -47,6 +80,25 @@ export default function TeamEval() {
   const fileRef                             = useRef(null)
 
   const { playerRefs, focusNextOrAdd } = usePlayerListFocus(players, addPlayer)
+
+  // If no league is connected, show manual entry by default
+  const hasLeague = !!(league?.teams?.length)
+
+  function loadTeam(team) {
+    const roster = team.roster || []
+    const loaded = roster.map(p => ({ name: p.name, playerId: p.player_id }))
+    setPlayers(loaded.length > 0 ? loaded : [emptyPlayer()])
+    setSelectedTeam(team)
+    setShowManual(false)
+    setResult(null)
+    setError(null)
+  }
+
+  function clearTeam() {
+    setSelectedTeam(null)
+    setPlayers([emptyPlayer()])
+    setShowManual(true)
+  }
 
   function addPlayer() {
     if (players.length < 30) setPlayers(prev => [...prev, emptyPlayer()])
@@ -105,6 +157,7 @@ export default function TeamEval() {
     setPlayers(merged.length > 0 ? merged : [emptyPlayer()])
     setExtracting(false)
     setShowUpload(false)
+    setSelectedTeam(null)  // screenshot replaces team selection
   }
 
   async function submit(e) {
@@ -136,6 +189,7 @@ export default function TeamEval() {
   }
 
   const gradeCls = result ? (GRADE_STYLE[result.letter_grade] || GRADE_STYLE.C) : ''
+  const resolvedCount = players.filter(p => p.playerId != null).length
 
   return (
     <div className="space-y-8">
@@ -149,99 +203,172 @@ export default function TeamEval() {
         </p>
       </div>
 
-      {/* Prevent Enter from submitting while typing in player search inputs */}
       <form
         onSubmit={submit}
         onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault() }}
         className="card space-y-5"
       >
-        {/* Player list */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="section-label">Your Roster *</label>
-            <button
-              type="button"
-              onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
-              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
-            >
-              <Upload size={12} />
-              {showUpload ? 'Hide upload' : 'Upload screenshots'}
-            </button>
-          </div>
-
-          {/* Screenshot upload area */}
-          {showUpload && (
-            <div className="mb-3 space-y-2">
-              <div
-                className="border-2 border-dashed border-navy-600 rounded-xl p-5 text-center cursor-pointer hover:border-field-600 transition-colors"
-                onClick={() => fileRef.current?.click()}
-                onDragOver={e => e.preventDefault()}
-                onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
-              >
-                <ImageIcon size={28} className="mx-auto text-slate-600 mb-2" />
-                <p className="text-sm text-slate-400">Upload roster screenshots</p>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Drag & drop or click · Select multiple files to cover the full roster
-                </p>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={e => handleFiles(e.target.files)}
-                />
-              </div>
-              {extracting && (
-                <div className="flex items-center gap-2 text-xs text-field-400">
-                  <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
-                </div>
-              )}
-              {extractError && (
-                <div className="flex items-center gap-2 text-xs text-stitch-400">
-                  <AlertCircle size={13} /> {extractError}
-                </div>
+        {/* ── League team picker (primary, only shown when connected) ─────────── */}
+        {hasLeague && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="section-label">Select a team</label>
+              {selectedTeam && (
+                <button
+                  type="button"
+                  onClick={clearTeam}
+                  className="flex items-center gap-1 text-xs text-slate-600 hover:text-stitch-400 transition-colors"
+                >
+                  <X size={11} /> Clear
+                </button>
               )}
             </div>
-          )}
+            <TeamChips
+              teams={league.teams}
+              selectedTeamId={selectedTeam?.team_id}
+              onSelect={loadTeam}
+            />
+            {selectedTeam && (
+              <div className="flex items-center gap-2 text-xs text-slate-500 pt-1">
+                <Users size={12} className="text-field-500" />
+                <span>
+                  Loaded <strong className="text-white">{selectedTeam.team_name}</strong>
+                  {' '}— {resolvedCount} player{resolvedCount !== 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
-          {/* Manual player entries */}
-          <div className="space-y-2">
-            {players.map((p, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <PlayerSearch
-                  ref={el => { playerRefs.current[idx] = el }}
-                  value={p.name}
-                  playerId={p.playerId}
-                  onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
-                  onEnterKey={() => focusNextOrAdd(idx)}
-                  placeholder={`Player ${idx + 1}…`}
-                  className="flex-1"
-                />
-                {players.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removePlayer(idx)}
-                    className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+        {/* ── Divider / secondary toggle ────────────────────────────────────── */}
+        {hasLeague && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowManual(v => !v)}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+            >
+              {showManual
+                ? <ChevronDown size={13} />
+                : <ChevronRight size={13} />
+              }
+              {showManual ? 'Hide' : 'Or add players manually / upload screenshots'}
+            </button>
+          </div>
+        )}
+
+        {/* ── Manual entry + screenshot upload ──────────────────────────────── */}
+        {(!hasLeague || showManual) && (
+          <div className="space-y-4">
+            {/* Screenshot upload toggle */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="section-label">
+                  {hasLeague ? 'Add or replace players' : 'Your Roster *'}
+                </label>
+                <button
+                  type="button"
+                  onClick={() => { setShowUpload(v => !v); setExtractError(null) }}
+                  className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  <Upload size={12} />
+                  {showUpload ? 'Hide upload' : 'Upload screenshots'}
+                </button>
+              </div>
+
+              {/* Screenshot upload area */}
+              {showUpload && (
+                <div className="mb-3 space-y-2">
+                  <div
+                    className="border-2 border-dashed border-navy-600 rounded-xl p-5 text-center cursor-pointer hover:border-field-600 transition-colors"
+                    onClick={() => fileRef.current?.click()}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
                   >
-                    <X size={15} />
-                  </button>
+                    <ImageIcon size={28} className="mx-auto text-slate-600 mb-2" />
+                    <p className="text-sm text-slate-400">Upload roster screenshots</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Drag & drop or click · Select multiple files to cover the full roster
+                    </p>
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={e => handleFiles(e.target.files)}
+                    />
+                  </div>
+                  {extracting && (
+                    <div className="flex items-center gap-2 text-xs text-field-400">
+                      <Loader2 size={13} className="animate-spin" /> Analyzing screenshots…
+                    </div>
+                  )}
+                  {extractError && (
+                    <div className="flex items-center gap-2 text-xs text-stitch-400">
+                      <AlertCircle size={13} /> {extractError}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Player list */}
+              <div className="space-y-2">
+                {players.map((p, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <PlayerSearch
+                      ref={el => { playerRefs.current[idx] = el }}
+                      value={p.name}
+                      playerId={p.playerId}
+                      onChange={(name, playerId) => updatePlayer(idx, name, playerId)}
+                      onEnterKey={() => focusNextOrAdd(idx)}
+                      placeholder={`Player ${idx + 1}…`}
+                      className="flex-1"
+                    />
+                    {players.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removePlayer(idx)}
+                        className="shrink-0 text-slate-600 hover:text-stitch-400 transition-colors p-1"
+                      >
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {players.length < 30 && (
+                <button
+                  type="button"
+                  onClick={addPlayer}
+                  className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
+                >
+                  <Plus size={13} /> Add player
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* When a league team is loaded but manual section is hidden, show a compact
+            player count summary so the user knows what roster will be evaluated */}
+        {hasLeague && !showManual && selectedTeam && (
+          <div className="rounded-lg bg-navy-800/50 border border-navy-700 px-3 py-2 space-y-1 max-h-48 overflow-y-auto">
+            {players.filter(p => p.name).map((p, i) => (
+              <div key={i} className="flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-300 truncate">{p.name}</span>
+                {!p.playerId && (
+                  <span className="text-[10px] text-stitch-500 shrink-0">unresolved</span>
                 )}
               </div>
             ))}
+            {players.filter(p => p.name).length === 0 && (
+              <span className="text-xs text-slate-600 italic">No players loaded.</span>
+            )}
           </div>
-          {players.length < 30 && (
-            <button
-              type="button"
-              onClick={addPlayer}
-              className="mt-2 flex items-center gap-1.5 text-xs text-field-400 hover:text-field-300 transition-colors"
-            >
-              <Plus size={13} /> Add player
-            </button>
-          )}
-        </div>
+        )}
 
-        {/* Ranking type */}
+        {/* ── Ranking type ───────────────────────────────────────────────────── */}
         <div>
           <label className="section-label">Ranking type</label>
           <select
@@ -277,6 +404,9 @@ export default function TeamEval() {
                 {result.grade_percentile.toFixed(0)}th percentile · overall score{' '}
                 <span className="font-mono text-white">{result.overall_score.toFixed(2)}</span>
               </div>
+              {selectedTeam && (
+                <div className="text-xs text-slate-500 mt-0.5">{selectedTeam.team_name}</div>
+              )}
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {result.strong_categories.map(c => (
                   <span key={c} className="stat-pill bg-field-900 text-field-300">{c} ▲</span>
