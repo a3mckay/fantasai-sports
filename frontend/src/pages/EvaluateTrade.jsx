@@ -304,9 +304,11 @@ function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePla
   )
 }
 
-// ── Team2SearchPanel ──────────────────────────────────────────────────────────
+// ── TeamPickerPanel ───────────────────────────────────────────────────────────
+// Generic team search + accordion for both the giving and receiving sides.
+// `excludeTeamId` filters out whichever team is already loaded on the other side.
 
-function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlayerIds, receivingPicks, onPicksChange, rankingsMap, pickValueFn }) {
+function TeamPickerPanel({ league, excludeTeamId, side, onLoadTeam, onAddPlayer, tradedPlayerIds, picks, onPicksChange, rankingsMap, pickValueFn }) {
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -314,7 +316,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
   const searchTimeoutRef = useRef(null)
   const searchContainerRef = useRef(null)
 
-  const otherTeams = (league?.teams || []).filter(t => t.team_id !== myTeam?.team_id)
+  const otherTeams = (league?.teams || []).filter(t => t.team_id !== excludeTeamId)
 
   // Build ownedByMap: player_id → team
   const ownedByMap = {}
@@ -439,7 +441,11 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                 <button
                   type="button"
                   onClick={e => { e.stopPropagation(); onLoadTeam(team, null) }}
-                  className="shrink-0 text-xs text-field-400 hover:text-field-300 border border-field-700 hover:border-field-500 px-2 py-0.5 rounded transition-colors"
+                  className={`shrink-0 text-xs border px-2 py-0.5 rounded transition-colors ${
+                    side === 'give'
+                      ? 'text-stitch-400 hover:text-stitch-300 border-stitch-700 hover:border-stitch-500'
+                      : 'text-field-400 hover:text-field-300 border-field-700 hover:border-field-500'
+                  }`}
                 >
                   Load team
                 </button>
@@ -457,7 +463,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                       player={player}
                       rankData={rankingsMap?.[player.player_id]}
                       inTrade={tradedPlayerIds.has(player.player_id)}
-                      side="receive"
+                      side={side}
                       onAdd={p => onLoadTeam(team, p)}
                       onRemove={() => {}}
                     />
@@ -466,7 +472,7 @@ function Team2SearchPanel({ league, myTeam, onLoadTeam, onAddPlayer, tradedPlaye
                     <div className="text-xs text-slate-600 italic px-2 py-1">No roster players.</div>
                   )}
                   <div className="pt-2">
-                    <DraftPickSelector selected={receivingPicks} onChange={onPicksChange} side="receive" pickValueFn={pickValueFn} />
+                    <DraftPickSelector selected={picks} onChange={onPicksChange} side={side} pickValueFn={pickValueFn} />
                   </div>
                 </div>
               )}
@@ -512,8 +518,14 @@ function ReplaceTeamModal({ currentTeam, newTeam, onConfirm, onCancel }) {
 
 export default function EvaluateTrade() {
   const { league, myTeam } = useLeague() || {}
-  const [team2, setTeam2] = useState(null)
+  const [team1, setTeam1] = useState(null)   // giving side — defaults to myTeam
+  const [team2, setTeam2] = useState(null)   // receiving side
   const [replaceModal, setReplaceModal] = useState(null)
+
+  // Seed team1 from myTeam on first load
+  useEffect(() => {
+    if (myTeam && !team1) setTeam1(myTeam)
+  }, [myTeam]) // eslint-disable-line react-hooks/exhaustive-deps
   const [givingIds, setGivingIds] = useState(new Set())
   const [receivingIds, setReceivingIds] = useState(new Set())
   const [givingPicks, setGivingPicks] = useState([])
@@ -583,7 +595,7 @@ export default function EvaluateTrade() {
 
   const givingPlayers = [
     ...Array.from(givingIds).map(id => {
-      const p = myTeam?.roster?.find(r => r.player_id === id)
+      const p = team1?.roster?.find(r => r.player_id === id)
       const rd = rankingsMap[id]
       return p ? { playerId: id, name: p.name, positions: rd?.positions || [] } : null
     }).filter(Boolean),
@@ -619,9 +631,18 @@ export default function EvaluateTrade() {
     setReceivingIds(prev => { const n = new Set(prev); n.delete(playerId); return n })
   }
 
+  function loadTeam1(team, playerToAdd) {
+    if (team1 && team1.team_id !== team.team_id) {
+      setReplaceModal({ side: 'give', newTeam: team, pendingPlayer: playerToAdd })
+      return
+    }
+    setTeam1(team)
+    if (playerToAdd) addGivingPlayer(playerToAdd)
+  }
+
   function loadTeam2(team, playerToAdd) {
     if (team2 && team2.team_id !== team.team_id) {
-      setReplaceModal({ newTeam: team, pendingPlayer: playerToAdd })
+      setReplaceModal({ side: 'receive', newTeam: team, pendingPlayer: playerToAdd })
       return
     }
     setTeam2(team)
@@ -629,11 +650,17 @@ export default function EvaluateTrade() {
   }
 
   function confirmReplaceTeam() {
-    const { newTeam, pendingPlayer } = replaceModal
-    setTeam2(newTeam)
-    setReceivingIds(new Set())
+    const { side, newTeam, pendingPlayer } = replaceModal
+    if (side === 'give') {
+      setTeam1(newTeam)
+      setGivingIds(new Set())
+      if (pendingPlayer) setTimeout(() => addGivingPlayer(pendingPlayer), 0)
+    } else {
+      setTeam2(newTeam)
+      setReceivingIds(new Set())
+      if (pendingPlayer) setTimeout(() => addReceivingPlayer(pendingPlayer), 0)
+    }
     setReplaceModal(null)
-    if (pendingPlayer) setTimeout(() => addReceivingPlayer(pendingPlayer), 0)
   }
 
   async function evaluate() {
@@ -659,7 +686,7 @@ export default function EvaluateTrade() {
         context: context || null,
         horizon,
       }
-      const rosterIds = (myTeam?.roster || []).map(p => p.player_id).filter(Boolean)
+      const rosterIds = (team1?.roster || []).map(p => p.player_id).filter(Boolean)
       if (rosterIds.length > 0) body.roster_player_ids = rosterIds
       if (leagueSettings) {
         body.custom_categories  = leagueSettings.categories
@@ -686,13 +713,26 @@ export default function EvaluateTrade() {
 
   // ── Shared panel content builders ────────────────────────────────────────────
 
-  const givingSideContent = myTeam ? (
+  const givingSideContent = team1 ? (
     <TeamRosterPanel
-      team={myTeam}
+      team={team1}
       side="give"
       tradedPlayerIds={givingIds}
       onAddPlayer={addGivingPlayer}
       onRemovePlayer={removeGivingPlayer}
+      picks={givingPicks}
+      onPicksChange={setGivingPicks}
+      rankingsMap={rankingsMap}
+      pickValueFn={pickValue}
+    />
+  ) : league ? (
+    <TeamPickerPanel
+      league={league}
+      excludeTeamId={team2?.team_id}
+      side="give"
+      onLoadTeam={loadTeam1}
+      onAddPlayer={addGivingPlayer}
+      tradedPlayerIds={givingIds}
       picks={givingPicks}
       onPicksChange={setGivingPicks}
       rankingsMap={rankingsMap}
@@ -746,13 +786,14 @@ export default function EvaluateTrade() {
       pickValueFn={pickValue}
     />
   ) : league ? (
-    <Team2SearchPanel
+    <TeamPickerPanel
       league={league}
-      myTeam={myTeam}
+      excludeTeamId={team1?.team_id}
+      side="receive"
       onLoadTeam={loadTeam2}
       onAddPlayer={addReceivingPlayer}
       tradedPlayerIds={receivingIds}
-      receivingPicks={receivingPicks}
+      picks={receivingPicks}
       onPicksChange={setReceivingPicks}
       rankingsMap={rankingsMap}
       pickValueFn={pickValue}
@@ -871,8 +912,17 @@ export default function EvaluateTrade() {
         <div className="bg-navy-900 border border-navy-700 rounded-xl overflow-hidden flex flex-col">
           <div className="px-4 py-3 border-b border-navy-700/60 bg-navy-800/40 flex items-center justify-between">
             <span className="text-xs font-semibold text-stitch-400 uppercase tracking-wider">
-              You're Giving · {myTeam?.team_name || 'Your Team'}
+              You're Giving{team1 ? ` · ${team1.team_name}` : ''}
             </span>
+            {team1 && (
+              <button
+                type="button"
+                onClick={() => { setTeam1(null); setGivingIds(new Set()) }}
+                className="text-xs text-slate-600 hover:text-stitch-400 flex items-center gap-1 transition-colors"
+              >
+                <X size={11} /> Change team
+              </button>
+            )}
           </div>
           <div className="p-4 flex-1">
             {givingSideContent}
@@ -889,9 +939,9 @@ export default function EvaluateTrade() {
               <button
                 type="button"
                 onClick={() => { setTeam2(null); setReceivingIds(new Set()) }}
-                className="text-xs text-slate-600 hover:text-stitch-400 flex items-center gap-1 transition-colors"
+                className="text-xs text-slate-600 hover:text-field-400 flex items-center gap-1 transition-colors"
               >
-                <X size={11} /> Clear team
+                <X size={11} /> Change team
               </button>
             )}
           </div>
@@ -914,7 +964,7 @@ export default function EvaluateTrade() {
                 : 'bg-navy-800 border-navy-700 text-slate-500'
             }`}
           >
-            {myTeam?.team_name || 'Your Team'}
+            {team1?.team_name || 'Select Team'}
           </button>
           <button
             type="button"
@@ -950,9 +1000,20 @@ export default function EvaluateTrade() {
               style={{ width: 'calc(50% - 0.5rem - 1.25rem)', flexShrink: 0 }}
               className="space-y-3"
             >
-              <span className="text-xs font-semibold text-stitch-400 uppercase tracking-wider">
-                Giving · {myTeam?.team_name || 'Your Team'}
-              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-stitch-400 uppercase tracking-wider">
+                  Giving{team1 ? ` · ${team1.team_name}` : ''}
+                </span>
+                {team1 && (
+                  <button
+                    type="button"
+                    onClick={() => { setTeam1(null); setGivingIds(new Set()) }}
+                    className="text-xs text-slate-600 hover:text-stitch-400 flex items-center gap-1 transition-colors"
+                  >
+                    <X size={11} /> Change team
+                  </button>
+                )}
+              </div>
               {givingSideContent}
             </div>
 
@@ -969,9 +1030,9 @@ export default function EvaluateTrade() {
                   <button
                     type="button"
                     onClick={() => { setTeam2(null); setReceivingIds(new Set()) }}
-                    className="text-xs text-slate-600 hover:text-stitch-400 flex items-center gap-1 transition-colors"
+                    className="text-xs text-slate-600 hover:text-field-400 flex items-center gap-1 transition-colors"
                   >
-                    <X size={11} /> Clear team
+                    <X size={11} /> Change team
                   </button>
                 )}
               </div>
@@ -1017,7 +1078,7 @@ export default function EvaluateTrade() {
       {/* Replace team modal */}
       {replaceModal && (
         <ReplaceTeamModal
-          currentTeam={team2}
+          currentTeam={replaceModal.side === 'give' ? team1 : team2}
           newTeam={replaceModal.newTeam}
           onConfirm={confirmReplaceTeam}
           onCancel={() => setReplaceModal(null)}
