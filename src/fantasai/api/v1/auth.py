@@ -557,6 +557,7 @@ def yahoo_resync_team(
         "roster_count": len(roster_names),
         "resolved_count": len(roster_ids),
         "unresolved_names": unresolved,
+        "resolved_map": {name: pid for name, pid in resolved.items()},  # DEBUG
         "is_mine": is_my_team,
     }
 

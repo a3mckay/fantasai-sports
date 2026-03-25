@@ -85,6 +85,10 @@ export default function Profile() {
           const unresolved = result.unresolved_names || []
           const label = `${team.team_name}${team.is_mine ? ' (your team)' : ''} — ${result.resolved_count} players`
             + (unresolved.length ? ` (unmatched: ${unresolved.join(', ')})` : '')
+          // DEBUG: log full resolved map so we can see what each name resolves to
+          if (result.resolved_map) {
+            console.log(`[DEBUG] ${team.team_name} resolved_map`, result.resolved_map)
+          }
           finishStep(label)
         } catch (err) {
           failStep(`${team.team_name} — failed: ${err.message}`)
