@@ -3,6 +3,8 @@ import { onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { API_BASE_URL } from '../lib/api'
 
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
@@ -27,40 +29,71 @@ export function AuthProvider({ children }) {
 
   async function _syncWithBackend(fbUser) {
     setAuthError(null)
-    try {
-      const idToken = await fbUser.getIdToken()
-      const res = await fetch(`${API_BASE_URL}/api/v1/auth/verify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ id_token: idToken }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setUser(data.user)
-      } else {
-        let detail = `Server error ${res.status}`
-        try { detail = (await res.json()).detail || detail } catch {}
-        console.error('[AuthContext] /auth/verify failed:', res.status, detail)
-        if (res.status === 401) {
-          // Stale or invalid Firebase session — sign out so the user gets
-          // a clean login screen rather than a looping error banner.
-          await firebaseSignOut(auth)
+
+    // Retry up to 3× on network errors or 5xx — Railway containers can take
+    // 15-30 s to wake from idle on first load.
+    const MAX_ATTEMPTS = 3
+    const BACKOFF_MS   = [1000, 2000, 4000]
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const idToken = await fbUser.getIdToken()
+        const res = await fetch(`${API_BASE_URL}/api/v1/auth/verify`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ id_token: idToken }),
+        })
+
+        if (res.ok) {
+          const data = await res.json()
+          setUser(data.user)
           setAuthError(null)
-        } else {
-          setAuthError(detail)
+          setLoading(false)
+          return
         }
-        setUser(null)
+
+        // 401 = stale Firebase session — sign out immediately, no retry
+        if (res.status === 401) {
+          await firebaseSignOut(auth)
+          setUser(null)
+          setAuthError(null)
+          setLoading(false)
+          return
+        }
+
+        // Other 4xx = real error, no point retrying
+        if (res.status >= 400 && res.status < 500) {
+          let detail = `Server error ${res.status}`
+          try { detail = (await res.json()).detail || detail } catch {}
+          console.error('[AuthContext] /auth/verify failed:', res.status, detail)
+          setAuthError(detail)
+          setUser(null)
+          setLoading(false)
+          return
+        }
+
+        // 5xx — fall through to retry
+        console.warn(`[AuthContext] /auth/verify attempt ${attempt + 1} got ${res.status}, retrying…`)
+
+      } catch (err) {
+        // Network error (container still waking up) — fall through to retry
+        console.warn(`[AuthContext] /auth/verify attempt ${attempt + 1} network error:`, err.message)
       }
-    } catch (err) {
-      console.error('[AuthContext] /auth/verify network error:', err)
-      setAuthError('Could not reach the server. Is the backend running?')
-      setUser(null)
-    } finally {
-      setLoading(false)
+
+      if (attempt < MAX_ATTEMPTS - 1) {
+        setAuthError(`Server is starting up… (attempt ${attempt + 2} of ${MAX_ATTEMPTS})`)
+        await sleep(BACKOFF_MS[attempt])
+      }
     }
+
+    // All attempts exhausted
+    console.error('[AuthContext] /auth/verify failed after', MAX_ATTEMPTS, 'attempts')
+    setAuthError('Could not reach the server after several attempts. Please try again.')
+    setUser(null)
+    setLoading(false)
   }
 
   async function refreshProfile() {

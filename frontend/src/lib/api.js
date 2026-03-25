@@ -63,6 +63,7 @@ export async function req(method, path, body) {
 const get  = (path)       => req('GET',  path)
 const post = (path, body) => req('POST', path, body)
 
+
 // ── Players ──────────────────────────────────────────────────────────────────
 export const searchPlayers = (q, limit = 20) =>
   get(`/api/v1/players?search=${encodeURIComponent(q)}&limit=${limit}`)
