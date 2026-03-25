@@ -22,11 +22,11 @@ const GRADE_STYLE = {
 }
 
 const ASSESSMENT_PILL = {
-  elite:   'bg-field-900 text-field-300',
-  solid:   'bg-field-900/50 text-field-400',
-  average: 'bg-navy-700 text-slate-400',
-  weak:    'bg-red-950/50 text-red-400',
-  empty:   'bg-navy-800 text-slate-600',
+  elite:   'bg-emerald-900/70 border border-emerald-600 text-emerald-300',
+  solid:   'bg-field-900/70 border border-field-600 text-field-300',
+  average: 'bg-navy-800 border border-navy-600 text-slate-400',
+  weak:    'bg-red-900/60 border border-red-700 text-red-300',
+  empty:   'bg-navy-900 border border-navy-700 text-slate-600',
 }
 
 function emptyPlayer() {
@@ -465,28 +465,29 @@ export default function TeamEval() {
           {/* Position breakdown */}
           <div className="card">
             <div className="section-label mb-3">Position breakdown</div>
-            <div className="space-y-3">
+            <div className="divide-y divide-navy-800">
               {result.position_breakdown.map(g => (
-                <div key={g.position} className="space-y-1">
-                  <div className="flex items-center gap-3">
-                    <span className="w-10 text-right font-mono text-xs font-semibold text-slate-300 shrink-0">{g.position}</span>
-                    <span className={`stat-pill w-16 justify-center text-[10px] capitalize shrink-0 ${ASSESSMENT_PILL[g.assessment] || ''}`}>
+                <div key={g.position} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+                  {/* Position abbreviation */}
+                  <span className="w-9 text-right font-mono text-xs font-bold text-slate-200 shrink-0">{g.position}</span>
+
+                  {/* Players */}
+                  <div className="flex-1 flex flex-wrap gap-x-3 gap-y-0.5 min-w-0">
+                    {g.players.length > 0
+                      ? g.players.map((name, i) => (
+                          <span key={i} className="text-xs text-slate-300">{name}</span>
+                        ))
+                      : <span className="text-xs text-slate-600 italic">Empty</span>
+                    }
+                  </div>
+
+                  {/* Assessment pill + score, grouped right */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded capitalize ${ASSESSMENT_PILL[g.assessment] || ''}`}>
                       {g.assessment}
                     </span>
-                    <span className="ml-auto text-[10px] text-slate-600 shrink-0 font-mono">
-                      Position Score: {g.group_score.toFixed(1)}
-                    </span>
+                    <span className="text-[10px] font-mono text-slate-500 w-8 text-right">{g.group_score.toFixed(1)}</span>
                   </div>
-                  {g.players.length > 0 && (
-                    <div className="pl-13 flex flex-wrap gap-x-3 gap-y-0.5 pl-14">
-                      {g.players.map((name, i) => (
-                        <span key={i} className="text-xs text-slate-400">{name}</span>
-                      ))}
-                    </div>
-                  )}
-                  {g.players.length === 0 && (
-                    <div className="pl-14 text-xs text-slate-600 italic">Empty</div>
-                  )}
                 </div>
               ))}
             </div>
