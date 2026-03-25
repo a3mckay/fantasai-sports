@@ -31,7 +31,8 @@ function CatRow({ cat, pct, numTeams }) {
   const textColor = isStrong ? 'text-field-400' : isWeak ? 'text-stitch-400' : 'text-slate-400'
 
   // League rank: if pct=69 of 12 teams, rank ≈ round((1 - pct/100) * numTeams) + 1
-  const rank = numTeams ? Math.max(1, Math.round((1 - pct / 100) * numTeams) + 1) : null
+  // Clamp to [1, numTeams] — near-zero percentiles otherwise produce numTeams+1
+  const rank = numTeams ? Math.min(numTeams, Math.max(1, Math.round((1 - pct / 100) * numTeams) + 1)) : null
 
   return (
     <div className="flex items-center gap-2 text-xs">
