@@ -1095,9 +1095,12 @@ def team_eval_endpoint(
     if not source:
         raise HTTPException(status_code=404, detail="No player stats available for rankings.")
 
+    # Deduped map used for league-wide team comparisons (each player counted once).
+    ranking_map = {r.player_id: r for r in source}
+
     # Build roster rankings using *raw* (non-deduped) rankings so that two-way
     # players like Ohtani retain separate batting and pitching entries.
-    # The deduped `source` is used for league-wide comparisons below.
+    # The deduped `ranking_map` is used for league-wide comparisons below.
     from fantasai.api.v1.recommendations import ProjectionHorizon as _PH
     raw_pair = _get_cached_raw_rankings(categories, _PH.SEASON)
     raw_source = (raw_pair[1] if body.ranking_type == "predictive" else raw_pair[0]) if raw_pair else source
