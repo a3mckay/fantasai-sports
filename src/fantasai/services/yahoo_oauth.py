@@ -245,19 +245,58 @@ def fetch_user_team(access_token: str, league_key: str, yahoo_guid: str) -> Opti
     return None
 
 
-def fetch_team_roster(access_token: str, team_key: str) -> list[str]:
-    """Fetch a team's current roster as a list of player name strings.
+# Roster slot labels that appear in eligible_positions but are not real playing
+# positions — exclude these so only actual position eligibility chips remain.
+_ROSTER_SLOT_LABELS = {
+    "Util", "UTIL", "BN", "IL", "IL10", "IL15", "IL60",
+    "IR", "NA", "DL", "Hitters", "Pitchers",
+}
 
-    Returns player names (roster stored as JSON in the Team model).
+
+def _local_tag(elem: "ET.Element") -> str:  # type: ignore[name-defined]
+    """Return the local (namespace-stripped) tag name of an XML element."""
+    tag = elem.tag
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def fetch_team_roster(access_token: str, team_key: str) -> list[dict]:
+    """Fetch a team's current roster including Yahoo-sourced eligible positions.
+
+    Returns a list of dicts::
+
+        [{"name": "Juan Soto", "eligible_positions": ["OF"]}, ...]
+
+    ``eligible_positions`` reflects exactly what Yahoo considers playable in
+    this league (e.g. ``["OF"]`` vs ``["LF", "CF", "RF"]`` depending on league
+    settings).  Bench/injury slots (BN, IL, Util, …) are excluded.
     """
-    roster: list[str] = []
+    roster: list[dict] = []
+    seen_names: set[str] = set()
     try:
         root = _yahoo_get(access_token, f"team/{team_key}/roster")
-        for player_elem in root.iter():
-            if player_elem.tag.endswith("full") and player_elem.text:
-                name = player_elem.text.strip()
-                if name and name not in roster:
-                    roster.append(name)
+        for elem in root.iter():
+            if _local_tag(elem) != "player":
+                continue
+            # ── Player name ──────────────────────────────────────────────────
+            name: str | None = None
+            for child in elem.iter():
+                if _local_tag(child) == "full" and child.text and child.text.strip():
+                    name = child.text.strip()
+                    break
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            # ── Eligible positions ────────────────────────────────────────────
+            eligible: list[str] = []
+            for child in elem.iter():
+                if _local_tag(child) == "eligible_positions":
+                    for pos_child in child:
+                        pos = (pos_child.text or "").strip()
+                        if pos and not pos.isdigit() and pos not in _ROSTER_SLOT_LABELS:
+                            if pos not in eligible:
+                                eligible.append(pos)
+                    break  # only one eligible_positions block per player
+            roster.append({"name": name, "eligible_positions": eligible})
     except Exception:
         _log.warning("Could not fetch roster for team %s", team_key, exc_info=True)
     return roster

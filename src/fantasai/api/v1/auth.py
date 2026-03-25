@@ -432,9 +432,12 @@ def yahoo_resync_team(
     is_my_team = team_key == conn.team_key
 
     # Fetch and resolve roster
-    roster_names = fetch_team_roster(access_token, team_key)
+    from fantasai.services.yahoo_sync import _update_player_positions_from_yahoo
+    roster_data = fetch_team_roster(access_token, team_key)
+    roster_names = [p["name"] for p in roster_data]
     resolved = resolve_player_names(roster_names, db)
     roster_ids = [v for v in resolved.values() if v is not None]
+    _update_player_positions_from_yahoo(db, roster_data, resolved)
 
     # Upsert team row — match by team_name, fall back to owner lookup for user's team
     team_row = db.query(Team).filter(

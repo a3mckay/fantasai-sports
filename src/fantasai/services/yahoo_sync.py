@@ -78,6 +78,51 @@ def get_valid_access_token(conn: "YahooConnection", db: "Session") -> str:
 # ---------------------------------------------------------------------------
 
 
+def _update_player_positions_from_yahoo(
+    db: "Session",
+    roster_data: list[dict],
+    resolved: dict[str, "int | None"],
+) -> None:
+    """Write Yahoo-sourced eligible positions back to Player.positions in the DB.
+
+    Positions come directly from Yahoo's ``eligible_positions`` elements, so
+    they already reflect this league's roster format (e.g. "OF" vs "LF/CF/RF").
+    Two-way players like Ohtani appear twice in roster_data with different
+    qualifiers — their positions are merged into a single deduplicated list.
+    """
+    import re
+
+    from fantasai.models.player import Player
+
+    _PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+    # Group eligible positions by player_id, merging duplicates (two-way players)
+    player_positions: dict[int, list[str]] = {}
+    for entry in roster_data:
+        raw_pos = entry.get("eligible_positions") or []
+        if not raw_pos:
+            continue
+        name = entry["name"]
+        player_id = resolved.get(name)
+        if player_id is None:
+            # Try with qualifier stripped (e.g. "Ohtani (Batter)" → "Ohtani")
+            stripped = _PAREN.sub("", name).strip()
+            player_id = resolved.get(stripped)
+        if player_id is None:
+            continue
+        existing = player_positions.setdefault(player_id, [])
+        for pos in raw_pos:
+            if pos not in existing:
+                existing.append(pos)
+
+    for player_id, positions in player_positions.items():
+        if not positions:
+            continue
+        player = db.get(Player, player_id)
+        if player is not None:
+            player.positions = positions
+
+
 def import_yahoo_league(
     db: "Session",
     user: "User",
@@ -140,9 +185,12 @@ def import_yahoo_league(
         if is_my_team:
             conn.team_key = team_key
 
-        roster_names = fetch_team_roster(access_token, team_key)
+        roster_data = fetch_team_roster(access_token, team_key)
+        roster_names = [p["name"] for p in roster_data]
         resolved = resolve_player_names(roster_names, db)
         roster_ids = [v for v in resolved.values() if v is not None]
+        # Update Player.positions in the DB from Yahoo's eligible_positions data
+        _update_player_positions_from_yahoo(db, roster_data, resolved)
 
         existing = db.query(Team).filter(
             Team.league_id == league_key,
