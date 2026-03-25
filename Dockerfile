@@ -7,14 +7,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files first so this layer is cached between code-only changes
+# Cache pip dependencies: copy only the manifest, create a minimal package
+# stub so pip can resolve deps, then install. This layer is only rebuilt
+# when pyproject.toml changes.
 COPY pyproject.toml README.md ./
-COPY src/fantasai/__init__.py src/fantasai/__init__.py
+RUN mkdir -p src/fantasai && touch src/fantasai/__init__.py \
+    && pip install --no-cache-dir -e . \
+    && rm -rf src/
 
-RUN pip install --no-cache-dir -e .
-
-# Now copy the rest of the source
+# Copy full application source and reinstall in editable mode (no dep download)
 COPY . .
+RUN pip install --no-cache-dir -e . --no-deps
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
