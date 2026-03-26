@@ -9,6 +9,7 @@ import { useLeague } from '../contexts/LeagueContext'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
+const SKIP_CATS  = new Set(['H/AB', 'Batting', 'Pitching', 'AB'])
 const TIER_ORDER = ['contender', 'middle', 'rebuilding']
 
 const TIER_CFG = {
@@ -94,10 +95,10 @@ function TeamRow({ snap, rank, isWinner, isMine, leaguePcts, numTeams }) {
             <span className="ml-auto font-mono text-sm text-field-400">{snap.power_score.toFixed(2)}</span>
           </div>
           <div className="flex flex-wrap gap-1 mt-1.5">
-            {snap.strong_cats.slice(0, 4).map(c => (
+            {snap.strong_cats.filter(c => !SKIP_CATS.has(c)).slice(0, 4).map(c => (
               <span key={c} className="stat-pill bg-field-900 text-field-300 text-[10px]">{c} ▲</span>
             ))}
-            {snap.weak_cats.slice(0, 3).map(c => (
+            {snap.weak_cats.filter(c => !SKIP_CATS.has(c)).slice(0, 3).map(c => (
               <span key={c} className="stat-pill bg-red-950/50 text-red-400 text-[10px]">{c} ▼</span>
             ))}
           </div>
