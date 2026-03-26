@@ -262,6 +262,31 @@ def import_yahoo_league(
             if is_my_team:
                 existing.owner_user_id = user.id
 
+            # Compute IL and injury data from roster slot info
+            IL_SLOT_LABELS = {"IL", "IL+", "IL10", "IL60", "IR", "NA"}
+            INJURY_STATUS_LABELS = {"DTD", "Q", "O", "NA"}
+
+            il_ids: list = []
+            injured_statuses: dict = {}
+            for entry in roster_data:
+                pname = entry["name"]
+                pid = resolved.get(pname)
+                if pid is None:
+                    import re
+                    stripped = re.sub(r"\s*\([^)]*\)\s*$", "", pname).strip()
+                    pid = resolved.get(stripped)
+                if pid is None:
+                    continue
+                slot = entry.get("selected_position", "").upper()
+                status = entry.get("yahoo_status", "").upper()
+                if slot in IL_SLOT_LABELS:
+                    il_ids.append(pid)
+                elif status in INJURY_STATUS_LABELS and status != "NA":
+                    injured_statuses[str(pid)] = status
+
+            existing.il_player_ids = il_ids
+            existing.injured_player_statuses = injured_statuses
+
             _log.info(
                 "Synced team '%s' (%s): %d players (%d resolved)",
                 team_info["name"], team_key, len(roster_names), len(roster_ids),

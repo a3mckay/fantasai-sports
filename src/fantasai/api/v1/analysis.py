@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from fantasai.api.deps import check_rate_limit, get_db
 from fantasai.brain.comparator import CompareContext, compare_players
+from fantasai.brain.lineup import apply_weights, build_roster_notes, compute_roster_weights
 from fantasai.brain.league_analyzer import (
     LeaguePowerReport,
     TeamsComparison,
@@ -855,6 +856,7 @@ def _generate_team_eval_blurb(
     evaluation: TeamEvaluation,
     categories: list[str],
     context: Optional[str],
+    roster_notes: Optional[dict] = None,
 ) -> str:
     """Generate a team evaluation narrative blurb via Anthropic API."""
     client = _llm_client()
@@ -879,11 +881,27 @@ def _generate_team_eval_blurb(
         lines.append("Improvement suggestions:")
         for s in evaluation.improvement_suggestions[:4]:
             lines.append(f"  - {s}")
+        if roster_notes:
+            if roster_notes.get("il_players"):
+                lines.append(f"Players on IL (not scoring): {', '.join(roster_notes['il_players'])}")
+            if roster_notes.get("active_injured"):
+                lines.append(f"Hurt but starting (discounted): {', '.join(roster_notes['active_injured'])}")
+            if roster_notes.get("bench_overflow"):
+                lines.append(f"Bench-only (can't start regularly): {', '.join(roster_notes['bench_overflow'])}")
+            if roster_notes.get("position_surplus"):
+                surplus_str = ", ".join(f"{p} (+{n})" for p, n in roster_notes["position_surplus"].items())
+                lines.append(f"Position depth surplus: {surplus_str}")
+            if roster_notes.get("position_deficit"):
+                deficit_str = ", ".join(f"{p} (-{n})" for p, n in roster_notes["position_deficit"].items())
+                lines.append(f"Position depth deficit: {deficit_str}")
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
             "Write a 3–5 sentence team evaluation. State the grade, what the team "
             "does well, where they're vulnerable, and one key improvement priority. "
+            "If players are on the IL, note the impact on the team. "
+            "If there's a bench overflow (can't start regularly) or position depth imbalance, "
+            "mention it as a roster construction issue. "
             + (f"Address user context: {context}" if context else "")
         )
 
@@ -979,6 +997,7 @@ def _generate_keeper_eval_blurb(
 def _generate_compare_teams_blurb(
     comparison: TeamsComparison,
     context: Optional[str],
+    roster_notes: Optional[dict[str, dict]] = None,
 ) -> str:
     """Generate a multi-team comparison narrative via Anthropic API."""
     client = _llm_client()
@@ -1002,11 +1021,24 @@ def _generate_compare_teams_blurb(
             lines.append("Trade opportunities:")
             for opp in comparison.trade_opportunities[:3]:
                 lines.append(f"  {opp.rationale}")
+        if roster_notes:
+            for tname, notes in roster_notes.items():
+                note_parts = []
+                if notes.get("il_players"):
+                    note_parts.append(f"IL: {', '.join(notes['il_players'])}")
+                if notes.get("bench_overflow"):
+                    note_parts.append(f"bench-only: {', '.join(notes['bench_overflow'])}")
+                if notes.get("position_surplus"):
+                    surplus_str = ", ".join(f"{p}+{n}" for p, n in notes["position_surplus"].items())
+                    note_parts.append(f"depth surplus: {surplus_str}")
+                if note_parts:
+                    lines.append(f"  {tname} roster notes: {'; '.join(note_parts)}")
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
             "Write a 3–5 sentence comparison. Identify the strongest team and why, "
             "each team's key advantage/disadvantage, and the most interesting trade angle. "
+            "Note any IL players or roster construction issues (position gluts, thin spots) that affect the comparison. "
             + (f"Address user context: {context}" if context else "")
         )
 
@@ -1027,6 +1059,7 @@ def _generate_league_power_blurb(
     report: LeaguePowerReport,
     tiers: dict[str, list[int]],
     team_names: dict[int, str],
+    roster_notes: Optional[dict[str, dict]] = None,
 ) -> str:
     """Generate a league power rankings narrative via Anthropic API."""
     client = _llm_client()
@@ -1047,6 +1080,20 @@ def _generate_league_power_blurb(
         for tier, ids in tiers.items():
             names = [team_names.get(tid, str(tid)) for tid in ids]
             lines.append(f"  {tier.capitalize()}: {', '.join(names)}")
+        if roster_notes:
+            notable = []
+            for tname, notes in roster_notes.items():
+                parts = []
+                if notes.get("il_players"):
+                    parts.append(f"{len(notes['il_players'])} on IL ({', '.join(notes['il_players'][:2])})")
+                if notes.get("bench_overflow"):
+                    parts.append(f"{len(notes['bench_overflow'])} bench-only")
+                if parts:
+                    notable.append(f"{tname}: {', '.join(parts)}")
+            if notable:
+                lines.append("Roster injury/depth notes:")
+                for n in notable[:6]:  # cap at 6 to keep prompt reasonable
+                    lines.append(f"  {n}")
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
@@ -1099,6 +1146,55 @@ def _trade_opp_to_read(opp) -> TradeOpportunityRead:  # TradeOpportunity → sch
         complementarity_score=opp.complementarity_score,
         rationale=opp.rationale,
     )
+
+
+# ---------------------------------------------------------------------------
+# Roster weighting helper
+# ---------------------------------------------------------------------------
+
+
+def _apply_team_weights(
+    player_ids: list[int],
+    ranking_map: dict,
+    raw_multi: dict,
+    consumed: dict,
+    roster_positions: list[str],
+    il_player_ids: Optional[list[int]],
+    injured_player_statuses: Optional[dict],
+) -> tuple[list, dict, dict]:
+    """Build weighted roster rankings for a team.
+
+    Returns (weighted_rankings, weights, roster_notes_dict).
+    roster_notes_dict is empty if roster_positions is not set.
+    """
+    # Build raw rankings via multimap (handles two-way players)
+    _raw_multi: dict = raw_multi
+    _consumed:  dict = consumed
+    raw_rankings = []
+    for pid in player_ids:
+        entries = _raw_multi.get(pid)
+        if not entries:
+            continue
+        idx = _consumed[pid]
+        raw_rankings.append(entries[idx % len(entries)])
+        _consumed[pid] += 1
+
+    if not roster_positions:
+        return raw_rankings, {r.player_id: 1.0 for r in raw_rankings}, {}
+
+    inj_int = {int(k): v for k, v in (injured_player_statuses or {}).items()}
+    weights = compute_roster_weights(
+        raw_rankings, roster_positions,
+        il_player_ids=il_player_ids,
+        injured_statuses=inj_int,
+    )
+    weighted = apply_weights(raw_rankings, weights)
+    notes = build_roster_notes(
+        raw_rankings, weights, roster_positions,
+        il_player_ids=il_player_ids,
+        injured_statuses=inj_int,
+    )
+    return weighted, weights, notes
 
 
 # ---------------------------------------------------------------------------
@@ -1173,22 +1269,19 @@ def team_eval_endpoint(
         team = db.get(Team, body.team_id)
         if not team:
             raise HTTPException(status_code=404, detail=f"Team {body.team_id} not found.")
-        player_ids = team.roster or []
+        player_ids     = team.roster or []
+        il_ids         = list(team.il_player_ids or [])
+        injured_stats  = dict(team.injured_player_statuses or {})
     else:
-        player_ids = body.player_ids or []
+        player_ids    = body.player_ids or []
+        il_ids        = []
+        injured_stats = {}
 
-    # For each slot in the roster, consume the next available raw entry for
-    # that player_id so duplicate IDs (two-way players) each get their own
-    # correctly-typed ranking rather than the same deduped entry twice.
     _consumed: dict = defaultdict(int)
-    roster_rankings = []
-    for pid in player_ids:
-        entries = _raw_multi.get(pid)
-        if not entries:
-            continue
-        idx = _consumed[pid]
-        roster_rankings.append(entries[idx % len(entries)])
-        _consumed[pid] += 1
+    roster_rankings, _weights, _roster_notes = _apply_team_weights(
+        player_ids, ranking_map, _raw_multi, _consumed,
+        roster_positions, il_ids, injured_stats,
+    )
 
     # Compute league-wide distributions for relative grading.
     # Score each team's position groups and category strengths so assessment
@@ -1208,7 +1301,16 @@ def team_eval_endpoint(
         _REQUIRED_POS = {"C", "SP", "RP"}
 
         for t in (league.teams or []):
-            t_rankings = [ranking_map[pid] for pid in (t.roster or []) if pid in ranking_map]
+            t_il   = list(t.il_player_ids or [])
+            t_inj  = {int(k): v for k, v in (t.injured_player_statuses or {}).items()}
+            t_raw  = [ranking_map[pid] for pid in (t.roster or []) if pid in ranking_map]
+            if not t_raw:
+                continue
+            if roster_positions:
+                t_w   = compute_roster_weights(t_raw, roster_positions, t_il, t_inj)
+                t_rankings = apply_weights(t_raw, t_w)
+            else:
+                t_rankings = t_raw
             if not t_rankings:
                 continue
             t_score = sum(r.score for r in t_rankings) / len(t_rankings)
@@ -1254,7 +1356,7 @@ def team_eval_endpoint(
                 pct = 50.0
             league_category_percentiles[cat] = pct
 
-    blurb = _generate_team_eval_blurb(evaluation, categories, body.context)
+    blurb = _generate_team_eval_blurb(evaluation, categories, body.context, _roster_notes)
 
     return TeamEvalResponse(
         overall_score=evaluation.overall_score,
@@ -1504,22 +1606,45 @@ def compare_teams_endpoint(
 
     ranking_map = {r.player_id: r for r in source}
 
+    # Get roster_positions for weighting (from league if available)
+    ct_roster_positions: list[str] = []
+    if body.league_id:
+        from fantasai.models.league import League as _League
+        _lg = db.get(_League, body.league_id)
+        if _lg:
+            ct_roster_positions = _lg.roster_positions or []
+
+    compare_roster_notes: dict[str, dict] = {}
+
     # Build team data tuples
     team_data: list[tuple[int, str, list[PlayerRanking]]] = []
 
     if body.manual_teams:
-        # Build from manual teams using sequential negative fake IDs
         for i, mt in enumerate(body.manual_teams):
             fake_id = -(i + 1)
             roster_rankings = [ranking_map[pid] for pid in mt.player_ids if pid in ranking_map]
+            # No IL data for manual teams — apply slot-only weighting if positions available
+            if ct_roster_positions:
+                w = compute_roster_weights(roster_rankings, ct_roster_positions)
+                roster_rankings = apply_weights(roster_rankings, w)
+                compare_roster_notes[mt.name] = build_roster_notes(roster_rankings, w, ct_roster_positions)
             team_data.append((fake_id, mt.name, roster_rankings))
     else:
         for tid in (body.team_ids or []):
             team = db.get(Team, tid)
             if not team:
                 raise HTTPException(status_code=404, detail=f"Team {tid} not found.")
-            roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
-            team_data.append((tid, team.team_name or team.manager_name or f"Team {tid}", roster_rankings))
+            t_il  = list(team.il_player_ids or [])
+            t_inj = {int(k): v for k, v in (team.injured_player_statuses or {}).items()}
+            raw   = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
+            name  = team.team_name or team.manager_name or f"Team {tid}"
+            if ct_roster_positions:
+                w = compute_roster_weights(raw, ct_roster_positions, t_il, t_inj)
+                weighted = apply_weights(raw, w)
+                compare_roster_notes[name] = build_roster_notes(raw, w, ct_roster_positions, t_il, t_inj)
+            else:
+                weighted = raw
+            team_data.append((tid, name, weighted))
 
     if len(team_data) < 2:
         raise HTTPException(status_code=422, detail="At least 2 valid teams are required.")
@@ -1531,7 +1656,7 @@ def compare_teams_endpoint(
         include_trades=body.include_trade_suggestions,
     )
 
-    blurb = _generate_compare_teams_blurb(comparison, body.context)
+    blurb = _generate_compare_teams_blurb(comparison, body.context, compare_roster_notes)
 
     return CompareTeamsResponse(
         snapshots=[_snapshot_to_read(s) for s in comparison.snapshots],
@@ -1582,10 +1707,20 @@ def league_power_endpoint(
     # Build team data for all teams in the league
     team_data: list[tuple[int, str, list[PlayerRanking]]] = []
     team_names: dict[int, str] = {}
+    lp_roster_notes: dict[str, dict] = {}
+    lp_roster_positions = league.roster_positions or []
     for team in league.teams or []:
-        roster_rankings = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
+        raw  = [ranking_map[pid] for pid in (team.roster or []) if pid in ranking_map]
         name = team.team_name or team.manager_name or f"Team {team.team_id}"
-        team_data.append((team.team_id, name, roster_rankings))
+        if lp_roster_positions:
+            t_il  = list(team.il_player_ids or [])
+            t_inj = {int(k): v for k, v in (team.injured_player_statuses or {}).items()}
+            w     = compute_roster_weights(raw, lp_roster_positions, t_il, t_inj)
+            weighted = apply_weights(raw, w)
+            lp_roster_notes[name] = build_roster_notes(raw, w, lp_roster_positions, t_il, t_inj)
+        else:
+            weighted = raw
+        team_data.append((team.team_id, name, weighted))
         team_names[team.team_id] = name
 
     if not team_data:
@@ -1597,7 +1732,7 @@ def league_power_endpoint(
         league_type=league_type,
     )
 
-    blurb = _generate_league_power_blurb(report, report.tiers, team_names)
+    blurb = _generate_league_power_blurb(report, report.tiers, team_names, lp_roster_notes)
 
     return LeaguePowerResponse(
         power_rankings=[_snapshot_to_read(s) for s in report.power_rankings],

@@ -304,7 +304,26 @@ def fetch_team_roster(access_token: str, team_key: str) -> list[dict]:
                             if pos not in eligible:
                                 eligible.append(pos)
                     break  # only one eligible_positions block per player
-            roster.append({"name": name, "eligible_positions": eligible})
+            # ── Selected position (roster slot player is IN) ──────────────────
+            selected_pos = ""
+            for child in elem.iter():
+                if _local_tag(child) == "selected_position":
+                    for pc in child:
+                        if _local_tag(pc) == "position" and pc.text:
+                            selected_pos = pc.text.strip()
+                    break
+            # ── Injury status ─────────────────────────────────────────────────
+            yahoo_status = ""
+            for child in elem.iter():
+                if _local_tag(child) == "status" and child.text and child.text.strip():
+                    yahoo_status = child.text.strip()
+                    break
+            roster.append({
+                "name": name,
+                "eligible_positions": eligible,
+                "selected_position": selected_pos,
+                "yahoo_status": yahoo_status,
+            })
     except Exception:
         _log.warning("Could not fetch roster for team %s", team_key, exc_info=True)
     return roster

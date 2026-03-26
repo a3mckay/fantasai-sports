@@ -35,6 +35,8 @@ class Team(TimestampMixin, Base):
     manager_name: Mapped[str] = mapped_column(String(200))
     roster: Mapped[list] = mapped_column(JSON, default=list)  # list of resolved FanGraphs player_ids (int)
     roster_names: Mapped[list] = mapped_column(JSON, default=list)  # original Yahoo player name strings
+    il_player_ids: Mapped[list] = mapped_column(JSON, default=list)  # player_ids in IL/IL+/NA slots
+    injured_player_statuses: Mapped[dict] = mapped_column(JSON, default=dict)  # {str(player_id): "DTD"|"Q"|"O"|"NA"}
     owner_user_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
