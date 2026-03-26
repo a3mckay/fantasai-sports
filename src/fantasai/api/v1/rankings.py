@@ -307,6 +307,32 @@ def clear_rankings_cache() -> dict:
     return {"cleared": n, "status": "ok"}
 
 
+@router.post("/sync-current-stats", tags=["admin"])
+def sync_current_stats(
+    season: int = Query(default=2025, ge=2020, le=2030),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fetch current-season YTD stats from FanGraphs and upsert into player_stats.
+
+    Runs the same logic as the nightly APScheduler job.  Call this once after
+    deployment to backfill the current 2025 season, or any time you need fresh
+    data immediately without waiting for the scheduled run.
+
+    Clears the rankings cache so the next request reflects the new stats.
+    Returns the number of rows upserted.
+    """
+    from fantasai.engine.pipeline import sync_current_season_stats
+
+    rows = sync_current_season_stats(db, season=season)
+
+    # Bust cache so the updated data surfaces immediately
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+    _RANKINGS_CACHE.clear()
+    _RANKINGS_RAW_CACHE.clear()
+
+    return {"season": season, "rows_upserted": rows, "status": "ok"}
+
+
 # ---------------------------------------------------------------------------
 # Admin: prospect sync
 # ---------------------------------------------------------------------------
