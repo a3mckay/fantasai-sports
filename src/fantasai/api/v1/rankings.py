@@ -4,7 +4,7 @@ import logging
 import unicodedata
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -333,19 +333,34 @@ def sync_current_stats(
     return {"season": season, "rows_upserted": rows, "status": "ok"}
 
 
-@router.post("/generate-blurbs", tags=["admin"])
+@router.post("/generate-blurbs", status_code=202, tags=["admin"])
 def generate_blurbs(
+    background_tasks: BackgroundTasks,
     mode: str = Query(default="season", pattern="^(week|month|season|current)$"),
     top_n: int = Query(default=300, ge=10, le=500),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Generate AI blurbs for the top N players in the given ranking mode.
+    """Kick off blurb generation in the background and return 202 immediately.
 
+    Generation runs asynchronously — check server logs for progress.
     Runs the same logic as the Monday 4am scheduled job.
     mode: "season" (ROS), "week", "month", "current" (YTD)
     """
     from fantasai.brain.blurb_scheduler import generate_rankings_blurbs
-    return generate_rankings_blurbs(db, settings.anthropic_api_key, mode=mode, top_n=top_n)
+    from fantasai.database import SessionLocal
+
+    api_key = settings.anthropic_api_key
+
+    def _run() -> None:
+        bg_db = SessionLocal()
+        try:
+            result = generate_rankings_blurbs(bg_db, api_key, mode=mode, top_n=top_n)
+            logger.info("generate-blurbs background task complete: %s", result)
+        finally:
+            bg_db.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "mode": mode, "top_n": top_n}
 
 
 # ---------------------------------------------------------------------------
