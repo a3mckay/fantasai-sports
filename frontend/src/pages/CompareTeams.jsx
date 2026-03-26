@@ -1,21 +1,44 @@
 import { useState, useRef } from 'react'
 import {
   Users, Play, ArrowLeftRight, Crown, Plus, X,
-  Upload, ImageIcon, Loader2, AlertCircle,
+  Upload, ImageIcon, Loader2, AlertCircle, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { compareTeams, extractPlayers, searchPlayers } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
-import PercentileBar from '../components/PercentileBar'
+import CategoryStrengthBar from '../components/CategoryStrengthBar'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
 import { useLeague } from '../contexts/LeagueContext'
 
+// Categories that should never appear in pills or bars
+const SKIP_CATS = new Set(['H/AB', 'Batting', 'Pitching', 'AB'])
+
+// Compute within-group percentiles so bars reflect rank among compared teams,
+// not rank vs. all players in the global player pool (which inflates to ~99th).
+function computeGroupPercentiles(snapshots) {
+  const n = snapshots.length
+  if (n === 0) return {}
+  const denom = Math.max(1, n - 1)
+  const allCats = Object.keys(snapshots[0]?.category_strengths || {})
+  const result = {}
+  for (const snap of snapshots) {
+    const pcts = {}
+    for (const cat of allCats) {
+      const myScore = snap.category_strengths[cat] ?? -Infinity
+      const below   = snapshots.filter(t => (t.category_strengths[cat] ?? -Infinity) < myScore).length
+      pcts[cat] = Math.round((below / denom) * 100)
+    }
+    result[snap.team_id] = pcts
+  }
+  return result
+}
+
 // ── TeamCard result display ───────────────────────────────────────────────────
 
-function TeamCard({ snap, rank, isWinner }) {
+function TeamCard({ snap, rank, isWinner, percentiles, numTeams }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <div className={`card ${isWinner ? 'border-field-600' : ''}`}>
@@ -28,10 +51,10 @@ function TeamCard({ snap, rank, isWinner }) {
             <span className="ml-auto font-mono text-sm text-field-400">{snap.power_score.toFixed(2)}</span>
           </div>
           <div className="flex flex-wrap gap-1 mt-1.5">
-            {snap.strong_cats.map(c => (
+            {snap.strong_cats.filter(c => !SKIP_CATS.has(c)).map(c => (
               <span key={c} className="stat-pill bg-field-900 text-field-300 text-[10px]">{c} ▲</span>
             ))}
-            {snap.weak_cats.slice(0, 3).map(c => (
+            {snap.weak_cats.filter(c => !SKIP_CATS.has(c)).slice(0, 3).map(c => (
               <span key={c} className="stat-pill bg-red-950/50 text-red-400 text-[10px]">{c} ▼</span>
             ))}
           </div>
@@ -40,13 +63,19 @@ function TeamCard({ snap, rank, isWinner }) {
           )}
         </div>
         <button
-          className="text-slate-600 hover:text-slate-300 text-xs shrink-0"
+          className="text-slate-500 hover:text-slate-300 transition-colors shrink-0 p-0.5"
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? 'less' : 'more'}
+          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
       </div>
-      {expanded && <PercentileBar data={snap.category_strengths} />}
+      {expanded && (
+        <CategoryStrengthBar
+          data={percentiles || snap.category_strengths}
+          numTeams={numTeams}
+          asPercentiles={!!percentiles}
+        />
+      )}
     </div>
   )
 }
@@ -426,11 +455,21 @@ export default function CompareTeams() {
       <ErrorBanner message={error} onClose={() => setError(null)} />
       {loading && <LoadingState message="Comparing rosters…" />}
 
-      {result && (
+      {result && (() => {
+        const groupPcts = computeGroupPercentiles(result.snapshots)
+        const numTeams  = result.snapshots.length
+        return (
         <div className="space-y-6">
           <div className="space-y-3">
             {result.snapshots.map((snap, i) => (
-              <TeamCard key={snap.team_id} snap={snap} rank={i + 1} isWinner={snap.team_id === result.winner} />
+              <TeamCard
+                key={snap.team_id}
+                snap={snap}
+                rank={i + 1}
+                isWinner={snap.team_id === result.winner}
+                percentiles={groupPcts[snap.team_id]}
+                numTeams={numTeams}
+              />
             ))}
           </div>
 
@@ -457,7 +496,8 @@ export default function CompareTeams() {
 
           <Blurb text={result.analysis_blurb} />
         </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
