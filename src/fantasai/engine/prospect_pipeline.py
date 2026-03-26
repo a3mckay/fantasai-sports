@@ -192,10 +192,27 @@ def fetch_hitting_stints(
                 except (TypeError, ValueError):
                     ops = 0.700
 
+                # Extract SB, BB, K for PAV improvements (SB value, BB/K contact quality)
+                try:
+                    sb = int(s.get("stolenBases", 0) or 0)
+                except (TypeError, ValueError):
+                    sb = 0
+                try:
+                    bb = int(s.get("baseOnBalls", 0) or 0)
+                except (TypeError, ValueError):
+                    bb = 0
+                try:
+                    k = int(s.get("strikeOuts", 0) or 0)
+                except (TypeError, ValueError):
+                    k = 0
+
                 stints.append({
                     "level": level,
                     "games": games,
                     "ops": round(ops, 3),
+                    "sb": sb,
+                    "bb": bb,
+                    "k": k,
                     "player_age": _parse_age(birth_year, season),
                 })
 

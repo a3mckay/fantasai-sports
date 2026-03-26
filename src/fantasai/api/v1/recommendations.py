@@ -328,25 +328,38 @@ def _compute_rankings(
 
     # ── Build schedule overrides for This Week horizon ──────────────────────
     week_configs: dict | None = None
+    _week_schedule: dict | None = None  # raw PlayerSchedule map for factor injection
     if horizon == ProjectionHorizon.WEEK:
         try:
             week_start, week_end = get_current_week_bounds()
             cache_key_sched = week_start.isoformat()
             sched_entry = _SCHEDULE_CACHE.get(cache_key_sched)
             if sched_entry is not None:
-                sched_ts, week_configs = sched_entry
-                if time.monotonic() - sched_ts > _SCHEDULE_TTL:
-                    week_configs = None
+                sched_ts, _cached_pair = sched_entry
+                if time.monotonic() - sched_ts <= _SCHEDULE_TTL:
+                    week_configs, _week_schedule = _cached_pair
             if week_configs is None:
-                schedule = fetch_weekly_schedule(week_start, week_end, db)
-                week_configs = build_week_configs(schedule, HORIZON_CONFIGS[ProjectionHorizon.WEEK])
-                _SCHEDULE_CACHE[cache_key_sched] = (time.monotonic(), week_configs)
+                _week_schedule = fetch_weekly_schedule(
+                    week_start, week_end, db,
+                    vegas_api_key=settings.the_odds_api_key or None,
+                )
+                week_configs = build_week_configs(_week_schedule, HORIZON_CONFIGS[ProjectionHorizon.WEEK])
+                _SCHEDULE_CACHE[cache_key_sched] = (time.monotonic(), (week_configs, _week_schedule))
         except Exception as exc:
             import logging as _logging
             _logging.getLogger(__name__).warning(
                 "Schedule fetch failed, ranking without overrides: %s", exc
             )
             week_configs = None
+            _week_schedule = None
+
+    # ── Inject weather/Vegas factors into NormalizedPlayerData ──────────────
+    if horizon == ProjectionHorizon.WEEK and _week_schedule:
+        for nd in players:
+            ps = _week_schedule.get(nd.player_id)
+            if ps is not None:
+                nd.week_hr_factor = ps.weather_hr_factor
+                nd.week_run_factor = ps.vegas_run_factor
 
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)

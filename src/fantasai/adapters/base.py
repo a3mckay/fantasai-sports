@@ -32,6 +32,9 @@ class NormalizedPlayerData:
     injury_return_date: Optional[date] = None
     risk_flag: Optional[str] = None
     risk_note: Optional[str] = None
+    # Weekly weather + Vegas enrichment factors (set by _compute_rankings for WEEK horizon)
+    week_hr_factor: float = 1.0   # wind/temp modifier from Open-Meteo for outdoor games
+    week_run_factor: float = 1.0  # implied-runs modifier from Vegas team totals
 
 
 class SportAdapter(ABC):

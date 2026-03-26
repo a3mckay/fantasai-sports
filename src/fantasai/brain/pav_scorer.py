@@ -64,6 +64,21 @@ LEVEL_AVG_AGES: dict[str, float] = {
     "MLB": 27.0,
 }
 
+# Expected (typical) age at each level for age-relative-to-level scoring.
+# These reflect the MLB development pathway: elite prospects reach AA by 22-23,
+# but a 19-year-old in AA is historically exceptional (Griffin-tier).
+# Slightly tighter than LEVEL_AVG_AGES which includes journeymen; these
+# represent the "on-track elite prospect" baseline.
+_EXPECTED_AGE_BY_LEVEL: dict[str, float] = {
+    "Rookie":   19.0,
+    "Complex":  19.0,
+    "Low-A":    20.5,
+    "High-A":   21.5,
+    "Double-A": 22.5,
+    "Triple-A": 24.0,
+    "MLB":      26.0,
+}
+
 # MLB Stats API sportId → canonical level name
 SPORT_ID_TO_LEVEL: dict[int, str] = {
     11: "Triple-A",
@@ -182,18 +197,37 @@ def _level_multiplier(level: str) -> float:
     }.get(level, 1.00)
 
 
-def _age_adjustment(level: str, player_age: float) -> float:
-    """Points added/subtracted based on age vs league average.
+def _age_bonus(level: str, player_age: float) -> float:
+    """Multiplicative age-relative-to-level bonus/penalty.
 
-    +5 for each full year younger than average (cap +20).
-    −4 for each full year older than average (no floor).
+    Compares the player's age to the expected age for elite prospects at that
+    level (_EXPECTED_AGE_BY_LEVEL).  A 19-year-old in Double-A is historically
+    exceptional; a 25-year-old in High-A is a red flag.
+
+    Formula: max(0.70, min(1.40, 1.0 + (expected - actual) * 0.12))
+    Examples:
+        2 years younger than expected → 1.0 + 2*0.12 = 1.24 (capped at 1.40)
+        1 year younger               → 1.12
+        at expected age              → 1.00 (neutral)
+        1 year older                 → 0.88 → rounds to 0.92 via clamp... no:
+            1.0 + (-1)*0.12 = 0.88 (within [0.70,1.40], so 0.88)
+        2 years older                → 0.76
+        3+ years older               → approaches 0.70 floor
+
+    The 0.12-per-year slope means:
+        −2 years younger: ×1.24 (roughly +24% boost — Griffin-tier)
+        +2 years older:   ×0.76 (roughly −24% penalty)
+    Bounds [0.70, 1.40] prevent extreme outliers from dominating.
+
+    NOTE: replaces the old additive _age_adjustment() which applied +5/−4 pts.
+    The multiplicative form scales proportionally with the underlying performance
+    score rather than adding a fixed offset, making it fairer across high/low
+    base scores.
     """
-    avg = LEVEL_AVG_AGES.get(level, 23.0)
-    years_younger = avg - player_age
-    if years_younger > 0:
-        return min(20.0, years_younger * 5.0)
-    else:
-        return years_younger * 4.0  # negative because player is older
+    expected = _EXPECTED_AGE_BY_LEVEL.get(level, 22.5)
+    age_vs_expected = expected - player_age  # positive = younger than expected
+    bonus = 1.0 + age_vs_expected * 0.12
+    return max(0.70, min(1.40, bonus))
 
 
 def calculate_age_adj_performance(stints: list[dict]) -> float:
@@ -205,10 +239,48 @@ def calculate_age_adj_performance(stints: list[dict]) -> float:
         ops        (float) — on-base plus slugging
         player_age (float) — player's age during that stint
 
+    Optional (populated by fetch_hitting_stints when available):
+        sb         (int)   — stolen bases
+        bb         (int)   — walks (base on balls)
+        k          (int)   — strikeouts
+
     Returns a score in [0, 100].
 
     Why weighted average by games: a 5-game sample at Triple-A matters far less
     than a 100-game sample at Double-A; games played is a natural weight.
+
+    --- Improvement 1: SB as additive secondary component ---
+    Stolen bases are a real fantasy-relevant skill orthogonal to OPS.  We
+    normalise to a per-game rate and then scale to 0-100 so it can be blended
+    with ops_value (which is also on a ~25-95 scale).
+        sb_per_game = sb / games
+        sb_raw      = min(sb_per_game * 5.0, 1.5)   (spec formula: 0.2/G→1.0, cap 1.5)
+        sb_value    = sb_raw / 1.5 * 100             (rescale 0-1.5 → 0-100)
+    So: 0.20 SB/G → 66.7; 0.30+/G (exceptional) → 100.
+    If SB data is absent (stint has no 'sb' key), the OPS weight absorbs the
+    full share (backward-compatible).
+
+    --- Improvement 2: Age-relative-to-level multiplier ---
+    Replaced old additive _age_adjustment (fixed +5/−4 pts) with multiplicative
+    _age_bonus, which scales proportionally with the base score.  A 19-year-old
+    in Double-A (3.5 years younger than expected 22.5) gets ~1.40× vs a
+    25-year-old there who gets ~0.70×.
+
+    --- Improvement 3: BB/K ratio as contact quality signal ---
+    Walk-to-strikeout ratio predicts plate discipline and contact quality better
+    than OPS alone in small MiLB samples.
+        bb_k_ratio      = bb / max(k, 1)
+        contact_quality = min(bb_k_ratio / 0.35, 1.5)
+    0.35 BB/K → neutral 1.0; 0.50+ → 1.43 (excellent); 0.20 → 0.57 (poor).
+    Rescaled to 0-100: contact_quality_100 = contact_quality / 1.5 * 100
+    If bb/k data is absent, the contact_quality weight falls back to OPS.
+
+    Blending weights (all signals on 0-100 scale):
+        hitting_value = ops_value * 0.80 + sb_value * 0.12 + contact_quality * 0.08
+    With only OPS + SB (no bb/k):
+        hitting_value = ops_value * 0.85 + sb_value * 0.15
+    With only OPS (no sb, no bb/k):
+        hitting_value = ops_value * 1.00  (backward-compatible)
     """
     if not stints:
         return 50.0
@@ -224,10 +296,52 @@ def calculate_age_adj_performance(stints: list[dict]) -> float:
         if games <= 0:
             continue
 
-        base = _ops_base_score(ops)
+        # --- Improvement 1: SB value (rescaled to 0-100) ---
+        # sb key present → compute per-game rate, normalise, rescale to 0-100.
+        # 0.20 SB/G → sb_raw=1.0 → sb_value=66.7; 0.30+/G (exceptional) → 100.
+        # Absent → ops weight absorbs the sb share (backward-compatible).
+        has_sb = "sb" in stint
+        if has_sb:
+            sb_per_game = int(stint.get("sb", 0)) / games
+            sb_raw = min(sb_per_game * 5.0, 1.5)   # 0-1.5 range (spec formula)
+            sb_value = sb_raw / 1.5 * 100.0         # rescale to 0-100
+        else:
+            sb_value = 0.0
+
+        # --- Improvement 3: BB/K contact quality (rescaled to 0-100) ---
+        # bb/k keys present → compute ratio, normalise, rescale to 0-100.
+        # 0.35 BB/K = neutral → 66.7; 0.50+ = excellent → ≥95; 0.20 = poor → 38.
+        # Absent → ops weight absorbs the bb/k share (backward-compatible).
+        has_bbk = "bb" in stint and "k" in stint
+        if has_bbk:
+            bb = int(stint.get("bb", 0))
+            k = int(stint.get("k", 0))
+            bb_k_ratio = bb / max(k, 1)
+            # 0.35 BB/K = neutral (1.0 on raw scale); 0.50+ = excellent (1.43+)
+            contact_raw = min(bb_k_ratio / 0.35, 1.5)   # 0-1.5 range
+            contact_quality = contact_raw / 1.5 * 100.0  # rescale to 0-100
+        else:
+            contact_quality = 0.0  # absent; weight will fall back to OPS
+
+        # Blend weights depend on which optional signals are available.
+        # All inputs are on 0-100 scale so weights are true fractional shares.
+        ops_value = _ops_base_score(ops)
+        if has_sb and has_bbk:
+            # All three signals present: OPS 80%, SB 12%, BB/K 8%
+            hitting_value = ops_value * 0.80 + sb_value * 0.12 + contact_quality * 0.08
+        elif has_sb:
+            # OPS + SB only: OPS 85%, SB 15%
+            hitting_value = ops_value * 0.85 + sb_value * 0.15
+        else:
+            # OPS only: fully backward-compatible
+            hitting_value = ops_value
+
+        # --- Improvement 2: multiplicative age-relative-to-level bonus ---
+        # Applied to per-stint value BEFORE level weight so it scales with
+        # competition context (a big bonus at Low-A doesn't overshadow AA perf).
+        bonus = _age_bonus(level, age)
         level_mult = _level_multiplier(level)
-        age_adj = _age_adjustment(level, age)
-        stint_score = min(100.0, base * level_mult + age_adj)
+        stint_score = min(100.0, hitting_value * bonus * level_mult)
 
         weighted_sum += stint_score * games
         total_weight += games
@@ -317,8 +431,9 @@ def calculate_age_adj_performance_pitcher(stints: list[dict]) -> float:
 
         base = _era_base_score(era)
         level_mult = _level_multiplier(level)
-        age_adj = _age_adjustment(level, age)
-        stint_score = min(100.0, (base + _k9_modifier(k9) + _whip_modifier(whip)) * level_mult + age_adj)
+        # Use multiplicative age bonus (Improvement 2) — consistent with hitter scoring.
+        bonus = _age_bonus(level, age)
+        stint_score = min(100.0, (base + _k9_modifier(k9) + _whip_modifier(whip)) * bonus * level_mult)
 
         weighted_sum += stint_score * ip
         total_weight += ip
@@ -587,18 +702,29 @@ def validate_griffin() -> dict:
         High-A (51 G):  .942 OPS, 7 HR, 33 SB             — age 19
         Double-A (21 G): .960 OPS, 5 HR, 6 SB             — age 19
 
-    Expected:
-        AgeAdjPerformance ≈ 88–92
-        VerticalVelocity  ≈ 90–95
-        ETAProximity      ≈ 85–97   (Opening Day 2026 candidate)
-        PAV_pre           ≈ 80–87
-        PAV_final (×1.10) ≈ 88–96
-        proxy_rank        ≤ 55
+    Stints now include 'sb' to exercise the SB-value component (Improvement 1).
+    BB/K data is not included here (not in original PRD stub), so contact_quality
+    falls back to neutral and OPS+SB blending is used.
+
+    The age-relative-to-level bonus (Improvement 2) is substantial for Griffin:
+        Low-A:    expected 20.5, actual 19.0 → ×1.18
+        High-A:   expected 21.5, actual 19.0 → ×1.30
+        Double-A: expected 22.5, actual 19.0 → capped at ×1.40
+    This pushes AgeAdjPerf higher than the old additive formula, reflecting how
+    extraordinary a 19-year-old in Double-A truly is.
+
+    Expected (updated for new scoring):
+        AgeAdjPerformance ≈ 88–100  (age bonus boosts well above old 88–92 range)
+        VerticalVelocity  ≈ 90–100
+        ETAProximity      ≈ 80–100  (Opening Day 2026 candidate)
+        PAV_final (×1.10) ≈ 85–100
+        proxy_rank        ≤ 60
     """
     stints = [
-        {"level": "Low-A",    "games": 50, "ops": 0.932, "player_age": 19.0},
-        {"level": "High-A",   "games": 51, "ops": 0.942, "player_age": 19.0},
-        {"level": "Double-A", "games": 21, "ops": 0.960, "player_age": 19.0},
+        # sb included (Improvement 1); bb/k omitted → OPS+SB blend used
+        {"level": "Low-A",    "games": 50, "ops": 0.932, "sb": 26, "player_age": 19.0},
+        {"level": "High-A",   "games": 51, "ops": 0.942, "sb": 33, "player_age": 19.0},
+        {"level": "Double-A", "games": 21, "ops": 0.960, "sb":  6, "player_age": 19.0},
     ]
 
     result = score_prospect(
@@ -619,7 +745,7 @@ def validate_griffin() -> dict:
     pav  = result["pav_final"]
     rank = result["proxy_mlb_rank"]
 
-    assert 85.0 <= perf <= 98.0, f"AgeAdjPerf out of range: {perf}"
+    assert 88.0 <= perf <= 100.0, f"AgeAdjPerf out of range: {perf}"
     assert 88.0 <= vel  <= 100.0, f"VerticalVelocity out of range: {vel}"
     assert 80.0 <= eta  <= 100.0, f"ETAProximity out of range: {eta}"
     assert 85.0 <= pav  <= 100.0, f"PAV_final out of range: {pav}"
