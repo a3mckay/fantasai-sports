@@ -220,10 +220,19 @@ def import_yahoo_league(
             len(roster_data), team_key,
         )
 
+        # Look up by stable yahoo_team_key first (survives team renames).
+        # Fall back to name match for rows created before this column existed,
+        # then to owner_user_id for the syncing user's own team.
         existing = db.query(Team).filter(
             Team.league_id == league_key,
-            Team.team_name == team_info["name"],
+            Team.yahoo_team_key == team_key,
         ).first()
+
+        if existing is None:
+            existing = db.query(Team).filter(
+                Team.league_id == league_key,
+                Team.team_name == team_info["name"],
+            ).first()
 
         if existing is None and is_my_team:
             existing = db.query(Team).filter(
@@ -238,6 +247,7 @@ def import_yahoo_league(
             )
             db.add(existing)
 
+        existing.yahoo_team_key = team_key
         existing.team_name = team_info["name"]
         existing.manager_name = team_info.get("manager_name", "")
         existing.roster_names = roster_names
