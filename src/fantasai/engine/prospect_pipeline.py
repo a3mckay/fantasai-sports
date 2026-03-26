@@ -100,7 +100,7 @@ def _normalize_name(name: str) -> str:
 # Fetch: prospect IDs from MiLB rosters
 # ---------------------------------------------------------------------------
 
-def fetch_prospect_ids(season: int = 2025) -> list[dict]:
+def fetch_prospect_ids(season: int = 2026) -> list[dict]:
     """Return a list of {mlbam_id, birth_year} for all MiLB players age ≤ 26.
 
     Queries each sport level and deduplicates by mlbam_id.  Only players
@@ -153,7 +153,7 @@ def _parse_age(birth_year: Optional[int], season: int) -> float:
 
 def fetch_hitting_stints(
     mlbam_id: int,
-    season: int = 2025,
+    season: int = 2026,
     birth_year: Optional[int] = None,
 ) -> list[dict]:
     """Return per-level hitting stints for a player.
@@ -206,7 +206,7 @@ def fetch_hitting_stints(
 
 def fetch_pitching_stints(
     mlbam_id: int,
-    season: int = 2025,
+    season: int = 2026,
     birth_year: Optional[int] = None,
 ) -> list[dict]:
     """Return per-level pitching stints for a player.
@@ -427,7 +427,7 @@ def generate_prospect_blurbs(
     db: Session,
     profiles: list[ProspectProfile],
     api_key: Optional[str],
-    season: int = 2025,
+    season: int = 2026,
 ) -> int:
     """Generate keeper-context blurbs for prospects with new/changed PAV scores.
 
@@ -489,7 +489,7 @@ def generate_prospect_blurbs(
         prompt = (
             f"Write a 2–3 sentence keeper-league fantasy baseball scouting note for "
             f"{player.name} ({player.team} · MiLB, {positions}, age {age}).\n\n"
-            f"2025 {pitcher_word} stats: {stat_summary}\n"
+            f"{season} {pitcher_word} stats: {stat_summary}\n"
             f"Prospect info: #{pp.pipeline_rank or '?'} in our system, "
             f"PAV score {pp.pav_score:.1f}/100, proxy rank #{pp.proxy_mlb_rank}, "
             f"ETA situation: {pp.eta_situation}, year {years_pro} pro.\n\n"
@@ -533,7 +533,7 @@ def generate_prospect_blurbs(
 
 def sync_prospect_data(
     db: Session,
-    season: int = 2025,
+    season: int = 2026,
     api_key: Optional[str] = None,
 ) -> dict:
     """Full prospect sync: fetch MiLB stats → compute PAV → upsert DB.

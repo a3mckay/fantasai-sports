@@ -21,7 +21,7 @@ class Ranking(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.player_id"))
     ranking_type: Mapped[str] = mapped_column(String(20))  # "lookback" or "predictive"
-    period: Mapped[str] = mapped_column(String(30))  # e.g. "2025-W12", "2025-season"
+    period: Mapped[str] = mapped_column(String(30))  # e.g. "2026-W12", "2026-season"
     overall_rank: Mapped[int] = mapped_column(Integer)
     position_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     score: Mapped[float] = mapped_column(Float)

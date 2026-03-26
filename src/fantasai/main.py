@@ -58,7 +58,7 @@ def _nightly_stats_refresh() -> None:
 
     db = SessionLocal()
     try:
-        count = sync_current_season_stats(db, season=2025)
+        count = sync_current_season_stats(db, season=2026)
         _log.info("Nightly refresh: upserted %d stat rows", count)
 
         # Clear rankings cache so next request recomputes with fresh data

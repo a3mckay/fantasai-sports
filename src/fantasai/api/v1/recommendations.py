@@ -130,7 +130,7 @@ def _compute_rankings(
     and horizon so that different horizon requests are cached independently.
 
     When ranking_type == "current", computes YTD (current-season) lookback
-    rankings using 2025 actual stats and returns (current_rankings, []).
+    rankings using 2026 actual stats and returns (current_rankings, []).
 
     Returns (lookback, predictive) or ([], []) if no data.
     """
@@ -144,7 +144,7 @@ def _compute_rankings(
         from fantasai.models.player import Player
 
         stats_rows = db.query(PlayerStats).filter(
-            PlayerStats.season == 2025,
+            PlayerStats.season == 2026,
             PlayerStats.stat_type.in_(["batting", "pitching"]),
             PlayerStats.week.is_(None),
         ).all()
@@ -190,7 +190,7 @@ def _compute_rankings(
 
         adapter = MLBAdapter()
         engine = ScoringEngine(adapter, categories)
-        current_rankings = engine.compute_lookback_rankings(2025, players=players)
+        current_rankings = engine.compute_lookback_rankings(2026, players=players)
 
         # Deduplicate two-way players (keep higher-scoring entry)
         seen: dict = {}
@@ -213,9 +213,9 @@ def _compute_rankings(
     from fantasai.adapters.mlb import MLBAdapter
     from fantasai.models.player import Player
 
-    # ── Load 2025 YTD actual stats ──────────────────────────────────────────
+    # ── Load 2026 YTD actual stats ──────────────────────────────────────────
     stats_rows = db.query(PlayerStats).filter(
-        PlayerStats.season == 2025,
+        PlayerStats.season == 2026,
         PlayerStats.stat_type.in_(["batting", "pitching"]),
     ).all()
 
@@ -253,7 +253,7 @@ def _compute_rankings(
     # ── Load 2026 Steamer projections as the forward-looking talent signal ──
     # These replace the homegrown xStats-derived talent estimates in the
     # predictive blend, giving better age-curve / role-context signals.
-    # Also include Steamer-only players (prospects / MiLB) who have no 2025
+    # Also include Steamer-only players (prospects / MiLB) who have no 2026
     # YTD rows — they participate in predictive rankings only.
     steamer_rows = db.query(PlayerStats).filter(
         PlayerStats.season == 2026,
@@ -288,7 +288,7 @@ def _compute_rankings(
         )
         steamer_lookup[stats.player_id] = nd
         # Add Steamer-only players (prospects) to the predictive player pool.
-        # They have no 2025 YTD actuals — the projection functions will fall
+        # They have no 2026 YTD actuals — the projection functions will fall
         # back entirely to the Steamer talent signal.
         if stats.player_id not in ytd_player_ids:
             players.append(nd)
@@ -315,9 +315,9 @@ def _compute_rankings(
 
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
-    lookback = engine.compute_lookback_rankings(2025, players=players)
+    lookback = engine.compute_lookback_rankings(2026, players=players)
     predictive = engine.compute_predictive_rankings(
-        2025, players=players, horizon=horizon, steamer_lookup=steamer_lookup,
+        2026, players=players, horizon=horizon, steamer_lookup=steamer_lookup,
     )
 
     # Store non-deduped (raw) rankings before deduplication so the rankings
@@ -371,7 +371,7 @@ def _compute_projection_rankings(
 
     The 2026 consensus rows serve as BOTH the player pool and the steamer_lookup
     (talent signal) so the blend reduces to the projection values directly — there
-    are no 2025 YTD actuals to mix in.
+    are no 2026 YTD actuals to mix in.
 
     Falls back to an empty list if no projection rows are found for the given
     season (caller should then fall back to _compute_rankings predictive).
@@ -494,12 +494,12 @@ def _inject_prospect_rankings(
     # field mutations here don't corrupt the shared _RANKINGS_CACHE entries.
     working: list = [_dc.replace(r, is_prospect=False, pav_score=None) for r in rankings]
 
-    # Build a set of player_ids that have 2025 ACTUAL stats in our DB.
-    # True MiLB prospects like Griffin only have 2026 projection data.
-    # Established MLB players (Henderson, Moreno, etc.) have 2025 actuals.
-    players_with_2025_stats: set[int] = {
+    # Build a set of player_ids that have 2026 ACTUAL stats in our DB.
+    # True MiLB prospects only have 2026 Steamer projection data (season=2026, week=None via steamer).
+    # Established MLB players (Henderson, Soto, etc.) will have 2026 YTD actuals once synced.
+    players_with_2026_stats: set[int] = {
         pid for (pid,) in db.query(PlayerStats.player_id)
-        .filter(PlayerStats.season == 2025, PlayerStats.week.is_(None))
+        .filter(PlayerStats.season == 2026, PlayerStats.week.is_(None))
         .distinct()
         .all()
     }
@@ -518,10 +518,10 @@ def _inject_prospect_rankings(
         proxy = pp.proxy_mlb_rank or 999
         if player.player_id in existing_by_id:
             # Already in MLB rankings (has FanGraphs projections).
-            # Only tag as a prospect if they lack 2025 actual stats (i.e. they
+            # Only tag as a prospect if they lack 2026 actual stats (i.e. they
             # haven't played meaningful MLB time yet) and PAV is substantive.
             if (
-                player.player_id not in players_with_2025_stats
+                player.player_id not in players_with_2026_stats
                 and (pp.pav_score or 0) >= 30.0
             ):
                 existing = existing_by_id[player.player_id]
@@ -564,7 +564,7 @@ def _inject_prospect_rankings(
 def _fetch_rolling_windows_map(
     db: Session,
     player_ids: list[int],
-    season: int = 2025,
+    season: int = 2026,
     windows: list[int] | None = None,
 ) -> dict[int, dict[str, dict[str, float]]]:
     """Build the rolling_windows_map for a set of player IDs.

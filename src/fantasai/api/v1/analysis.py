@@ -450,7 +450,7 @@ def compare_players_endpoint(
         db.query(PlayerStats)
         .filter(
             PlayerStats.player_id.in_(body.player_ids),
-            PlayerStats.season == 2025,
+            PlayerStats.season == 2026,
         )
         .all()
     )

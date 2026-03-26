@@ -25,13 +25,13 @@ RANKINGS_DEFAULT_CATEGORIES = [
 ]
 
 # Period label used when storing / looking up pre-generated blurbs.
-CURRENT_PERIOD = "2025-season"
+CURRENT_PERIOD = "2026-season"
 
 
 @router.get("", response_model=list[PlayerRankingRead])
 def list_rankings(
     ranking_type: Optional[str] = Query(default="lookback", pattern="^(lookback|predictive|current)$"),
-    season: int = Query(default=2025),
+    season: int = Query(default=2026),
     horizon: str = Query(
         default="season",
         pattern="^(week|month|season)$",
@@ -54,16 +54,16 @@ def list_rankings(
     - ``month`` — projects ~100 PA / 28 IP; 80% talent signal
     - ``season`` — projects Rest of Season volume; 50% talent signal (default)
 
-    The ``current`` ranking_type returns YTD stats-based rankings (season=2025 actuals only).
+    The ``current`` ranking_type returns YTD stats-based rankings (season=2026 actuals only).
     """
     from fantasai.models.ranking import Ranking
 
     proj_horizon = ProjectionHorizon(horizon)
 
     # Re-use the shared cache for the current season (fast path).
-    # For historical seasons the cache is keyed on 2025, so fall through to a
+    # For historical seasons the cache is keyed on 2026, so fall through to a
     # fresh uncached query — this path is only hit in tests / edge cases.
-    _CACHED_SEASON = 2025
+    _CACHED_SEASON = 2026
     if ranking_type == "current" and season == _CACHED_SEASON:
         from fantasai.api.v1.recommendations import _compute_rankings
         current_rankings, _ = _compute_rankings(
@@ -309,13 +309,13 @@ def clear_rankings_cache() -> dict:
 
 @router.post("/sync-current-stats", tags=["admin"])
 def sync_current_stats(
-    season: int = Query(default=2025, ge=2020, le=2030),
+    season: int = Query(default=2026, ge=2020, le=2030),
     db: Session = Depends(get_db),
 ) -> dict:
     """Fetch current-season YTD stats from FanGraphs and upsert into player_stats.
 
     Runs the same logic as the nightly APScheduler job.  Call this once after
-    deployment to backfill the current 2025 season, or any time you need fresh
+    deployment to backfill the current 2026 season, or any time you need fresh
     data immediately without waiting for the scheduled run.
 
     Clears the rankings cache so the next request reflects the new stats.
@@ -340,7 +340,7 @@ def sync_current_stats(
 
 @router.post("/sync-prospects", tags=["admin"])
 def sync_prospects(
-    season: int = Query(default=2025),
+    season: int = Query(default=2026),
     db: Session = Depends(get_db),
 ) -> dict:
     """Fetch MiLB stats from the MLB Stats API, compute PAV scores, and

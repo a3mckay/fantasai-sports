@@ -377,7 +377,7 @@ export default function Rankings() {
       {/* ── Current Season context note ── */}
       {mode === 'current' && (
         <p className="text-xs text-slate-500">
-          Rankings based on 2025 season stats accumulated to date. Players with zero plate appearances or innings are excluded.
+          Rankings based on 2026 season stats accumulated to date. Players with zero plate appearances or innings are excluded.
         </p>
       )}
 

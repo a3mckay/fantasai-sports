@@ -389,8 +389,8 @@ def sync_steamer_projections(
     players not covered by the consensus systems.
 
     Stores projections as PlayerStats rows with the given season so that
-    keeper-evaluation queries can prefer forward-looking data (season=2026)
-    over current-year actuals (season=2025).
+    keeper-evaluation queries can prefer forward-looking data (season=2027+)
+    over current-year actuals (season=2026).
 
     Creates Player rows for any projection player who isn't already in the DB.
     Existing Player rows are never downgraded (birth_year stays as-is).
@@ -451,7 +451,7 @@ def sync_steamer_projections(
     return succeeded
 
 
-def sync_current_season_stats(db: Session, season: int = 2025) -> int:
+def sync_current_season_stats(db: Session, season: int = 2026) -> int:
     """Fetch current-season stats from FanGraphs via pybaseball and upsert to DB.
 
     Fetches all batters (qual=0) and all pitchers (qual=0) for the given
