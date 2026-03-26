@@ -8,14 +8,26 @@ Weights
 -------
 1.0   — assigned to an active slot (starts every game)
 0.0   — on the IL/IL+/NA slot (cannot contribute)
-0.30  — first bench-overflow batter  (~30% utilisation via rest-day fill-ins)
-0.12  — second bench-overflow batter (~12%)
-0.05  — third+ bench overflow        (~5%)
-0.40  — first bench-overflow SP      (streaming/rotation is common)
-0.15  — second bench-overflow SP
-0.25  — first bench-overflow RP
-0.10  — second bench-overflow RP
-0.05  — third+ any bench overflow
+
+Batters (bench overflow)
+  0.30 — 1st overflow: fills in on rest days (~21% rest rate × ~4 eligible slots)
+  0.12 — 2nd overflow: rarely gets a spot
+  0.05 — 3rd+ overflow: essentially a stash
+
+SPs (bench overflow)
+  SPs only pitch 1-2x per week regardless. In daily-change leagues a manager
+  simply slots them in on their start day — the bench label costs far less than
+  it does for a batter. The 1st bench SP captures ~70% of their normal starts.
+  0.70 — 1st overflow SP
+  0.40 — 2nd overflow SP (still gets rotation time for good matchups)
+  0.15 — 3rd+ overflow SP
+
+RPs (bench overflow)
+  Similar reasoning to SP — RPs appear 3-5x/week and managers slot them in
+  daily when they have saves/holds opportunities.
+  0.50 — 1st overflow RP
+  0.22 — 2nd overflow RP
+  0.08 — 3rd+ overflow RP
 
 Non-IL injured players (DTD, Q, O) receive an additional multiplier on top
 of their slot weight.
@@ -34,8 +46,8 @@ NON_ACTIVE  = IL_SLOTS | BENCH_SLOTS
 
 # Bench utilisation weights by player type and overflow depth (0-indexed)
 _BATTER_BENCH = [0.30, 0.12, 0.05]
-_SP_BENCH     = [0.40, 0.15, 0.05]
-_RP_BENCH     = [0.25, 0.10, 0.05]
+_SP_BENCH     = [0.70, 0.40, 0.15]
+_RP_BENCH     = [0.50, 0.22, 0.08]
 
 # Yahoo injury-status → active-play multiplier
 INJURY_MULTIPLIERS: dict[str, float] = {
