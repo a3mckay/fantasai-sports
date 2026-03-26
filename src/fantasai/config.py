@@ -16,9 +16,8 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 class Settings(BaseSettings):
     database_url: str = "sqlite:///fantasai.db"
     anthropic_api_key: str = ""
-    odds_api_key: str = ""
+    the_odds_api_key: str = ""   # The Odds API — Vegas game totals for This Week rankings
     openweather_api_key: str = ""
-    the_odds_api_key: str = ""
     env: Literal["development", "staging", "production"] = "development"
     log_level: str = "INFO"
     # Comma-separated list of allowed CORS origins.
