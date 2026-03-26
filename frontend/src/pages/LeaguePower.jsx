@@ -25,6 +25,10 @@ const TIER_CFG = {
 function computeLeaguePercentiles(powerRankings) {
   const n = powerRankings.length
   if (n === 0) return {}
+  // Divide by (n-1) so the best team reaches 100% and maps to rank 1.
+  // Dividing by n caps the top team at (n-1)/n ≈ 92%, which the rank
+  // formula rounds to 2nd — meaning 1st place is never reachable.
+  const denom = Math.max(1, n - 1)
   const allCats = Object.keys(powerRankings[0]?.category_strengths || {})
   const result = {}
   for (const snap of powerRankings) {
@@ -32,7 +36,7 @@ function computeLeaguePercentiles(powerRankings) {
     for (const cat of allCats) {
       const myScore = snap.category_strengths[cat] ?? -Infinity
       const below   = powerRankings.filter(t => (t.category_strengths[cat] ?? -Infinity) < myScore).length
-      pcts[cat] = Math.round((below / n) * 100)
+      pcts[cat] = Math.round((below / denom) * 100)
     }
     result[snap.team_id] = pcts
   }
