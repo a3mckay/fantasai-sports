@@ -41,22 +41,25 @@ function displayPositions(player) {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function TrendIcon({ current, prior }) {
-  if (prior == null) return <Minus size={12} className="text-slate-600" />
-  const diff = prior - current // lower rank = better → positive diff = improved
-  if (diff > 5)  return <TrendingUp   size={12} className="text-field-400"  />
-  if (diff < -5) return <TrendingDown size={12} className="text-stitch-400" />
+/**
+ * Render a movement arrow + delta badge.
+ * delta > 0 = moved up (lower rank number = better)
+ * delta < 0 = moved down
+ */
+function TrendIcon({ delta }) {
+  if (delta == null) return <Minus size={12} className="text-slate-600" />
+  if (delta > 5)  return <TrendingUp   size={12} className="text-field-400"  />
+  if (delta < -5) return <TrendingDown size={12} className="text-stitch-400" />
   return <Minus size={12} className="text-slate-500" />
 }
 
-function TrendBadge({ current, prior }) {
-  if (prior == null) return <span className="text-slate-600 text-xs font-mono">—</span>
-  const diff = prior - current
-  if (diff === 0) return <span className="text-slate-600 text-xs font-mono">—</span>
-  const cls = diff > 0 ? 'text-field-400' : 'text-stitch-400'
+function TrendBadge({ delta }) {
+  if (delta == null) return <span className="text-slate-600 text-xs font-mono">—</span>
+  if (delta === 0)   return <span className="text-slate-600 text-xs font-mono">—</span>
+  const cls = delta > 0 ? 'text-field-400' : 'text-stitch-400'
   return (
     <span className={`text-xs font-mono ${cls}`}>
-      {diff > 0 ? '+' : ''}{diff}
+      {delta > 0 ? '+' : ''}{delta}
     </span>
   )
 }
@@ -96,10 +99,15 @@ function Blurb({ text }) {
 // Main component
 // ---------------------------------------------------------------------------
 
+const MODE_OPTIONS = [
+  { val: 'predictive', label: 'Projected'       },
+  { val: 'current',    label: 'Current Season'  },
+]
+
 const HORIZON_OPTIONS = [
-  { val: 'week',   label: 'This Week'    },
-  { val: 'month',  label: 'This Month'   },
-  { val: 'season', label: 'Full Season'  },
+  { val: 'week',   label: 'This Week'      },
+  { val: 'month',  label: 'This Month'     },
+  { val: 'season', label: 'Rest of Season' },
 ]
 
 export default function Rankings() {
@@ -115,7 +123,6 @@ export default function Rankings() {
     }
   }
 
-
   const [mode, setMode]             = useState('predictive')
   const [horizon, setHorizon]       = useState('season')
   const [posFilter, setPosFilter]   = useState('All')
@@ -126,20 +133,28 @@ export default function Rankings() {
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState(null)
   const [predictive, setPredictive] = useState(null)
-  const [lookback, setLookback]     = useState(null)
+  const [lookback, setLookback]     = useState(null)    // used as comparison baseline for Projected mode
+  const [current, setCurrent]       = useState(null)    // Current Season YTD stats rankings
   const [expandedRows, setExpandedRows] = useState(new Set())
   const [showBackTop, setShowBackTop]   = useState(false)
   const searchRef     = useRef(null)
   const initialRender = useRef(true)
 
-  useEffect(() => { fetchBoth() }, [])
+  useEffect(() => { fetchAll() }, [])
 
   // Re-fetch predictive when horizon changes; skip the initial render since
-  // fetchBoth already fetches the default horizon on mount.
+  // fetchAll already fetches the default horizon on mount.
   useEffect(() => {
     if (initialRender.current) { initialRender.current = false; return }
     fetchPredictive(horizon)
   }, [horizon])
+
+  // Fetch current-season rankings lazily when switching to that mode
+  useEffect(() => {
+    if (mode === 'current' && current === null) {
+      fetchCurrent()
+    }
+  }, [mode])
 
   // Reset to first page whenever filters change
   useEffect(() => { setPageSize(50) }, [mode, posFilter, levelFilter, rosterFilter, search, horizon])
@@ -164,7 +179,20 @@ export default function Rankings() {
     }
   }
 
-  async function fetchBoth() {
+  async function fetchCurrent() {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await getRankings({ ranking_type: 'current', limit: 400 })
+      setCurrent(Array.isArray(res) ? res : (res.rankings || res))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function fetchAll() {
     setLoading(true)
     setError(null)
     try {
@@ -181,20 +209,37 @@ export default function Rankings() {
     }
   }
 
-  // Rank-lookup maps for cross-referencing. Use player_id+stat_type as key
-  // so two-way players (e.g. Ohtani batting vs pitching) are tracked separately.
+  async function handleRefresh() {
+    if (mode === 'current') {
+      await fetchCurrent()
+    } else {
+      await fetchAll()
+    }
+  }
+
+  // Rank-lookup maps for cross-referencing (Projected mode: compare against lookback).
+  // Use player_id+stat_type as key so two-way players are tracked separately.
   const rowKey  = p => `${p.player_id}_${p.stat_type}`
-  const predMap = {}
   const lookMap = {}
-  if (predictive) predictive.forEach(p => { predMap[rowKey(p)] = p.overall_rank })
-  if (lookback)   lookback.forEach(p   => { lookMap[rowKey(p)] = p.overall_rank  })
+  if (lookback) lookback.forEach(p => { lookMap[rowKey(p)] = p.overall_rank })
 
-  const activeList = mode === 'predictive' ? predictive : lookback
+  const activeList = mode === 'current' ? current : predictive
 
-  function getPriorRank(player) {
-    return mode === 'predictive'
-      ? (lookMap[rowKey(player)] ?? null)
-      : (predMap[rowKey(player)] ?? null)
+  /**
+   * Compute rank delta for a player.
+   *
+   * Priority:
+   *   1. rank_delta from API (snapshot-based, day-over-day for Current, week-over-week for Projected)
+   *   2. Cross-reference: Projected mode compares projected rank against lookback (YTD-style) rank
+   */
+  function getRankDelta(player) {
+    if (player.rank_delta != null) return player.rank_delta
+    // Fallback: compare projected rank vs lookback rank
+    if (mode === 'predictive') {
+      const prior = lookMap[rowKey(player)]
+      return prior != null ? prior - player.overall_rank : null
+    }
+    return null
   }
 
   function toggleRow(key) {
@@ -241,6 +286,9 @@ export default function Rankings() {
     ? filtered
     : filtered.slice(0, pageSize)
 
+  // Trend column header text
+  const trendHeader = mode === 'current' ? '↕ Yesterday' : '↕ vs YTD'
+
   return (
     <div className="space-y-5">
 
@@ -251,17 +299,14 @@ export default function Rankings() {
           <h1 className="text-2xl font-bold text-white">Player Rankings</h1>
         </div>
         <p className="text-slate-500 text-sm">
-          Top 400 players ranked by fantasy value. Compare current performance vs projected outlook.
+          Top 400 players ranked by fantasy value. Switch between projected outlook and current-season stats.
         </p>
       </div>
 
       {/* ── Mode toggle + Search + Refresh ── */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex gap-2 shrink-0">
-          {[
-            { val: 'predictive', label: 'Projected' },
-            { val: 'lookback',   label: 'Current'   },
-          ].map(({ val, label }) => (
+          {MODE_OPTIONS.map(({ val, label }) => (
             <button
               key={val}
               onClick={() => setMode(val)}
@@ -298,7 +343,7 @@ export default function Rankings() {
         </div>
 
         <button
-          onClick={fetchBoth}
+          onClick={handleRefresh}
           disabled={loading}
           className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-200 transition-colors shrink-0"
         >
@@ -327,6 +372,13 @@ export default function Rankings() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* ── Current Season context note ── */}
+      {mode === 'current' && (
+        <p className="text-xs text-slate-500">
+          Rankings based on 2025 season stats accumulated to date. Players with zero plate appearances or innings are excluded.
+        </p>
       )}
 
       {/* ── Position filter pills ── */}
@@ -413,7 +465,7 @@ export default function Rankings() {
               <tr className="text-[10px] text-slate-500 uppercase tracking-wider">
                 <th className="py-2.5 pl-4 pr-2 text-right w-10">#</th>
                 <th className="py-2.5 px-2 text-center w-12 hidden sm:table-cell">
-                  {mode === 'predictive' ? '↕ vs Current' : '↕ vs Proj.'}
+                  {trendHeader}
                 </th>
                 <th className="py-2.5 px-3 text-left">Player</th>
                 <th className="py-2.5 px-2 text-center w-16">Pos</th>
@@ -424,7 +476,7 @@ export default function Rankings() {
             <tbody>
               {displayed.map(player => {
                 const key        = rowKey(player)
-                const priorRank  = getPriorRank(player)
+                const delta      = getRankDelta(player)
                 const isExpanded = expandedRows.has(key)
                 const hasCats    = Object.keys(player.category_contributions || {}).length > 0
                 return (
@@ -440,8 +492,8 @@ export default function Rankings() {
                     {/* Trend */}
                     <td className="py-3 px-2 text-center hidden sm:table-cell align-top pt-3.5">
                       <div className="flex items-center justify-center gap-1">
-                        <TrendIcon current={player.overall_rank} prior={priorRank} />
-                        <TrendBadge current={player.overall_rank} prior={priorRank} />
+                        <TrendIcon delta={delta} />
+                        <TrendBadge delta={delta} />
                       </div>
                     </td>
 
