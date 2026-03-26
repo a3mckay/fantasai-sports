@@ -18,9 +18,9 @@ SPs (bench overflow)
   SPs only pitch 1-2x per week regardless. In daily-change leagues a manager
   simply slots them in on their start day — the bench label costs far less than
   it does for a batter. The 1st bench SP captures ~70% of their normal starts.
-  0.70 — 1st overflow SP
-  0.40 — 2nd overflow SP (still gets rotation time for good matchups)
-  0.15 — 3rd+ overflow SP
+  0.90 — 1st overflow SP (manager nearly always slots them in on start day)
+  0.70 — 2nd overflow SP (still gets most starts; skipped only on scheduling conflicts)
+  0.40 — 3rd+ overflow SP
 
 RPs (bench overflow)
   Similar reasoning to SP — RPs appear 3-5x/week and managers slot them in
@@ -46,7 +46,7 @@ NON_ACTIVE  = IL_SLOTS | BENCH_SLOTS
 
 # Bench utilisation weights by player type and overflow depth (0-indexed)
 _BATTER_BENCH = [0.30, 0.12, 0.05]
-_SP_BENCH     = [0.70, 0.40, 0.15]
+_SP_BENCH     = [0.90, 0.70, 0.40]
 _RP_BENCH     = [0.50, 0.22, 0.08]
 
 # Yahoo injury-status → active-play multiplier
