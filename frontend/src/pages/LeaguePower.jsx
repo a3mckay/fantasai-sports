@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Zap, Crown, RefreshCw } from 'lucide-react'
+import { Zap, Crown, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
 import { leaguePower } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -12,9 +12,9 @@ import { useLeague } from '../contexts/LeagueContext'
 const TIER_ORDER = ['contender', 'middle', 'rebuilding']
 
 const TIER_CFG = {
-  contender:  { label: 'Contenders',  dividerColor: 'text-field-400',    lineColor: 'bg-field-800/60'  },
-  middle:     { label: 'Middle Pack', dividerColor: 'text-leather-400',  lineColor: 'bg-navy-600'      },
-  rebuilding: { label: 'Rebuilding',  dividerColor: 'text-slate-500',    lineColor: 'bg-navy-700'      },
+  contender:  { label: 'Contenders',  labelColor: 'text-field-300',    bgColor: 'bg-field-900/50',       dotColor: 'bg-field-500'   },
+  middle:     { label: 'Middle Pack', labelColor: 'text-leather-300',  bgColor: 'bg-leather-500/10',     dotColor: 'bg-leather-400' },
+  rebuilding: { label: 'Rebuilding',  labelColor: 'text-slate-400',    bgColor: 'bg-navy-800/80',        dotColor: 'bg-slate-600'   },
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -49,15 +49,19 @@ function timeAgo(date) {
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
-function TierDivider({ tier }) {
-  const cfg = TIER_CFG[tier] || { label: tier, dividerColor: 'text-slate-500', lineColor: 'bg-navy-700' }
+function TierDivider({ tier, count }) {
+  const cfg = TIER_CFG[tier] || { label: tier, labelColor: 'text-slate-400', bgColor: 'bg-navy-800', dotColor: 'bg-slate-600' }
   return (
-    <div className="flex items-center gap-3 py-1">
-      <div className={`flex-1 h-px ${cfg.lineColor}`} />
-      <span className={`text-[10px] font-bold uppercase tracking-widest shrink-0 ${cfg.dividerColor}`}>
+    <div className={`flex items-center gap-2.5 px-3 py-2 rounded-lg mt-3 mb-1 ${cfg.bgColor}`}>
+      <div className={`w-1.5 h-3.5 rounded-full shrink-0 ${cfg.dotColor}`} />
+      <span className={`text-xs font-bold uppercase tracking-widest ${cfg.labelColor}`}>
         {cfg.label}
       </span>
-      <div className={`flex-1 h-px ${cfg.lineColor}`} />
+      {count != null && (
+        <span className={`text-[10px] ${cfg.labelColor} opacity-50`}>
+          · {count} team{count !== 1 ? 's' : ''}
+        </span>
+      )}
     </div>
   )
 }
@@ -100,9 +104,14 @@ function TeamRow({ snap, rank, isWinner, isMine, leaguePcts, numTeams }) {
         {hasCats && (
           <button
             onClick={() => setExpanded(v => !v)}
-            className="text-slate-600 hover:text-slate-300 text-xs shrink-0 transition-colors"
+            className={`p-1.5 rounded-lg transition-colors shrink-0 ${
+              expanded
+                ? 'text-field-400 bg-field-900/40 hover:bg-field-900/60'
+                : 'text-slate-500 hover:text-slate-200 hover:bg-navy-700'
+            }`}
+            aria-label={expanded ? 'Collapse category breakdown' : 'Expand category breakdown'}
           >
-            {expanded ? 'less' : 'more'}
+            {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
           </button>
         )}
       </div>
@@ -165,13 +174,16 @@ export default function LeaguePower() {
     ? computeLeaguePercentiles(result.power_rankings)
     : {}
 
-  // Build tier map: team_id → tier name
+  // Build tier map: team_id → tier name, and count per tier
   const tierMap = {}
+  const tierCounts = {}
   Object.entries(result?.tiers || {}).forEach(([tier, ids]) => {
+    tierCounts[tier] = ids.length
     ids.forEach(id => { tierMap[id] = tier })
   })
 
-  const numTeams = result?.power_rankings.length ?? 12
+  // Use league.num_teams as the authoritative team count for rank display
+  const numTeams = league?.num_teams || result?.power_rankings.length || 12
 
   // Render ranked list with inline tier dividers
   let lastTier = null
@@ -181,7 +193,7 @@ export default function LeaguePower() {
     if (tier) lastTier = tier
     return (
       <div key={snap.team_id}>
-        {showDivider && <TierDivider tier={tier} />}
+        {showDivider && <TierDivider tier={tier} count={tierCounts[tier]} />}
         <TeamRow
           snap={snap}
           rank={i + 1}
