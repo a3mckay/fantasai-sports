@@ -5,6 +5,7 @@ import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import Blurb from '../components/Blurb'
 import CategoryStrengthBar from '../components/CategoryStrengthBar'
+import CategoryPills from '../components/CategoryPills'
 import { useLeague } from '../contexts/LeagueContext'
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -71,22 +72,9 @@ function TierDivider({ tier, count }) {
   )
 }
 
-function pillsFromPercentiles(leaguePcts) {
-  // Derive strong/weak pills from within-league percentiles (same data as bar chart)
-  // so pills are always consistent with expanded view. Strong = top 30% (≥70th),
-  // weak = bottom 30% (≤30th). Falls back to empty arrays if no pct data.
-  const entries = Object.entries(leaguePcts || {}).filter(([c]) => !SKIP_CATS.has(c))
-  const strong = entries.filter(([, p]) => p >= 70).sort((a, b) => b[1] - a[1]).map(([c]) => c)
-  const weak   = entries.filter(([, p]) => p <= 30).sort((a, b) => a[1] - b[1]).map(([c]) => c)
-  return { strong, weak }
-}
-
 function TeamRow({ snap, rank, isWinner, isMine, leaguePcts, numTeams }) {
   const [expanded, setExpanded] = useState(false)
   const hasCats = leaguePcts && Object.keys(leaguePcts).length > 0
-  const { strong: strongCats, weak: weakCats } = hasCats
-    ? pillsFromPercentiles(leaguePcts)
-    : { strong: snap.strong_cats.filter(c => !SKIP_CATS.has(c)), weak: snap.weak_cats.filter(c => !SKIP_CATS.has(c)) }
 
   return (
     <div className={`p-4 rounded-xl border transition-colors ${
@@ -107,14 +95,12 @@ function TeamRow({ snap, rank, isWinner, isMine, leaguePcts, numTeams }) {
             )}
             <span className="ml-auto font-mono text-sm text-field-400">{snap.power_score.toFixed(2)}</span>
           </div>
-          <div className="flex flex-wrap gap-1 mt-1.5">
-            {strongCats.slice(0, 4).map(c => (
-              <span key={c} className="stat-pill bg-field-900 text-field-300 text-[10px]">{c} ▲</span>
-            ))}
-            {weakCats.slice(0, 3).map(c => (
-              <span key={c} className="stat-pill bg-red-950/50 text-red-400 text-[10px]">{c} ▼</span>
-            ))}
-          </div>
+          <CategoryPills
+            percentiles={hasCats ? leaguePcts : null}
+            strongCats={snap.strong_cats}
+            weakCats={snap.weak_cats}
+            className="mt-1.5"
+          />
           {snap.top_players.length > 0 && (
             <p className="text-xs text-slate-500 mt-1">Top: {snap.top_players.join(', ')}</p>
           )}

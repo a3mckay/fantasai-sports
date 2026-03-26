@@ -9,6 +9,7 @@ import ContextInput from '../components/ContextInput'
 import Blurb from '../components/Blurb'
 import ProsCons from '../components/ProsCons'
 import CategoryStrengthBar from '../components/CategoryStrengthBar'
+import CategoryPills from '../components/CategoryPills'
 import RadarChart from '../components/RadarChart'
 import PlayerSearch from '../components/PlayerSearch'
 import LeagueSettings from '../components/LeagueSettings'
@@ -429,14 +430,12 @@ export default function TeamEval() {
               {evaluatedTeamName && (
                 <div className="text-xs text-slate-500 mt-0.5">{evaluatedTeamName}</div>
               )}
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                {result.strong_categories.map(c => (
-                  <span key={c} className="stat-pill bg-field-900 text-field-300">{c} ▲</span>
-                ))}
-                {result.weak_categories.map(c => (
-                  <span key={c} className="stat-pill bg-red-950/50 text-red-400">{c} ▼</span>
-                ))}
-              </div>
+              <CategoryPills
+                percentiles={result.league_category_percentiles || null}
+                strongCats={result.strong_categories}
+                weakCats={result.weak_categories}
+                className="mt-2"
+              />
             </div>
           </div>
 
