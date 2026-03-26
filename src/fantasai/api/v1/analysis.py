@@ -1035,27 +1035,27 @@ def _generate_league_power_blurb(
 
     try:
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
-        lines.append("League Power Rankings:")
-        for i, snap in enumerate(report.power_rankings[:10], 1):
+        lines.append("League Power Rankings (predictive roster strength):")
+        for i, snap in enumerate(report.power_rankings, 1):
+            weak_str = (", ".join(snap.weak_cats[:2])) if snap.weak_cats else "none"
             lines.append(
                 f"  #{i} {snap.team_name} (power={snap.power_score:.2f}) | "
-                f"strong={', '.join(snap.strong_cats[:3])}"
+                f"strong={', '.join(snap.strong_cats[:3])} | weak={weak_str}"
             )
         lines.append("")
         lines.append("Tiers:")
         for tier, ids in tiers.items():
             names = [team_names.get(tid, str(tid)) for tid in ids]
             lines.append(f"  {tier.capitalize()}: {', '.join(names)}")
-        if report.trade_opportunities:
-            lines.append("")
-            lines.append("Top trade opportunities:")
-            for opp in report.trade_opportunities[:3]:
-                lines.append(f"  {opp.rationale}")
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
-            "Write a 4–6 sentence league power rankings summary. Comment on who's dominating, "
-            "which teams are on the bubble, and highlight 1–2 interesting trade pairings."
+            "Write a 4–6 sentence league power rankings narrative. "
+            "Name specific teams when describing each tier — explain WHY each contender is strong "
+            "(which categories they dominate) and WHY rebuilding teams are struggling "
+            "(specific weak spots). Mention which middle-pack teams are closest to breaking into "
+            "the top tier and what's holding them back. "
+            "Do NOT mention trades or trade opportunities — this is a pure power ranking summary."
         )
 
         response = client.messages.create(
@@ -1602,7 +1602,7 @@ def league_power_endpoint(
     return LeaguePowerResponse(
         power_rankings=[_snapshot_to_read(s) for s in report.power_rankings],
         tiers=report.tiers,
-        trade_opportunities=[_trade_opp_to_read(o) for o in report.trade_opportunities],
+        trade_opportunities=[],   # trade surfacing moved to a dedicated feature
         analysis_blurb=blurb,
     )
 

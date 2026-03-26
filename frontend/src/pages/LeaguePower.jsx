@@ -1,26 +1,76 @@
-import { useState } from 'react'
-import { Zap, Play, Crown, ArrowLeftRight, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Zap, Crown, RefreshCw } from 'lucide-react'
 import { leaguePower } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import Blurb from '../components/Blurb'
-import PercentileBar from '../components/PercentileBar'
+import CategoryStrengthBar from '../components/CategoryStrengthBar'
 import { useLeague } from '../contexts/LeagueContext'
 
-const TIER_LABELS = {
-  contender: { label: 'Contenders', color: 'text-field-300 bg-field-950/50 border-field-700' },
-  middle:    { label: 'Middle Pack', color: 'text-leather-300 bg-leather-500/5 border-leather-500/30' },
-  rebuilding:{ label: 'Rebuilding',  color: 'text-slate-400 bg-navy-800 border-navy-600' },
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const TIER_ORDER = ['contender', 'middle', 'rebuilding']
+
+const TIER_CFG = {
+  contender:  { label: 'Contenders',  dividerColor: 'text-field-400',    lineColor: 'bg-field-800/60'  },
+  middle:     { label: 'Middle Pack', dividerColor: 'text-leather-400',  lineColor: 'bg-navy-600'      },
+  rebuilding: { label: 'Rebuilding',  dividerColor: 'text-slate-500',    lineColor: 'bg-navy-700'      },
 }
 
-function TeamRow({ snap, rank, isWinner, isMine }) {
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+/** Compute within-league category percentiles for every team.
+ *  Returns { [team_id]: { [cat]: 0–100 } }
+ */
+function computeLeaguePercentiles(powerRankings) {
+  const n = powerRankings.length
+  if (n === 0) return {}
+  const allCats = Object.keys(powerRankings[0]?.category_strengths || {})
+  const result = {}
+  for (const snap of powerRankings) {
+    const pcts = {}
+    for (const cat of allCats) {
+      const myScore = snap.category_strengths[cat] ?? -Infinity
+      const below   = powerRankings.filter(t => (t.category_strengths[cat] ?? -Infinity) < myScore).length
+      pcts[cat] = Math.round((below / n) * 100)
+    }
+    result[snap.team_id] = pcts
+  }
+  return result
+}
+
+function timeAgo(date) {
+  if (!date) return ''
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins === 1) return '1 min ago'
+  return `${mins} min ago`
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────
+
+function TierDivider({ tier }) {
+  const cfg = TIER_CFG[tier] || { label: tier, dividerColor: 'text-slate-500', lineColor: 'bg-navy-700' }
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <div className={`flex-1 h-px ${cfg.lineColor}`} />
+      <span className={`text-[10px] font-bold uppercase tracking-widest shrink-0 ${cfg.dividerColor}`}>
+        {cfg.label}
+      </span>
+      <div className={`flex-1 h-px ${cfg.lineColor}`} />
+    </div>
+  )
+}
+
+function TeamRow({ snap, rank, isWinner, isMine, leaguePcts, numTeams }) {
   const [expanded, setExpanded] = useState(false)
-  const hasCats = Object.keys(snap.category_strengths || {}).length > 0
+  const hasCats = leaguePcts && Object.keys(leaguePcts).length > 0
+
   return (
     <div className={`p-4 rounded-xl border transition-colors ${
-      isMine    ? 'bg-[#6001d2]/10 border-[#6001d2]/40' :
-      isWinner  ? 'bg-field-950/40 border-field-700' :
-                  'bg-navy-800 border-navy-700'
+      isMine   ? 'bg-[#6001d2]/10 border-[#6001d2]/40' :
+      isWinner ? 'bg-field-950/40 border-field-700'    :
+                 'bg-navy-800 border-navy-700'
     }`}>
       <div className="flex items-center gap-3">
         <span className="font-bold font-mono text-slate-500 text-sm w-6 text-right shrink-0">{rank}</span>
@@ -28,7 +78,11 @@ function TeamRow({ snap, rank, isWinner, isMine }) {
           <div className="flex items-center gap-2 flex-wrap">
             {isWinner && <Crown size={13} className="text-yellow-400 shrink-0" />}
             <span className="font-semibold text-white">{snap.team_name}</span>
-            {isMine && <span className="text-[10px] font-semibold text-[#6001d2] bg-[#6001d2]/10 border border-[#6001d2]/30 rounded px-1.5 py-0.5">Your team</span>}
+            {isMine && (
+              <span className="text-[10px] font-semibold text-[#6001d2] bg-[#6001d2]/10 border border-[#6001d2]/30 rounded px-1.5 py-0.5">
+                Your team
+              </span>
+            )}
             <span className="ml-auto font-mono text-sm text-field-400">{snap.power_score.toFixed(2)}</span>
           </div>
           <div className="flex flex-wrap gap-1 mt-1.5">
@@ -46,75 +100,110 @@ function TeamRow({ snap, rank, isWinner, isMine }) {
         {hasCats && (
           <button
             onClick={() => setExpanded(v => !v)}
-            className="text-slate-600 hover:text-slate-300 text-xs shrink-0"
+            className="text-slate-600 hover:text-slate-300 text-xs shrink-0 transition-colors"
           >
             {expanded ? 'less' : 'more'}
           </button>
         )}
       </div>
+
       {expanded && hasCats && (
-        <div className="mt-3">
-          <PercentileBar data={snap.category_strengths} />
+        <div className="mt-4 pt-3 border-t border-navy-700">
+          <CategoryStrengthBar
+            data={leaguePcts}
+            numTeams={numTeams}
+            asPercentiles={true}
+          />
         </div>
       )}
     </div>
   )
 }
 
-function TierSection({ tier, teamIds, snapshots, myTeamId }) {
-  const cfg = TIER_LABELS[tier] || { label: tier, color: 'text-slate-400 bg-navy-800 border-navy-600' }
-  const tierSnaps = teamIds
-    .map(id => snapshots.find(s => s.team_id === id))
-    .filter(Boolean)
-  if (!tierSnaps.length) return null
-  return (
-    <div>
-      <span className={`inline-block text-xs font-semibold rounded px-2 py-0.5 border mb-2 ${cfg.color}`}>
-        {cfg.label}
-      </span>
-      <div className="space-y-2">
-        {tierSnaps.map(snap => (
-          <div key={snap.team_id} className="text-sm text-slate-400 pl-2">
-            {snap.team_name}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+// ── Main page ──────────────────────────────────────────────────────────────
 
 export default function LeaguePower() {
   const { league, myTeam } = useLeague() || {}
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState(null)
-  const [result, setResult]   = useState(null)
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState(null)
+  const [result,   setResult]   = useState(null)
+  const [loadedAt, setLoadedAt] = useState(null)
+  const [tick,     setTick]     = useState(0)  // forces timeAgo to re-render
+  const loadedRef = useRef(false)
 
-  async function load() {
-    if (!league?.league_id) {
-      setError('No Yahoo league connected. Connect from Profile and re-sync.')
-      return
-    }
+  const load = useCallback(async () => {
+    if (!league?.league_id) return
     setLoading(true)
     setError(null)
     try {
       const res = await leaguePower(league.league_id)
       setResult(res)
+      setLoadedAt(new Date())
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }
+  }, [league?.league_id])
+
+  // Auto-load on first visit
+  useEffect(() => {
+    if (league?.league_id && !loadedRef.current) {
+      loadedRef.current = true
+      load()
+    }
+  }, [league?.league_id, load])
+
+  // Tick every 30s so "X min ago" stays fresh
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  // Pre-compute within-league percentiles once, not per render
+  const leaguePercentiles = result
+    ? computeLeaguePercentiles(result.power_rankings)
+    : {}
+
+  // Build tier map: team_id → tier name
+  const tierMap = {}
+  Object.entries(result?.tiers || {}).forEach(([tier, ids]) => {
+    ids.forEach(id => { tierMap[id] = tier })
+  })
+
+  const numTeams = result?.power_rankings.length ?? 12
+
+  // Render ranked list with inline tier dividers
+  let lastTier = null
+  const rankedRows = (result?.power_rankings ?? []).map((snap, i) => {
+    const tier = tierMap[snap.team_id]
+    const showDivider = tier && tier !== lastTier
+    if (tier) lastTier = tier
+    return (
+      <div key={snap.team_id}>
+        {showDivider && <TierDivider tier={tier} />}
+        <TeamRow
+          snap={snap}
+          rank={i + 1}
+          isWinner={i === 0}
+          isMine={snap.team_id === myTeam?.team_id}
+          leaguePcts={leaguePercentiles[snap.team_id]}
+          numTeams={numTeams}
+        />
+      </div>
+    )
+  })
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div>
         <div className="flex items-center gap-2 mb-1">
           <Zap size={18} className="text-field-400" />
           <h1 className="text-2xl font-bold text-white">League Power Rankings</h1>
         </div>
         <p className="text-slate-500 text-sm">
-          Full-league roster strength rankings with tiers and trade opportunity surfacing.
+          Full-league roster strength rankings with tier groupings and AI analysis.
         </p>
       </div>
 
@@ -127,81 +216,33 @@ export default function LeaguePower() {
       {league && (
         <div className="flex items-center gap-3">
           <span className="text-slate-400 text-sm">{league.league_name}</span>
+          {loadedAt && (
+            <span className="text-xs text-slate-600" key={tick}>
+              Updated {timeAgo(loadedAt)}
+            </span>
+          )}
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 btn-primary"
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white border border-navy-600 hover:border-navy-500 bg-navy-800 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
           >
-            {result
-              ? <><RefreshCw size={14} /> Refresh</>
-              : <><Play size={14} /> Run Power Rankings</>
-            }
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+            Refresh
           </button>
         </div>
       )}
 
       <ErrorBanner message={error} onClose={() => setError(null)} />
-      {loading && <LoadingState message="Ranking all league rosters…" />}
+      {loading && !result && <LoadingState message="Ranking all league rosters…" />}
 
       {result && (
         <div className="space-y-6">
-          {/* Power rankings list */}
+          {/* Ranked list with inline tier dividers */}
           <div className="space-y-2">
-            {result.power_rankings.map((snap, i) => (
-              <TeamRow
-                key={snap.team_id}
-                snap={snap}
-                rank={i + 1}
-                isWinner={snap.team_id === result.power_rankings[0]?.team_id}
-                isMine={snap.team_id === myTeam?.team_id}
-              />
-            ))}
+            {rankedRows}
           </div>
 
-          {/* Tiers summary */}
-          {Object.keys(result.tiers || {}).length > 0 && (
-            <div className="card space-y-4">
-              <div className="section-label">League tiers</div>
-              {Object.entries(result.tiers).map(([tier, ids]) => (
-                <TierSection
-                  key={tier}
-                  tier={tier}
-                  teamIds={ids}
-                  snapshots={result.power_rankings}
-                  myTeamId={myTeam?.team_id}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Trade opportunities */}
-          {result.trade_opportunities?.length > 0 && (
-            <div className="card space-y-3">
-              <div className="section-label">Top trade opportunities</div>
-              {result.trade_opportunities.slice(0, 8).map((opp, i) => {
-                const nameA = result.power_rankings.find(s => s.team_id === opp.team_a_id)?.team_name || `Team ${opp.team_a_id}`
-                const nameB = result.power_rankings.find(s => s.team_id === opp.team_b_id)?.team_name || `Team ${opp.team_b_id}`
-                return (
-                  <div key={i} className="p-3 rounded-lg bg-navy-800 border border-navy-700">
-                    <div className="flex items-center gap-2 text-sm mb-1.5">
-                      <span className="font-medium text-white">{nameA}</span>
-                      <ArrowLeftRight size={12} className="text-slate-500 shrink-0" />
-                      <span className="font-medium text-white">{nameB}</span>
-                      <span className="ml-auto font-mono text-xs text-field-400">+{opp.complementarity_score.toFixed(0)}</span>
-                    </div>
-                    <p className="text-xs text-slate-500 leading-relaxed">{opp.rationale}</p>
-                    {(opp.suggested_give || opp.suggested_receive) && (
-                      <div className="flex gap-4 mt-1.5 text-xs">
-                        {opp.suggested_give    && <span className="text-stitch-400">Give: {opp.suggested_give}</span>}
-                        {opp.suggested_receive && <span className="text-field-400">Receive: {opp.suggested_receive}</span>}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
+          {/* AI Analysis */}
           <Blurb text={result.analysis_blurb} />
         </div>
       )}
