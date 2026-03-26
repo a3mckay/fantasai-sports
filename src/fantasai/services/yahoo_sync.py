@@ -147,6 +147,61 @@ def _update_player_positions_from_yahoo(
             player.positions = positions
 
 
+def _create_stub_players_for_unmatched(
+    db: "Session",
+    roster_data: list[dict],
+    resolved: dict[str, "int | None"],
+) -> None:
+    """Create minimal stub Player rows for Yahoo players we can't resolve.
+
+    Called after name_resolver returns None for a player.  Uses Yahoo's own
+    numeric player ID (negated) as a synthetic primary key so it never collides
+    with FanGraphs IDs (which are all positive integers).  Stubs carry name,
+    positions, and status='prospect' so they show on rosters without scoring data.
+
+    If a stub already exists (from a prior sync) it is updated in place.
+    """
+    import re as _re
+    from fantasai.models.player import Player
+
+    _PAREN = _re.compile(r"\s*\([^)]*\)\s*$")
+    _PAREN_SUFFIX = _re.compile(r"^.*\.p\.(\d+)$")  # e.g. "422.p.12345" → "12345"
+
+    for entry in roster_data:
+        name = entry["name"]
+        if resolved.get(name) is not None:
+            continue  # already resolved — nothing to do
+
+        # Parse the Yahoo numeric player ID from the player_key
+        key = entry.get("yahoo_player_key", "")
+        m = _PAREN_SUFFIX.match(key)
+        if not m:
+            _log.warning("No player_key for unmatched player '%s' — cannot create stub", name)
+            continue
+
+        yahoo_numeric_id = int(m.group(1))
+        stub_id = -yahoo_numeric_id  # negative to avoid FanGraphs ID space
+
+        clean_name = _PAREN.sub("", name).strip()
+        positions   = entry.get("eligible_positions") or []
+
+        # Upsert the stub
+        stub = db.get(Player, stub_id)
+        if stub is None:
+            stub = Player(player_id=stub_id)
+            db.add(stub)
+            _log.info("Created stub Player %d for unmatched '%s'", stub_id, clean_name)
+        else:
+            _log.debug("Updating existing stub Player %d for '%s'", stub_id, clean_name)
+
+        stub.name      = clean_name
+        stub.positions = positions
+        stub.status    = "prospect"
+
+        # Register in resolved so roster_ids picks this stub up
+        resolved[name] = stub_id
+
+
 def import_yahoo_league(
     db: "Session",
     user: "User",
@@ -219,6 +274,13 @@ def import_yahoo_league(
             roster_data = fetch_team_roster(access_token, team_key)
             roster_names = [p["name"] for p in roster_data]
             resolved = resolve_player_names(roster_names, db)
+
+            # For any player Yahoo knows about but we can't resolve, create a
+            # minimal stub Player row so they appear on rosters rather than
+            # showing as "(unmatched: Name)".  Uses Yahoo's numeric player ID
+            # (negated) as a synthetic primary key to avoid FanGraphs ID collisions.
+            _create_stub_players_for_unmatched(db, roster_data, resolved)
+
             roster_ids = [v for v in resolved.values() if v is not None]
             # Update Player.positions in the DB from Yahoo's eligible_positions data
             _update_player_positions_from_yahoo(db, roster_data, resolved)

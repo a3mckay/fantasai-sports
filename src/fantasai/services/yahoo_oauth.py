@@ -285,6 +285,12 @@ def fetch_team_roster(access_token: str, team_key: str) -> list[dict]:
         for elem in root.iter():
             if _local_tag(elem) != "player":
                 continue
+            # ── Player key (Yahoo's stable numeric ID) ────────────────────────
+            yahoo_player_key = ""
+            for child in elem.iter():
+                if _local_tag(child) == "player_key" and child.text and child.text.strip():
+                    yahoo_player_key = child.text.strip()
+                    break
             # ── Player name ──────────────────────────────────────────────────
             name: str | None = None
             for child in elem.iter():
@@ -323,6 +329,7 @@ def fetch_team_roster(access_token: str, team_key: str) -> list[dict]:
                 "eligible_positions": eligible,
                 "selected_position": selected_pos,
                 "yahoo_status": yahoo_status,
+                "yahoo_player_key": yahoo_player_key,
             })
     except Exception:
         _log.warning("Could not fetch roster for team %s", team_key, exc_info=True)
