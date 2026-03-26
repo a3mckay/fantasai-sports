@@ -451,6 +451,273 @@ def sync_steamer_projections(
     return succeeded
 
 
+def sync_current_season_stats(db: Session, season: int = 2025) -> int:
+    """Fetch current-season stats from FanGraphs via pybaseball and upsert to DB.
+
+    Fetches all batters (qual=0) and all pitchers (qual=0) for the given
+    season, matches each row to an existing Player by FanGraphs IDfg, and
+    upserts a PlayerStats row with week=None.
+
+    Missing columns (not all seasons have every advanced metric) are handled
+    gracefully with .get() and None defaults.
+
+    Returns:
+        Number of PlayerStats rows upserted.
+    """
+    import math
+
+    try:
+        import pybaseball
+    except ImportError:
+        logger.error("pybaseball not installed — cannot sync current season stats")
+        return 0
+
+    def _fval(row: dict, key: str) -> Optional[float]:
+        """Return a float value from a row dict, or None if missing/NaN/Inf."""
+        v = row.get(key)
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    total_upserted = 0
+
+    # ── Batting ──────────────────────────────────────────────────────────────
+    try:
+        bat_df = pybaseball.batting_stats(season, qual=0)
+        logger.info("sync_current_season_stats: fetched %d batter rows", len(bat_df))
+    except Exception:
+        logger.error("batting_stats(%d) fetch failed", season, exc_info=True)
+        bat_df = None
+
+    if bat_df is not None:
+        for _, row in bat_df.iterrows():
+            row_dict = row.to_dict()
+            fg_id = row_dict.get("IDfg")
+            if fg_id is None:
+                continue
+            try:
+                player_id = int(float(fg_id))
+            except (TypeError, ValueError):
+                continue
+
+            # Match to existing player by FanGraphs ID
+            player = db.get(Player, player_id)
+            if player is None:
+                continue
+
+            counting_stats = {
+                "PA":  _fval(row_dict, "PA"),
+                "AB":  _fval(row_dict, "AB"),
+                "H":   _fval(row_dict, "H"),
+                "HR":  _fval(row_dict, "HR"),
+                "R":   _fval(row_dict, "R"),
+                "RBI": _fval(row_dict, "RBI"),
+                "SB":  _fval(row_dict, "SB"),
+                "BB":  _fval(row_dict, "BB"),
+                "SO":  _fval(row_dict, "SO"),
+                "2B":  _fval(row_dict, "2B"),
+                "3B":  _fval(row_dict, "3B"),
+            }
+            rate_stats = {
+                "AVG": _fval(row_dict, "AVG"),
+                "OBP": _fval(row_dict, "OBP"),
+                "SLG": _fval(row_dict, "SLG"),
+                "OPS": _fval(row_dict, "OPS"),
+                "BB%": _fval(row_dict, "BB%"),
+                "K%":  _fval(row_dict, "K%"),
+            }
+            advanced_stats = {
+                "xwOBA":    _fval(row_dict, "xwOBA"),
+                "xBA":      _fval(row_dict, "xBA"),
+                "xSLG":     _fval(row_dict, "xSLG"),
+                "Barrel%":  _fval(row_dict, "Barrel%"),
+                "HardHit%": _fval(row_dict, "HardHit%"),
+                "EV":       _fval(row_dict, "EV") or _fval(row_dict, "AvgEV"),
+                "wRC+":     _fval(row_dict, "wRC+"),
+                "BABIP":    _fval(row_dict, "BABIP"),
+            }
+
+            existing = (
+                db.query(PlayerStats)
+                .filter(
+                    and_(
+                        PlayerStats.player_id == player_id,
+                        PlayerStats.season == season,
+                        PlayerStats.week.is_(None),
+                        PlayerStats.stat_type == "batting",
+                    )
+                )
+                .first()
+            )
+            if existing is None:
+                db.add(PlayerStats(
+                    player_id=player_id,
+                    season=season,
+                    week=None,
+                    stat_type="batting",
+                    counting_stats=counting_stats,
+                    rate_stats=rate_stats,
+                    advanced_stats=advanced_stats,
+                ))
+            else:
+                existing.counting_stats = counting_stats
+                existing.rate_stats = rate_stats
+                existing.advanced_stats = advanced_stats
+            total_upserted += 1
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.error("Failed to commit batting stats batch", exc_info=True)
+
+    # ── Pitching ─────────────────────────────────────────────────────────────
+    try:
+        pit_df = pybaseball.pitching_stats(season, qual=0)
+        logger.info("sync_current_season_stats: fetched %d pitcher rows", len(pit_df))
+    except Exception:
+        logger.error("pitching_stats(%d) fetch failed", season, exc_info=True)
+        pit_df = None
+
+    if pit_df is not None:
+        for _, row in pit_df.iterrows():
+            row_dict = row.to_dict()
+            fg_id = row_dict.get("IDfg")
+            if fg_id is None:
+                continue
+            try:
+                player_id = int(float(fg_id))
+            except (TypeError, ValueError):
+                continue
+
+            player = db.get(Player, player_id)
+            if player is None:
+                continue
+
+            counting_stats = {
+                "IP":  _fval(row_dict, "IP"),
+                "W":   _fval(row_dict, "W"),
+                "L":   _fval(row_dict, "L"),
+                "SV":  _fval(row_dict, "SV"),
+                "HLD": _fval(row_dict, "HLD"),
+                "SO":  _fval(row_dict, "SO"),
+                "K":   _fval(row_dict, "SO"),  # alias
+                "BB":  _fval(row_dict, "BB"),
+                "G":   _fval(row_dict, "G"),
+                "GS":  _fval(row_dict, "GS"),
+                "QS":  _fval(row_dict, "QS"),
+                "ERA": _fval(row_dict, "ERA"),
+            }
+            rate_stats = {
+                "ERA":  _fval(row_dict, "ERA"),
+                "WHIP": _fval(row_dict, "WHIP"),
+                "K/9":  _fval(row_dict, "K/9"),
+                "BB/9": _fval(row_dict, "BB/9"),
+                "K-BB%": _fval(row_dict, "K-BB%"),
+            }
+            advanced_stats = {
+                "xERA":     _fval(row_dict, "xERA"),
+                "xFIP":     _fval(row_dict, "xFIP"),
+                "SIERA":    _fval(row_dict, "SIERA"),
+                "Stuff+":   _fval(row_dict, "Stuff+"),
+                "CSW%":     _fval(row_dict, "CSW%"),
+                "SwStr%":   _fval(row_dict, "SwStr%"),
+                "GB%":      _fval(row_dict, "GB%"),
+                "Barrel%":  _fval(row_dict, "Barrel%"),
+                "HardHit%": _fval(row_dict, "HardHit%"),
+            }
+
+            existing = (
+                db.query(PlayerStats)
+                .filter(
+                    and_(
+                        PlayerStats.player_id == player_id,
+                        PlayerStats.season == season,
+                        PlayerStats.week.is_(None),
+                        PlayerStats.stat_type == "pitching",
+                    )
+                )
+                .first()
+            )
+            if existing is None:
+                db.add(PlayerStats(
+                    player_id=player_id,
+                    season=season,
+                    week=None,
+                    stat_type="pitching",
+                    counting_stats=counting_stats,
+                    rate_stats=rate_stats,
+                    advanced_stats=advanced_stats,
+                ))
+            else:
+                existing.counting_stats = counting_stats
+                existing.rate_stats = rate_stats
+                existing.advanced_stats = advanced_stats
+            total_upserted += 1
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.error("Failed to commit pitching stats batch", exc_info=True)
+
+    logger.info("sync_current_season_stats: upserted %d total rows", total_upserted)
+    return total_upserted
+
+
+def write_ranking_snapshots(
+    db: Session,
+    rankings: list,
+    ranking_type: str,
+    horizon: str,
+    snapshot_date=None,
+) -> int:
+    """Upsert ranking snapshots for movement tracking.
+
+    Args:
+        rankings: list of PlayerRanking objects
+        ranking_type: "current" or "predictive"
+        horizon: "week", "month", "season", or "current"
+        snapshot_date: date to snapshot (defaults to today)
+    Returns:
+        count of rows written
+    """
+    from datetime import date as _date
+    from fantasai.models.ranking import RankingSnapshot
+
+    today = snapshot_date or _date.today()
+    count = 0
+
+    for r in rankings:
+        existing = db.query(RankingSnapshot).filter(
+            RankingSnapshot.player_id == r.player_id,
+            RankingSnapshot.ranking_type == ranking_type,
+            RankingSnapshot.horizon == horizon,
+            RankingSnapshot.snapshot_date == today,
+        ).first()
+
+        if existing is None:
+            existing = RankingSnapshot(
+                player_id=r.player_id,
+                ranking_type=ranking_type,
+                horizon=horizon,
+                snapshot_date=today,
+            )
+            db.add(existing)
+
+        existing.overall_rank = r.overall_rank
+        existing.score = r.score
+        existing.stat_type = r.stat_type
+        count += 1
+
+    db.commit()
+    return count
+
+
 def _upsert_player_stats(
     db: Session,
     data: NormalizedPlayerData,

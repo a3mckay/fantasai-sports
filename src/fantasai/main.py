@@ -40,12 +40,53 @@ from fantasai.api.v1.players import router as players_router  # noqa: E402
 from fantasai.api.v1.rankings import router as rankings_router  # noqa: E402
 from fantasai.api.v1.recommendations import router as recommendations_router, _compute_rankings  # noqa: E402
 from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES  # noqa: E402
+import fantasai.api.v1.rankings as _rankings_module  # noqa: E402
 from fantasai.api.v1.analysis import router as analysis_router  # noqa: E402
 from fantasai.api.v1.auth import router as auth_router  # noqa: E402
 from fantasai.api.v1.users import router as users_router  # noqa: E402
 from fantasai.api.v1.settings import router as settings_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
+
+
+def _nightly_stats_refresh() -> None:
+    """Nightly 4am EST: fetch current-season stats, recompute rankings, write snapshots."""
+    from fantasai.database import SessionLocal
+    from fantasai.engine.pipeline import sync_current_season_stats, write_ranking_snapshots
+
+    _log.info("Nightly stats refresh starting")
+
+    db = SessionLocal()
+    try:
+        count = sync_current_season_stats(db, season=2025)
+        _log.info("Nightly refresh: upserted %d stat rows", count)
+
+        # Clear rankings cache so next request recomputes with fresh data
+        try:
+            from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+            _RANKINGS_CACHE.clear()
+            _RANKINGS_RAW_CACHE.clear()
+            _log.info("Rankings cache cleared after nightly refresh")
+        except Exception:
+            _log.debug("Could not clear rankings cache", exc_info=True)
+
+    except Exception:
+        _log.error("Nightly stats refresh failed", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _thursday_week_flip() -> None:
+    """Thursday midnight EST: flip This Week to show next week's rankings."""
+    _rankings_module.SHOW_NEXT_WEEK = True
+    _log.info("This Week flipped to show next week's data")
+
+
+def _monday_week_reset() -> None:
+    """Monday 4am EST: reset This Week back to current week."""
+    _rankings_module.SHOW_NEXT_WEEK = False
+    _log.info("This Week reset to current week")
 
 
 def _warm_rankings_cache() -> None:
@@ -91,6 +132,41 @@ async def lifespan(app: FastAPI):
         max_instances=1,          # prevent overlap if a sync takes > 2 hours
         misfire_grace_time=300,   # allow 5-minute late starts
     )
+
+    # Nightly 4am EST stats refresh + rankings snapshot
+    scheduler.add_job(
+        _nightly_stats_refresh,
+        trigger="cron",
+        hour=9,    # 9 UTC = 4am EST (UTC-5) / 5am EDT (UTC-4); use 9 to cover both
+        minute=0,
+        id="nightly-stats-refresh",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
+    # Thursday midnight EST — flip This Week window (week_flip_flag in app state)
+    scheduler.add_job(
+        _thursday_week_flip,
+        trigger="cron",
+        day_of_week="thu",
+        hour=5,    # 5 UTC = midnight EST
+        minute=0,
+        id="thursday-week-flip",
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
+    # Monday 4am EST — reset This Week back to current week
+    scheduler.add_job(
+        _monday_week_reset,
+        trigger="cron",
+        day_of_week="mon",
+        hour=9,    # Monday 4am EST
+        minute=0,
+        id="monday-week-reset",
+        max_instances=1,
+    )
+
     scheduler.start()
     _log.info("Yahoo sync scheduler started (interval=2h)")
 

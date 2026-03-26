@@ -44,6 +44,10 @@ def _rankings_cache_key(categories: list[str], horizon: ProjectionHorizon) -> st
     return f"{','.join(sorted(categories))}|{horizon.value}"
 
 
+def _current_rankings_cache_key(categories: list[str]) -> str:
+    return f"current|{','.join(sorted(categories))}"
+
+
 def _get_cached_rankings(
     categories: list[str], horizon: ProjectionHorizon
 ) -> tuple | None:
@@ -79,6 +83,23 @@ def _get_cached_raw_rankings(
     return value
 
 
+def _get_cached_current_rankings(categories: list[str]) -> tuple | None:
+    """Return cached current (YTD) rankings."""
+    key = _current_rankings_cache_key(categories)
+    entry = _RANKINGS_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > _RANKINGS_TTL:
+        del _RANKINGS_CACHE[key]
+        return None
+    return value
+
+
+def _set_cached_current_rankings(categories: list[str], value: tuple) -> None:
+    _RANKINGS_CACHE[_current_rankings_cache_key(categories)] = (time.monotonic(), value)
+
+
 # ---------------------------------------------------------------------------
 # Helpers — shared DB → rankings pipeline
 # ---------------------------------------------------------------------------
@@ -101,14 +122,89 @@ def _compute_rankings(
     db: Session,
     categories: list[str],
     horizon: ProjectionHorizon = ProjectionHorizon.SEASON,
+    ranking_type: str = "predictive",
 ) -> tuple:
     """Compute lookback + predictive rankings from stored PlayerStats.
 
     Results are cached in-process for 5 minutes, keyed by both category set
     and horizon so that different horizon requests are cached independently.
 
+    When ranking_type == "current", computes YTD (current-season) lookback
+    rankings using 2025 actual stats and returns (current_rankings, []).
+
     Returns (lookback, predictive) or ([], []) if no data.
     """
+    if ranking_type == "current":
+        cached = _get_cached_current_rankings(categories)
+        if cached is not None:
+            return cached
+
+        from fantasai.adapters.base import NormalizedPlayerData
+        from fantasai.adapters.mlb import MLBAdapter
+        from fantasai.models.player import Player
+
+        stats_rows = db.query(PlayerStats).filter(
+            PlayerStats.season == 2025,
+            PlayerStats.stat_type.in_(["batting", "pitching"]),
+            PlayerStats.week.is_(None),
+        ).all()
+
+        if not stats_rows:
+            return [], []
+
+        stat_player_ids = {s.player_id for s in stats_rows}
+        player_map = {
+            p.player_id: p
+            for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
+        }
+
+        players = []
+        for stats in stats_rows:
+            player = player_map.get(stats.player_id)
+            if not player:
+                continue
+            # Filter out players with no meaningful stats (all zeros / empty)
+            counting = stats.counting_stats or {}
+            has_stats = any(
+                v is not None and float(v) > 0
+                for v in counting.values()
+                if v is not None
+            )
+            if not has_stats:
+                continue
+            players.append(
+                NormalizedPlayerData(
+                    player_id=stats.player_id,
+                    name=player.name,
+                    team=player.team,
+                    positions=player.positions or [],
+                    stat_type=stats.stat_type,
+                    counting_stats=counting,
+                    rate_stats=stats.rate_stats or {},
+                    advanced_stats=stats.advanced_stats or {},
+                )
+            )
+
+        if not players:
+            return [], []
+
+        adapter = MLBAdapter()
+        engine = ScoringEngine(adapter, categories)
+        current_rankings = engine.compute_lookback_rankings(2025, players=players)
+
+        # Deduplicate two-way players (keep higher-scoring entry)
+        seen: dict = {}
+        for r in current_rankings:
+            if r.player_id not in seen or r.score > seen[r.player_id].score:
+                seen[r.player_id] = r
+        deduped = sorted(seen.values(), key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(deduped):
+            r.overall_rank = i + 1
+
+        result = (deduped, [])
+        _set_cached_current_rankings(categories, result)
+        return result
+
     cached = _get_cached_rankings(categories, horizon)
     if cached is not None:
         return cached

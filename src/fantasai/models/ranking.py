@@ -1,8 +1,10 @@
+"""Ranking storage models: persisted blurb rankings and daily snapshots for movement tracking."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
-from sqlalchemy import ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
+from sqlalchemy import Date, ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from fantasai.models.base import Base, TimestampMixin
@@ -28,3 +30,25 @@ class Ranking(TimestampMixin, Base):
     league_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("leagues.league_id"), nullable=True
     )
+
+
+class RankingSnapshot(TimestampMixin, Base):
+    """One ranking position per player per mode per day.
+
+    Used to compute movement arrows (↑3, ↓5) on the rankings UI.
+    Stored daily for Current Rankings, weekly (Mondays) for projected modes.
+    """
+    __tablename__ = "ranking_snapshots"
+    __table_args__ = (
+        UniqueConstraint("player_id", "ranking_type", "horizon", "snapshot_date",
+                         name="uq_ranking_snapshot"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    ranking_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "current" | "predictive"
+    horizon: Mapped[str] = mapped_column(String(20), nullable=False)       # "week" | "month" | "season" | "current"
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    overall_rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    stat_type: Mapped[str] = mapped_column(String(10), nullable=False)     # "batting" | "pitching"

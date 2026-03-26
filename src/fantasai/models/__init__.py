@@ -1,13 +1,13 @@
 from fantasai.models.base import Base
 from fantasai.models.player import Player, PlayerStats
 from fantasai.models.league import League, Team
-from fantasai.models.ranking import Ranking
+from fantasai.models.ranking import Ranking, RankingSnapshot
 from fantasai.models.recommendation import Recommendation
 from fantasai.models.prospect import ProspectProfile
 from fantasai.models.user import User, YahooConnection, UserSettings, AnonymousUsage
 
 __all__ = [
     "Base", "Player", "PlayerStats", "League", "Team",
-    "Ranking", "Recommendation", "ProspectProfile",
+    "Ranking", "RankingSnapshot", "Recommendation", "ProspectProfile",
     "User", "YahooConnection", "UserSettings", "AnonymousUsage",
 ]

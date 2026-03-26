@@ -9,9 +9,9 @@ machinery as the lookback model, ensuring that:
   - Horizon length controls both PA/IP volume and the talent-vs-recency blend
 
 Blend logic:
-  Short horizon (WEEK)  → lean on recent actual performance (65%) with talent (35%)
-  Medium horizon (MONTH) → balanced lean toward talent (65%) over actuals (35%)
-  Long horizon (SEASON) → mostly talent signal (85%), small recency anchor (15%)
+  Short horizon (WEEK)  → pure projections (100% talent) — never use YTD stats
+  Medium horizon (MONTH) → mostly projections (80%), small breakout signal (20%)
+  Long horizon (SEASON) → 50/50 blend for Rest of Season
 
 Schedule-aware adjustments (opponent quality for short-term projections) are a
 future enhancement; the HorizonConfig dataclass has a slot reserved for that.
@@ -79,24 +79,24 @@ HORIZON_CONFIGS: dict[ProjectionHorizon, HorizonConfig] = {
         hitter_pa=26,
         sp_ip=6.0,
         rp_ip=3.5,
-        talent_weight=0.35,
-        actual_weight=0.65,
+        talent_weight=1.00,
+        actual_weight=0.00,
     ),
     ProjectionHorizon.MONTH: HorizonConfig(
         label="This Month",
         hitter_pa=100,
         sp_ip=28.0,
         rp_ip=13.0,
-        talent_weight=0.65,
-        actual_weight=0.35,
+        talent_weight=0.80,
+        actual_weight=0.20,
     ),
     ProjectionHorizon.SEASON: HorizonConfig(
-        label="Full Season",
+        label="Rest of Season",
         hitter_pa=540,
         sp_ip=170.0,
         rp_ip=62.0,
-        talent_weight=0.85,
-        actual_weight=0.15,
+        talent_weight=0.50,
+        actual_weight=0.50,
     ),
 }
 

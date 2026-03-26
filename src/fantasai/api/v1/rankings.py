@@ -30,12 +30,12 @@ CURRENT_PERIOD = "2025-season"
 
 @router.get("", response_model=list[PlayerRankingRead])
 def list_rankings(
-    ranking_type: Optional[str] = Query(default="lookback", pattern="^(lookback|predictive)$"),
+    ranking_type: Optional[str] = Query(default="lookback", pattern="^(lookback|predictive|current)$"),
     season: int = Query(default=2025),
     horizon: str = Query(
         default="season",
         pattern="^(week|month|season)$",
-        description="Projection horizon for predictive rankings: week, month, or season. Ignored for lookback.",
+        description="Projection horizon for predictive rankings: week, month, or season. Ignored for lookback and current.",
     ),
     position: Optional[str] = Query(default=None, description="Filter by position, e.g. 'OF'"),
     stat_type: Optional[str] = Query(default=None, pattern="^(batting|pitching)$"),
@@ -50,9 +50,11 @@ def list_rankings(
     Returns pre-generated blurbs from the Ranking table when available.
 
     The ``horizon`` parameter only affects predictive rankings:
-    - ``week``  — projects ~26 PA / 6 IP; 35% talent signal
-    - ``month`` — projects ~100 PA / 28 IP; 65% talent signal
-    - ``season`` — projects full-season volume; 85% talent signal (default)
+    - ``week``  — projects ~26 PA / 6 IP; 100% talent signal (pure projections)
+    - ``month`` — projects ~100 PA / 28 IP; 80% talent signal
+    - ``season`` — projects Rest of Season volume; 50% talent signal (default)
+
+    The ``current`` ranking_type returns YTD stats-based rankings (season=2025 actuals only).
     """
     from fantasai.models.ranking import Ranking
 
@@ -62,6 +64,45 @@ def list_rankings(
     # For historical seasons the cache is keyed on 2025, so fall through to a
     # fresh uncached query — this path is only hit in tests / edge cases.
     _CACHED_SEASON = 2025
+    if ranking_type == "current" and season == _CACHED_SEASON:
+        from fantasai.api.v1.recommendations import _compute_rankings
+        current_rankings, _ = _compute_rankings(
+            db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon, ranking_type="current"
+        )
+        rankings = current_rankings
+
+        if not rankings:
+            return []
+
+        # Apply filters
+        if stat_type:
+            rankings = [r for r in rankings if r.stat_type == stat_type]
+        if position:
+            pos = position.upper()
+            rankings = [r for r in rankings if pos in r.positions]
+
+        rankings = rankings[offset: offset + limit]
+        return [
+            PlayerRankingRead(
+                player_id=r.player_id,
+                name=r.name,
+                team=r.team,
+                positions=r.positions,
+                stat_type=r.stat_type,
+                overall_rank=r.overall_rank,
+                score=r.score,
+                raw_score=r.raw_score,
+                category_contributions=r.category_contributions,
+                blurb=None,
+                injury_status=r.injury_status,
+                risk_flag=r.risk_flag,
+                risk_note=r.risk_note,
+                is_prospect=getattr(r, "is_prospect", False),
+                pav_score=getattr(r, "pav_score", None),
+            )
+            for r in rankings
+        ]
+
     if season == _CACHED_SEASON:
         from fantasai.api.v1.recommendations import _compute_rankings, _get_cached_raw_rankings
         _compute_rankings(db, RANKINGS_DEFAULT_CATEGORIES, horizon=proj_horizon)
@@ -160,6 +201,38 @@ def list_rankings(
         pos = position.upper()
         rankings = [r for r in rankings if pos in r.positions]
 
+    # Look up previous ranking snapshots to compute rank_delta.
+    # Projected modes: compare against 7 days ago; current: 1 day ago.
+    rank_delta_map: dict[int, Optional[int]] = {}
+    try:
+        from datetime import date as _date, timedelta as _timedelta
+        from fantasai.models.ranking import RankingSnapshot
+
+        snap_horizon = horizon if ranking_type == "predictive" else "current"
+        snap_type = ranking_type if ranking_type != "lookback" else "predictive"
+        lookback_days = 1 if ranking_type == "current" else 7
+        compare_date = _date.today() - _timedelta(days=lookback_days)
+
+        paginated_ids = [r.player_id for r in rankings[offset: offset + limit]]
+        prev_snaps = (
+            db.query(RankingSnapshot)
+            .filter(
+                RankingSnapshot.player_id.in_(paginated_ids),
+                RankingSnapshot.ranking_type == snap_type,
+                RankingSnapshot.horizon == snap_horizon,
+                RankingSnapshot.snapshot_date == compare_date,
+            )
+            .all()
+        )
+        prev_rank_map = {s.player_id: s.overall_rank for s in prev_snaps}
+        for r in rankings[offset: offset + limit]:
+            prev = prev_rank_map.get(r.player_id)
+            if prev is not None:
+                # Positive delta = moved up (lower rank number = better)
+                rank_delta_map[r.player_id] = prev - r.overall_rank
+    except Exception:
+        logger.debug("rank_delta computation failed (non-fatal)", exc_info=True)
+
     # Paginate
     rankings = rankings[offset: offset + limit]
 
@@ -180,9 +253,43 @@ def list_rankings(
             risk_note=r.risk_note,
             is_prospect=getattr(r, "is_prospect", False),
             pav_score=getattr(r, "pav_score", None),
+            rank_delta=rank_delta_map.get(r.player_id),
         )
         for r in rankings
     ]
+
+
+# ---------------------------------------------------------------------------
+# Week-mode state (set by scheduler in main.py)
+# ---------------------------------------------------------------------------
+
+# Module-level flag — True means show next week's rankings as "This Week".
+# Flipped by the Thursday midnight scheduler job; reset Monday 4am EST.
+SHOW_NEXT_WEEK: bool = False
+
+
+@router.get("/week-mode", tags=["rankings"])
+def get_week_mode() -> dict:
+    """Return the current This Week display mode.
+
+    Returns:
+        show_next_week: bool — True from Thursday midnight to Monday 4am EST.
+        current_week_start: ISO date string of the start of the current week (Monday).
+        next_week_start: ISO date string of the start of next week.
+    """
+    from datetime import date, timedelta
+
+    today = date.today()
+    # Find last Monday (weekday 0)
+    days_since_monday = today.weekday()
+    current_week_start = today - timedelta(days=days_since_monday)
+    next_week_start = current_week_start + timedelta(weeks=1)
+
+    return {
+        "show_next_week": SHOW_NEXT_WEEK,
+        "current_week_start": current_week_start.isoformat(),
+        "next_week_start": next_week_start.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------
