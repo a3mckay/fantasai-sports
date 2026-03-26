@@ -114,8 +114,15 @@ def _yahoo_get(access_token: str, path: str) -> ET.Element:
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=20,
     )
+    if not resp.is_success:
+        _log.warning(
+            "Yahoo API HTTP %s for %s — body: %s",
+            resp.status_code, path, resp.text[:500],
+        )
     resp.raise_for_status()
-    return ET.fromstring(resp.text)
+    root = ET.fromstring(resp.text)
+    _log.debug("Yahoo API response for %s:\n%s", path, resp.text[:2000])
+    return root
 
 
 def fetch_user_guid(access_token: str) -> Optional[str]:
@@ -134,35 +141,34 @@ def fetch_user_guid(access_token: str) -> Optional[str]:
 def fetch_user_mlb_leagues(access_token: str) -> list[dict[str, Any]]:
     """Fetch the user's active MLB fantasy leagues.
 
-    Returns a list of dicts with: league_key, name, num_teams, scoring_type, season
+    Returns a list of dicts with: league_key, name, num_teams, scoring_type, season.
+    Raises on HTTP or parse errors so callers can surface the real failure reason.
     """
+    root = _yahoo_get(
+        access_token,
+        "users;use_login=1/games;game_keys=mlb/leagues",
+    )
     leagues: list[dict[str, Any]] = []
-    try:
-        root = _yahoo_get(
-            access_token,
-            "users;use_login=1/games;game_keys=mlb/leagues",
-        )
-        for league_elem in root.iter():
-            if not league_elem.tag.endswith("league"):
-                continue
-            # Extract child elements as a flat dict
-            data: dict[str, str] = {}
-            for child in league_elem:
-                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-                if child.text:
-                    data[tag] = child.text.strip()
-            if "league_key" in data:
-                leagues.append(
-                    {
-                        "league_key": data.get("league_key", ""),
-                        "name": data.get("name", ""),
-                        "num_teams": int(data.get("num_teams", 0)),
-                        "scoring_type": data.get("scoring_type", "head"),
-                        "season": data.get("season", ""),
-                    }
-                )
-    except Exception:
-        _log.warning("Could not fetch Yahoo leagues", exc_info=True)
+    for league_elem in root.iter():
+        if not league_elem.tag.endswith("league"):
+            continue
+        # Extract child elements as a flat dict
+        data: dict[str, str] = {}
+        for child in league_elem:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if child.text:
+                data[tag] = child.text.strip()
+        if "league_key" in data:
+            leagues.append(
+                {
+                    "league_key": data.get("league_key", ""),
+                    "name": data.get("name", ""),
+                    "num_teams": int(data.get("num_teams", 0)),
+                    "scoring_type": data.get("scoring_type", "head"),
+                    "season": data.get("season", ""),
+                }
+            )
+    _log.info("fetch_user_mlb_leagues: found %d league(s)", len(leagues))
     return leagues
 
 

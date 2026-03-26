@@ -348,9 +348,13 @@ def yahoo_resync_start(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Token refresh failed: {exc}")
 
-    leagues = fetch_user_mlb_leagues(access_token)
+    try:
+        leagues = fetch_user_mlb_leagues(access_token)
+    except Exception as exc:
+        _log.error("fetch_user_mlb_leagues failed for user %s: %s", user.id, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Yahoo API error: {exc}")
     if not leagues:
-        raise HTTPException(status_code=404, detail="No Yahoo MLB leagues found")
+        raise HTTPException(status_code=404, detail="No Yahoo MLB leagues found — your account may have no active MLB leagues this season")
 
     league_info = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)[0]
     league_key = league_info["league_key"]
