@@ -57,6 +57,11 @@ def generate_rankings_blurbs(
     from fantasai.api.v1.recommendations import _compute_rankings
     from fantasai.brain.writer_persona import SYSTEM_PROMPT
     from fantasai.engine.projection import ProjectionHorizon
+    from fantasai.engine.schedule import (
+        build_player_week_context,
+        fetch_weekly_schedule,
+        get_current_week_bounds,
+    )
     from fantasai.models.ranking import Ranking
 
     if mode not in _MODE_MAP:
@@ -86,6 +91,16 @@ def generate_rankings_blurbs(
 
     top_players = player_rankings[:top_n]
 
+    # For week mode, pre-fetch the schedule so we can enrich blurb prompts
+    # with notable context (starts, park factors, Vegas odds, weather).
+    week_player_schedules: dict = {}
+    if mode == "week":
+        try:
+            week_start, week_end = get_current_week_bounds()
+            week_player_schedules = fetch_weekly_schedule(week_start, week_end, db)
+        except Exception:
+            _log.warning("blurb_scheduler: could not fetch weekly schedule for blurb context", exc_info=True)
+
     client = _anthropic.Anthropic(api_key=api_key)
 
     generated = 0
@@ -107,12 +122,29 @@ def generate_rankings_blurbs(
             f"{c} ({'+' if v > 0 else ''}{v:.1f})" for c, v in top_cats
         )
 
+        stat_type = getattr(player, "stat_type", "batting") or "batting"
+
+        # Build week context note for notable schedule factors (SP starts, park, Vegas, weather)
+        week_context_note: str | None = None
+        if mode == "week" and week_player_schedules:
+            ps = week_player_schedules.get(player.player_id)
+            if ps is not None:
+                week_context_note = build_player_week_context(
+                    player.player_id, ps, stat_type, positions
+                )
+
         prompt = (
             f"Write a 2-sentence fantasy baseball note for {player.name} "
             f"({player.team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
             f"Category strengths: {cat_summary}\n\n"
             f"Focus on fantasy value and category impact. Direct and specific. No hedging."
         )
+
+        if week_context_note:
+            prompt += (
+                f"\n\nThis week's schedule context: {week_context_note}\n\n"
+                "If any of these factors are particularly notable, weave them into the note naturally."
+            )
 
         try:
             response = client.messages.create(

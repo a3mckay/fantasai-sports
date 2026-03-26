@@ -644,3 +644,101 @@ def build_week_configs(
             )
 
     return overrides
+
+
+# ---------------------------------------------------------------------------
+# Blurb context helpers — notable schedule facts for AI prompt enrichment
+# ---------------------------------------------------------------------------
+
+# Venue display names for park factor notes
+_PARK_NAMES: dict[str, str] = {
+    "COL": "Coors Field",
+    "CIN": "Great American Ball Park",
+    "PHI": "Citizens Bank Park",
+    "BOS": "Fenway Park",
+    "NYY": "Yankee Stadium",
+    "SFG": "Oracle Park",
+    "SDP": "Petco Park",
+    "MIA": "loanDepot Park",
+    "TBR": "Tropicana Field",
+    "PIT": "PNC Park",
+    "LAD": "Dodger Stadium",
+    "SEA": "T-Mobile Park",
+    "MIN": "Target Field",
+    "DET": "Comerica Park",
+}
+
+# Thresholds for "notable" signals — below these we omit from blurbs
+_PARK_NOTABLE_THRESHOLD   = 0.07   # |pf - 1.0| ≥ 7%  → mention park
+_VEGAS_NOTABLE_THRESHOLD  = 0.05   # |vf - 1.0| ≥ 5%  → mention run env
+_WEATHER_NOTABLE_THRESHOLD = 0.06  # |wf - 1.0| ≥ 6%  → mention weather
+
+
+def build_player_week_context(
+    player_id: int,
+    player_schedule: "PlayerSchedule",
+    stat_type: str,   # "batting" or "pitching"
+    positions: list[str],
+) -> str | None:
+    """Return a short context string with notable schedule facts for This Week blurbs.
+
+    Returns None when nothing is notable enough to mention.
+    Examples:
+      "2 starts this week; pitching at Coors (+22% HR)"
+      "playing at Petco Park (suppressed HR environment); Vegas implies 3.8 runs/game"
+      "7-game week; strong offensive implied total (5.3 R/G)"
+    """
+    ps = player_schedule
+    notes: list[str] = []
+
+    is_sp = "SP" in positions
+    is_rp = "RP" in positions and not is_sp
+
+    # ── Starts note (pitchers only) ──────────────────────────────────────────
+    if stat_type == "pitching" and is_sp:
+        if ps.probable_starts == 2:
+            notes.append("2 starts this week")
+        elif ps.probable_starts == 0:
+            notes.append("no probable starts this week")
+        # 1 start is default — only call it out if combined with other context
+
+    # ── Games note (batters / RPs when non-standard) ─────────────────────────
+    if stat_type == "batting" or is_rp:
+        if ps.team_games >= 7:
+            notes.append(f"{ps.team_games}-game week")
+        elif ps.team_games <= 4:
+            notes.append(f"light schedule ({ps.team_games} games)")
+
+    # ── Park factor ──────────────────────────────────────────────────────────
+    team = ps.home_park or ""
+    pf = PARK_FACTORS.get(team, 1.0)
+    if abs(pf - 1.0) >= _PARK_NOTABLE_THRESHOLD:
+        park_name = _PARK_NAMES.get(team, f"{team} ballpark")
+        pct = int(round((pf - 1.0) * 100))
+        direction = "+" if pct > 0 else ""
+        if stat_type == "batting":
+            notes.append(f"games at {park_name} ({direction}{pct}% HR)")
+        else:
+            notes.append(f"pitching environment at {park_name} ({direction}{pct}% HR)")
+
+    # ── Vegas run environment ────────────────────────────────────────────────
+    vf = ps.vegas_run_factor
+    if abs(vf - 1.0) >= _VEGAS_NOTABLE_THRESHOLD:
+        implied_per_game = round(4.4 * vf, 1)
+        if vf > 1.0:
+            notes.append(f"Vegas implies {implied_per_game} R/G (above avg)")
+        else:
+            notes.append(f"Vegas implies {implied_per_game} R/G (below avg)")
+
+    # ── Weather ──────────────────────────────────────────────────────────────
+    wf = ps.weather_hr_factor
+    if abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
+        if wf > 1.0:
+            notes.append("favorable weather conditions (wind/heat)")
+        else:
+            notes.append("cold/adverse weather conditions")
+
+    if not notes:
+        return None
+
+    return "; ".join(notes)
