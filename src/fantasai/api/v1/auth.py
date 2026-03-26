@@ -501,37 +501,83 @@ def yahoo_resync(
         return {"success": False, "error": str(exc)}
 
 
-@router.get("/league")
-def get_league(
+@router.get("/leagues")
+def list_user_leagues(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Return all Yahoo leagues owned by the user, with an is_active flag.
+
+    Used by the frontend league switcher to show all leagues the user has
+    synced.  The active league is whichever matches conn.league_key.
+    """
+    from fantasai.models.league import League
+
+    conn = user.yahoo_connection
+    active_key = conn.league_key if conn else None
+
+    leagues = db.query(League).filter(League.owner_user_id == user.id).all()
+    return [
+        {
+            "league_id": lg.league_id,
+            "league_name": (lg.settings or {}).get("name", lg.league_id),
+            "season": (lg.settings or {}).get("season"),
+            "num_teams": (lg.settings or {}).get("num_teams"),
+            "league_type": lg.league_type,
+            "is_active": lg.league_id == active_key,
+        }
+        for lg in sorted(leagues, key=lambda x: (x.settings or {}).get("season", ""), reverse=True)
+    ]
+
+
+@router.post("/leagues/{league_id}/activate")
+def activate_league(
+    league_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Return the user's Yahoo league settings and all teams.
+    """Switch the user's active league to league_id.
 
-    Used by the frontend LeagueContext to auto-populate league info.
-    Returns 404 if the user has no connected Yahoo league.
+    Updates conn.league_key and conn.team_key (to the user's team in that
+    league), then returns the full league payload so the frontend can
+    immediately update LeagueContext without a second request.
     """
     from fantasai.models.league import League, Team
 
     conn = user.yahoo_connection
-    if not conn or not conn.league_key:
-        raise HTTPException(status_code=404, detail="No Yahoo league connected")
+    if not conn:
+        raise HTTPException(status_code=400, detail="No Yahoo connection")
 
-    league = db.query(League).filter(League.league_id == conn.league_key).first()
+    league = db.query(League).filter(
+        League.league_id == league_id,
+        League.owner_user_id == user.id,
+    ).first()
     if not league:
-        raise HTTPException(status_code=404, detail="League not found in database")
+        raise HTTPException(status_code=404, detail="League not found")
 
-    # Find user's team
+    # Update active pointers
+    conn.league_key = league_id
+
+    # Find user's team in this league
     my_team = db.query(Team).filter(
         Team.owner_user_id == user.id,
-        Team.league_id == conn.league_key,
+        Team.league_id == league_id,
     ).first()
+    if my_team and my_team.yahoo_team_key:
+        conn.team_key = my_team.yahoo_team_key
 
-    # All teams in the league
-    all_teams = db.query(Team).filter(Team.league_id == conn.league_key).all()
+    db.commit()
 
-    # Enrich rosters with player names from DB
+    # Return the full league payload (same shape as GET /auth/league)
+    return _build_league_payload(user, league, db)
+
+
+def _build_league_payload(user: User, league: "Any", db: Session) -> dict[str, Any]:
+    """Build the full league payload shared by GET /auth/league and POST /auth/leagues/{id}/activate."""
+    from fantasai.models.league import Team
     from fantasai.models.player import Player as PlayerModel
+
+    all_teams = db.query(Team).filter(Team.league_id == league.league_id).all()
 
     all_roster_ids: set[int] = set()
     for t in all_teams:
@@ -545,6 +591,8 @@ def get_league(
             .all()
         )
         player_name_map = {r.player_id: r.name for r in rows}
+
+    my_team = next((t for t in all_teams if t.owner_user_id == user.id), None)
 
     teams_out = [
         {
@@ -575,3 +623,26 @@ def get_league(
         "my_team_id": my_team.team_id if my_team else None,
         "teams": teams_out,
     }
+
+
+@router.get("/league")
+def get_league(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return the user's active Yahoo league settings and all teams.
+
+    Used by the frontend LeagueContext to auto-populate league info.
+    Returns 404 if the user has no connected Yahoo league.
+    """
+    from fantasai.models.league import League
+
+    conn = user.yahoo_connection
+    if not conn or not conn.league_key:
+        raise HTTPException(status_code=404, detail="No Yahoo league connected")
+
+    league = db.query(League).filter(League.league_id == conn.league_key).first()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found in database")
+
+    return _build_league_payload(user, league, db)

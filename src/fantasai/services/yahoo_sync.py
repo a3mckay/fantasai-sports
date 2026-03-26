@@ -172,93 +172,100 @@ def import_yahoo_league(
         _log.info("No Yahoo MLB leagues found for user %s", user.id)
         return
 
-    league_info = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)[0]
-    league_key = league_info["league_key"]
-    conn.league_key = league_key
+    # Sort newest season first.  Sync ALL leagues so users with multiple
+    # leagues can switch between them.  conn.league_key stays as the active
+    # league pointer — only set it here if the user has no active league yet.
+    all_leagues_sorted = sorted(leagues, key=lambda x: x.get("season", ""), reverse=True)
+    if not conn.league_key:
+        conn.league_key = all_leagues_sorted[0]["league_key"]
 
-    settings_data = fetch_league_settings(access_token, league_key)
+    for league_info in all_leagues_sorted:
+        league_key = league_info["league_key"]
+        is_active_league = (league_key == conn.league_key)
 
-    league = db.query(League).filter(League.league_id == league_key).first()
-    if league is None:
-        league = League(
-            league_id=league_key,
-            platform="yahoo",
-            sport="mlb",
-            league_type=league_info.get("scoring_type", "head"),
-        )
-        db.add(league)
+        settings_data = fetch_league_settings(access_token, league_key)
 
-    league.owner_user_id = user.id
-    league.scoring_categories = settings_data.get("stat_categories") or []
-    league.roster_positions = settings_data.get("roster_positions") or []
-    league.settings = {
-        "num_teams": league_info.get("num_teams"),
-        "name": league_info.get("name"),
-        "season": league_info.get("season"),
-        "keepers_per_team": settings_data.get("num_keepers", 0),
-    }
-    db.flush()
-
-    all_teams = fetch_all_league_teams(access_token, league_key)
-    _log.info("Syncing %d teams for league %s", len(all_teams), league_key)
-
-    for team_info in all_teams:
-        team_key = team_info["team_key"]
-        is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
-
-        if is_my_team:
-            conn.team_key = team_key
-
-        roster_data = fetch_team_roster(access_token, team_key)
-        roster_names = [p["name"] for p in roster_data]
-        resolved = resolve_player_names(roster_names, db)
-        roster_ids = [v for v in resolved.values() if v is not None]
-        # Update Player.positions in the DB from Yahoo's eligible_positions data
-        _update_player_positions_from_yahoo(db, roster_data, resolved)
-        _log.debug(
-            "Position update: %d roster entries processed for team %s",
-            len(roster_data), team_key,
-        )
-
-        # Look up by stable yahoo_team_key first (survives team renames).
-        # Fall back to name match for rows created before this column existed,
-        # then to owner_user_id for the syncing user's own team.
-        existing = db.query(Team).filter(
-            Team.league_id == league_key,
-            Team.yahoo_team_key == team_key,
-        ).first()
-
-        if existing is None:
-            existing = db.query(Team).filter(
-                Team.league_id == league_key,
-                Team.team_name == team_info["name"],
-            ).first()
-
-        if existing is None and is_my_team:
-            existing = db.query(Team).filter(
-                Team.owner_user_id == user.id,
-                Team.league_id == league_key,
-            ).first()
-
-        if existing is None:
-            existing = Team(
+        league = db.query(League).filter(League.league_id == league_key).first()
+        if league is None:
+            league = League(
                 league_id=league_key,
-                manager_name=team_info.get("manager_name", ""),
+                platform="yahoo",
+                sport="mlb",
+                league_type=league_info.get("scoring_type", "head"),
             )
-            db.add(existing)
+            db.add(league)
 
-        existing.yahoo_team_key = team_key
-        existing.team_name = team_info["name"]
-        existing.manager_name = team_info.get("manager_name", "")
-        existing.roster_names = roster_names
-        existing.roster = roster_ids
-        if is_my_team:
-            existing.owner_user_id = user.id
+        league.owner_user_id = user.id
+        league.scoring_categories = settings_data.get("stat_categories") or []
+        league.roster_positions = settings_data.get("roster_positions") or []
+        league.settings = {
+            "num_teams": league_info.get("num_teams"),
+            "name": league_info.get("name"),
+            "season": league_info.get("season"),
+            "keepers_per_team": settings_data.get("num_keepers", 0),
+        }
+        db.flush()
 
-        _log.info(
-            "Synced team '%s' (%s): %d players (%d resolved)",
-            team_info["name"], team_key, len(roster_names), len(roster_ids),
-        )
+        all_teams = fetch_all_league_teams(access_token, league_key)
+        _log.info("Syncing %d teams for league %s", len(all_teams), league_key)
+
+        for team_info in all_teams:
+            team_key = team_info["team_key"]
+            is_my_team = team_info.get("yahoo_guid") == conn.yahoo_guid
+
+            if is_my_team and is_active_league:
+                conn.team_key = team_key
+
+            roster_data = fetch_team_roster(access_token, team_key)
+            roster_names = [p["name"] for p in roster_data]
+            resolved = resolve_player_names(roster_names, db)
+            roster_ids = [v for v in resolved.values() if v is not None]
+            # Update Player.positions in the DB from Yahoo's eligible_positions data
+            _update_player_positions_from_yahoo(db, roster_data, resolved)
+            _log.debug(
+                "Position update: %d roster entries processed for team %s",
+                len(roster_data), team_key,
+            )
+
+            # Look up by stable yahoo_team_key first (survives team renames).
+            # Fall back to name match for rows created before this column existed,
+            # then to owner_user_id for the syncing user's own team.
+            existing = db.query(Team).filter(
+                Team.league_id == league_key,
+                Team.yahoo_team_key == team_key,
+            ).first()
+
+            if existing is None:
+                existing = db.query(Team).filter(
+                    Team.league_id == league_key,
+                    Team.team_name == team_info["name"],
+                ).first()
+
+            if existing is None and is_my_team:
+                existing = db.query(Team).filter(
+                    Team.owner_user_id == user.id,
+                    Team.league_id == league_key,
+                ).first()
+
+            if existing is None:
+                existing = Team(
+                    league_id=league_key,
+                    manager_name=team_info.get("manager_name", ""),
+                )
+                db.add(existing)
+
+            existing.yahoo_team_key = team_key
+            existing.team_name = team_info["name"]
+            existing.manager_name = team_info.get("manager_name", "")
+            existing.roster_names = roster_names
+            existing.roster = roster_ids
+            if is_my_team:
+                existing.owner_user_id = user.id
+
+            _log.info(
+                "Synced team '%s' (%s): %d players (%d resolved)",
+                team_info["name"], team_key, len(roster_names), len(roster_ids),
+            )
 
     # Player.positions in the DB have been updated from Yahoo's eligible_positions
     # data — bust the rankings cache so the next rankings request reflects the

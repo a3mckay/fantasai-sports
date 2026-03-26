@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
-import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, ChevronRight } from 'lucide-react'
+import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, ChevronRight, RefreshCw } from 'lucide-react'
+import { useLeague } from '../contexts/LeagueContext'
 
 // Order mirrors the left-hand nav
 const FEATURES = [
@@ -67,6 +68,62 @@ const COLOR_MAP = {
   stitch:  'bg-stitch-500/10 border-stitch-500/30 text-stitch-400',
 }
 
+function LeagueSwitcher() {
+  const { league, allLeagues, switching, switchLeague } = useLeague() || {}
+
+  // Only render when the user has 2+ leagues
+  if (!allLeagues || allLeagues.length < 2) return null
+
+  return (
+    <div className="card space-y-3">
+      <div className="flex items-center gap-2">
+        <div className="w-1.5 h-3.5 rounded-full bg-field-500 shrink-0" />
+        <span className="text-sm font-semibold text-white">Your Leagues</span>
+        <span className="text-xs text-slate-500 ml-1">· click to switch active league</span>
+        {switching && (
+          <RefreshCw size={12} className="ml-auto animate-spin text-slate-500" />
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {allLeagues.map(lg => (
+          <button
+            key={lg.league_id}
+            onClick={() => !lg.is_active && switchLeague(lg.league_id)}
+            disabled={switching || lg.is_active}
+            className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+              lg.is_active
+                ? 'bg-field-900/50 border-field-700 cursor-default'
+                : 'bg-navy-800 border-navy-700 hover:border-navy-600 hover:bg-navy-750 cursor-pointer'
+            } ${switching && !lg.is_active ? 'opacity-50' : ''}`}
+          >
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-medium ${lg.is_active ? 'text-white' : 'text-slate-300'}`}>
+                    {lg.league_name}
+                  </span>
+                  {lg.is_active && (
+                    <span className="text-[10px] font-semibold text-field-400 bg-field-900 border border-field-700 rounded px-1.5 py-0.5">
+                      Active
+                    </span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  {lg.season} · {lg.num_teams} teams · {lg.league_type}
+                </div>
+              </div>
+              {!lg.is_active && (
+                <ChevronRight size={13} className="text-slate-600 shrink-0" />
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
   return (
     <div className="space-y-12">
@@ -88,6 +145,9 @@ export default function Home() {
           <div className="h-px w-16 bg-gradient-to-l from-transparent to-stitch-500/40" />
         </div>
       </div>
+
+      {/* League switcher — only rendered when user has 2+ leagues */}
+      <LeagueSwitcher />
 
       {/* Feature grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

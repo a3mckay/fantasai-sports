@@ -64,6 +64,10 @@ const get  = (path)       => req('GET',  path)
 const post = (path, body) => req('POST', path, body)
 
 
+// ── Auth / Leagues ────────────────────────────────────────────────────────────
+export const listUserLeagues  = ()          => req('GET',  '/api/v1/auth/leagues')
+export const activateLeague   = (leagueId)  => req('POST', `/api/v1/auth/leagues/${encodeURIComponent(leagueId)}/activate`)
+
 // ── Players ──────────────────────────────────────────────────────────────────
 export const searchPlayers = (q, limit = 20) =>
   get(`/api/v1/players?search=${encodeURIComponent(q)}&limit=${limit}`)
