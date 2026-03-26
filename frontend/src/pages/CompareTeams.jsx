@@ -16,6 +16,14 @@ import { useLeague } from '../contexts/LeagueContext'
 // Categories that should never appear in pills or bars
 const SKIP_CATS = new Set(['H/AB', 'Batting', 'Pitching', 'AB'])
 
+// Derive strong/weak pills from within-group percentiles so pills match bars
+function pillsFromPercentiles(pcts) {
+  const entries = Object.entries(pcts || {}).filter(([c]) => !SKIP_CATS.has(c))
+  const strong = entries.filter(([, p]) => p >= 70).sort((a, b) => b[1] - a[1]).map(([c]) => c)
+  const weak   = entries.filter(([, p]) => p <= 30).sort((a, b) => a[1] - b[1]).map(([c]) => c)
+  return { strong, weak }
+}
+
 // Compute within-group percentiles so bars reflect rank among compared teams,
 // not rank vs. all players in the global player pool (which inflates to ~99th).
 function computeGroupPercentiles(snapshots) {
@@ -40,6 +48,10 @@ function computeGroupPercentiles(snapshots) {
 
 function TeamCard({ snap, rank, isWinner, percentiles, numTeams }) {
   const [expanded, setExpanded] = useState(false)
+  const { strong: strongCats, weak: weakCats } = percentiles
+    ? pillsFromPercentiles(percentiles)
+    : { strong: snap.strong_cats.filter(c => !SKIP_CATS.has(c)), weak: snap.weak_cats.filter(c => !SKIP_CATS.has(c)) }
+
   return (
     <div className={`card ${isWinner ? 'border-field-600' : ''}`}>
       <div className="flex items-start gap-3 mb-3">
@@ -51,10 +63,10 @@ function TeamCard({ snap, rank, isWinner, percentiles, numTeams }) {
             <span className="ml-auto font-mono text-sm text-field-400">{snap.power_score.toFixed(2)}</span>
           </div>
           <div className="flex flex-wrap gap-1 mt-1.5">
-            {snap.strong_cats.filter(c => !SKIP_CATS.has(c)).map(c => (
+            {strongCats.slice(0, 4).map(c => (
               <span key={c} className="stat-pill bg-field-900 text-field-300 text-[10px]">{c} ▲</span>
             ))}
-            {snap.weak_cats.filter(c => !SKIP_CATS.has(c)).slice(0, 3).map(c => (
+            {weakCats.slice(0, 3).map(c => (
               <span key={c} className="stat-pill bg-red-950/50 text-red-400 text-[10px]">{c} ▼</span>
             ))}
           </div>
