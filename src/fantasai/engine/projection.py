@@ -232,6 +232,7 @@ def project_hitter_stats(
     player: NormalizedPlayerData,
     config: HorizonConfig,
     steamer_data: Optional[NormalizedPlayerData] = None,
+    park_factor: float = 1.0,
 ) -> dict[str, float]:
     """Project hitter fantasy category stats for a given horizon.
 
@@ -349,13 +350,16 @@ def project_hitter_stats(
     est_ab = effective_pa * max(0.5, 1.0 - proj_bb_pct - 0.01)
 
     proj_h   = proj_avg * est_ab
-    proj_hr  = proj_hr_rate * effective_pa
+    proj_hr  = proj_hr_rate * effective_pa * park_factor
     proj_sb  = proj_sb_rate * effective_pa
     proj_bb  = proj_bb_pct * effective_pa
 
     # R estimate: linear approximation from OBP and SLG
     # Based on run-value research: R/PA ≈ 0.42*OBP + 0.09*SLG
-    proj_r   = (0.42 * proj_obp + 0.09 * proj_slg) * effective_pa
+    # Cap the park factor applied to R at 1.10 to avoid over-inflation in
+    # extreme parks (e.g. Coors) where the run environment boosts R less
+    # directly than HR.
+    proj_r   = (0.42 * proj_obp + 0.09 * proj_slg) * effective_pa * min(park_factor, 1.10)
 
     # RBI estimate: power-driven; ISO = SLG − AVG proxies extra-base hit rate
     iso      = max(0.0, proj_slg - proj_avg)

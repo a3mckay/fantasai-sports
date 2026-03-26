@@ -32,6 +32,13 @@ from fantasai.schemas.recommendation import (
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 # ---------------------------------------------------------------------------
+# Schedule cache — weekly schedule data for This Week rankings
+# ---------------------------------------------------------------------------
+
+_SCHEDULE_CACHE: dict[str, tuple[float, dict]] = {}  # key=week_start_iso, value=(ts, overrides)
+_SCHEDULE_TTL = 3600  # 1 hour
+
+# ---------------------------------------------------------------------------
 # Rankings cache — avoid re-querying 935 PlayerStats on every request
 # ---------------------------------------------------------------------------
 
@@ -312,12 +319,41 @@ def _compute_rankings(
             nd.injury_return_date = ir.return_date
 
     import copy
+    from fantasai.engine.projection import HORIZON_CONFIGS
+    from fantasai.engine.schedule import (
+        fetch_weekly_schedule,
+        build_week_configs,
+        get_current_week_bounds,
+    )
+
+    # ── Build schedule overrides for This Week horizon ──────────────────────
+    week_configs: dict | None = None
+    if horizon == ProjectionHorizon.WEEK:
+        try:
+            week_start, week_end = get_current_week_bounds()
+            cache_key_sched = week_start.isoformat()
+            sched_entry = _SCHEDULE_CACHE.get(cache_key_sched)
+            if sched_entry is not None:
+                sched_ts, week_configs = sched_entry
+                if time.monotonic() - sched_ts > _SCHEDULE_TTL:
+                    week_configs = None
+            if week_configs is None:
+                schedule = fetch_weekly_schedule(week_start, week_end, db)
+                week_configs = build_week_configs(schedule, HORIZON_CONFIGS[ProjectionHorizon.WEEK])
+                _SCHEDULE_CACHE[cache_key_sched] = (time.monotonic(), week_configs)
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Schedule fetch failed, ranking without overrides: %s", exc
+            )
+            week_configs = None
 
     adapter = MLBAdapter()
     engine = ScoringEngine(adapter, categories)
     lookback = engine.compute_lookback_rankings(2026, players=players)
     predictive = engine.compute_predictive_rankings(
         2026, players=players, horizon=horizon, steamer_lookup=steamer_lookup,
+        schedule_overrides=week_configs or None,
     )
 
     # Store non-deduped (raw) rankings before deduplication so the rankings

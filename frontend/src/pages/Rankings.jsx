@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw,
-  Search, X, ChevronDown, ChevronUp, ArrowUp,
+  Search, X, ChevronDown, ChevronUp, ArrowUp, Calendar,
 } from 'lucide-react'
-import { getRankings } from '../lib/api'
+import { getRankings, getWeekMode } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PercentileBar from '../components/PercentileBar'
@@ -35,6 +35,11 @@ function displayPositions(player) {
     return filtered.length > 0 ? filtered : positions
   }
   return positions
+}
+
+function formatDate(iso) {
+  const d = new Date(iso + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +142,7 @@ export default function Rankings() {
   const [current, setCurrent]       = useState(null)    // Current Season YTD stats rankings
   const [expandedRows, setExpandedRows] = useState(new Set())
   const [showBackTop, setShowBackTop]   = useState(false)
+  const [weekMode, setWeekMode]         = useState(null)
   const searchRef     = useRef(null)
   const initialRender = useRef(true)
 
@@ -155,6 +161,15 @@ export default function Rankings() {
       fetchCurrent()
     }
   }, [mode])
+
+  // Fetch week-mode context when in Projected + This Week
+  useEffect(() => {
+    if (mode === 'predictive' && horizon === 'week') {
+      getWeekMode().then(setWeekMode).catch(() => {})
+    } else {
+      setWeekMode(null)
+    }
+  }, [mode, horizon])
 
   // Reset to first page whenever filters change
   useEffect(() => { setPageSize(50) }, [mode, posFilter, levelFilter, rosterFilter, search, horizon])
@@ -374,6 +389,26 @@ export default function Rankings() {
         </div>
       )}
 
+      {/* ── This Week schedule context banner ── */}
+      {mode === 'predictive' && horizon === 'week' && weekMode && (
+        <div className="flex items-start gap-2 text-xs text-slate-400">
+          <Calendar size={13} className="mt-0.5 shrink-0 text-slate-500" />
+          <div>
+            <span>
+              {weekMode.show_next_week
+                ? <>Next week: {formatDate(weekMode.next_week_start)} – {formatDate(
+                    (() => { const d = new Date(weekMode.next_week_start + 'T00:00:00'); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10) })()
+                  )} <span className="text-slate-500">(preview mode)</span></>
+                : <>This week: {formatDate(weekMode.current_week_start)} – {formatDate(
+                    (() => { const d = new Date(weekMode.current_week_start + 'T00:00:00'); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10) })()
+                  )}</>
+              }
+            </span>
+            <span className="text-slate-500 ml-2">· SPs ranked by probable starts · batters by games scheduled</span>
+          </div>
+        </div>
+      )}
+
       {/* ── Current Season context note ── */}
       {mode === 'current' && (
         <p className="text-xs text-slate-500">
@@ -503,6 +538,12 @@ export default function Rankings() {
                         <span className="font-medium text-white text-sm">{player.name}</span>
 {player.team && (
                           <span className="text-xs text-slate-500 hidden sm:inline">({player.team})</span>
+                        )}
+                        {/* AI blurb badge */}
+                        {player.blurb && (
+                          <span className="text-[9px] font-semibold text-field-600 bg-field-950 border border-field-800/50 rounded px-1 py-0.5 leading-none">
+                            AI
+                          </span>
                         )}
                         {/* Current IL badge */}
                         {player.injury_status && player.injury_status !== 'active' && (

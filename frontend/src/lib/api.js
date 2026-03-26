@@ -95,3 +95,5 @@ export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, 
   if (horizon)  params.set('horizon', horizon)
   return get(`/api/v1/rankings?${params}`)
 }
+
+export const getWeekMode = () => get('/api/v1/rankings/week-mode')

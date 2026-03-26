@@ -89,6 +89,23 @@ def _monday_week_reset() -> None:
     _log.info("This Week reset to current week")
 
 
+def _monday_blurb_generation() -> None:
+    """Monday 4am EST: generate fresh AI blurbs for top 300 players in all ranking modes."""
+    from fantasai.database import SessionLocal
+    from fantasai.brain.blurb_scheduler import generate_rankings_blurbs
+
+    _log.info("Monday blurb generation starting")
+    db = SessionLocal()
+    try:
+        for mode in ["season", "current", "week", "month"]:
+            result = generate_rankings_blurbs(db, settings.anthropic_api_key, mode=mode, top_n=300)
+            _log.info("Blurb generation: %s", result)
+    except Exception:
+        _log.error("Monday blurb generation failed", exc_info=True)
+    finally:
+        db.close()
+
+
 def _warm_rankings_cache() -> None:
     """Pre-compute SEASON rankings on startup so the first user request is fast.
 
@@ -165,6 +182,18 @@ async def lifespan(app: FastAPI):
         minute=0,
         id="monday-week-reset",
         max_instances=1,
+    )
+
+    # Monday 4am EST — generate fresh AI blurbs for top 300 players in all ranking modes
+    scheduler.add_job(
+        _monday_blurb_generation,
+        trigger="cron",
+        day_of_week="mon",
+        hour=9,
+        minute=30,
+        id="monday-blurbs",
+        max_instances=1,
+        misfire_grace_time=600,
     )
 
     scheduler.start()

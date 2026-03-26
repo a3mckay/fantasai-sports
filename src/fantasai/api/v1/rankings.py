@@ -333,6 +333,21 @@ def sync_current_stats(
     return {"season": season, "rows_upserted": rows, "status": "ok"}
 
 
+@router.post("/generate-blurbs", tags=["admin"])
+def generate_blurbs(
+    mode: str = Query(default="season", pattern="^(week|month|season|current)$"),
+    top_n: int = Query(default=300, ge=10, le=500),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Generate AI blurbs for the top N players in the given ranking mode.
+
+    Runs the same logic as the Monday 4am scheduled job.
+    mode: "season" (ROS), "week", "month", "current" (YTD)
+    """
+    from fantasai.brain.blurb_scheduler import generate_rankings_blurbs
+    return generate_rankings_blurbs(db, settings.anthropic_api_key, mode=mode, top_n=top_n)
+
+
 # ---------------------------------------------------------------------------
 # Admin: prospect sync
 # ---------------------------------------------------------------------------
