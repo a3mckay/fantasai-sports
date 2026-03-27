@@ -79,13 +79,37 @@ def list_transactions(
     return [_txn_to_read(t) for t in q.offset(offset).limit(limit).all()]
 
 
+@router.get("/watermark")
+def get_ticker_watermark(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Return the current max graded transaction id for this league.
+
+    The ticker calls this on first mount to initialize its since_id so that
+    historical (backfilled) transactions never appear.
+    """
+    from sqlalchemy import func
+    from fantasai.models.user import YahooConnection
+    conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
+    if not conn or not conn.league_key:
+        return {"max_id": 0}
+
+    max_id = (
+        db.query(func.max(Transaction.id))
+        .filter(Transaction.league_id == conn.league_key)
+        .scalar()
+    ) or 0
+    return {"max_id": max_id}
+
+
 @router.get("/unseen", response_model=list[TransactionRead])
 def list_unseen_transactions(
     since_id: Optional[int] = Query(default=None, description="Return transactions with id > since_id"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Return graded transactions newer than since_id (for the ticker)."""
+    """Return graded, non-backfill transactions newer than since_id (for the ticker)."""
     from fantasai.models.user import YahooConnection
     conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
     if not conn or not conn.league_key:
@@ -96,6 +120,7 @@ def list_unseen_transactions(
         .filter(
             Transaction.league_id == conn.league_key,
             Transaction.grade_letter.isnot(None),
+            Transaction.is_backfill.is_(False),
         )
     )
     if since_id:
@@ -156,3 +181,21 @@ def poll_transactions(
     from fantasai.services.yahoo_transactions import poll_all_leagues
     background_tasks.add_task(poll_all_leagues)
     return {"status": "polling", "message": "Transaction poll started in background"}
+
+
+@router.post("/backfill", status_code=202)
+def backfill_transactions(
+    background_tasks: BackgroundTasks,
+    count: int = Query(default=200, ge=1, le=500, description="Number of historical transactions to import"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Import historical transactions and grade them without surfacing in the ticker.
+
+    Fetches up to `count` recent transactions from Yahoo, stores them with
+    is_backfill=True so they appear in the Move Grades feed but never trigger
+    the site-wide ticker notification bar.
+    """
+    from fantasai.services.yahoo_transactions import poll_all_leagues
+    background_tasks.add_task(poll_all_leagues, count, True)
+    return {"status": "backfilling", "message": f"Importing up to {count} historical transactions in background"}

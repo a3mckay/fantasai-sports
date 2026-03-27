@@ -221,24 +221,37 @@ def _compute_rankings(
     from fantasai.adapters.mlb import MLBAdapter
     from fantasai.models.player import Player
 
-    # ── Load 2026 YTD actual stats ──────────────────────────────────────────
-    stats_rows = db.query(PlayerStats).filter(
+    # ── Load 2026 YTD actual stats (lookback signal) ───────────────────────
+    actual_rows = db.query(PlayerStats).filter(
         PlayerStats.season == 2026,
         PlayerStats.stat_type.in_(["batting", "pitching"]),
+        PlayerStats.data_source == "actual",
     ).all()
 
-    if not stats_rows:
+    # ── Load 2026 Steamer projections (forward-looking talent signal) ──────
+    # Kept separate from actuals so the two can coexist.
+    # Steamer-only players (prospects / MiLB) who have no actual rows are
+    # included in the predictive player pool.
+    steamer_rows = db.query(PlayerStats).filter(
+        PlayerStats.season == 2026,
+        PlayerStats.stat_type.in_(["batting", "pitching"]),
+        PlayerStats.data_source == "projection",
+    ).all()
+
+    if not actual_rows and not steamer_rows:
         return [], []
 
-    # Batch-load all players referenced by stats (avoids N+1 round trips)
-    stat_player_ids = {s.player_id for s in stats_rows}
+    # Batch-load all referenced players
+    all_stat_player_ids = {s.player_id for s in actual_rows} | {s.player_id for s in steamer_rows}
     player_map = {
         p.player_id: p
-        for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
+        for p in db.query(Player).filter(Player.player_id.in_(all_stat_player_ids)).all()
     }
 
+    # Build player list from actual rows (lookback) first
     players = []
-    for stats in stats_rows:
+    ytd_player_ids: set[int] = set()
+    for stats in actual_rows:
         player = player_map.get(stats.player_id)
         if not player:
             continue
@@ -254,32 +267,34 @@ def _compute_rankings(
                 advanced_stats=stats.advanced_stats or {},
             )
         )
+        ytd_player_ids.add(stats.player_id)
+
+    # Early in the season before any actuals are synced, fall back to projection rows
+    if not players:
+        for stats in steamer_rows:
+            player = player_map.get(stats.player_id)
+            if not player:
+                continue
+            players.append(
+                NormalizedPlayerData(
+                    player_id=stats.player_id,
+                    name=player.name,
+                    team=player.team,
+                    positions=player.positions or [],
+                    stat_type=stats.stat_type,
+                    counting_stats=stats.counting_stats or {},
+                    rate_stats=stats.rate_stats or {},
+                    advanced_stats=stats.advanced_stats or {},
+                )
+            )
+            ytd_player_ids.add(stats.player_id)
 
     if not players:
         return [], []
 
-    # ── Load 2026 Steamer projections as the forward-looking talent signal ──
-    # These replace the homegrown xStats-derived talent estimates in the
-    # predictive blend, giving better age-curve / role-context signals.
-    # Also include Steamer-only players (prospects / MiLB) who have no 2026
-    # YTD rows — they participate in predictive rankings only.
-    steamer_rows = db.query(PlayerStats).filter(
-        PlayerStats.season == 2026,
-        PlayerStats.stat_type.in_(["batting", "pitching"]),
-    ).all()
+    full_player_map = player_map  # already contains all players
 
     steamer_lookup: dict[int, NormalizedPlayerData] = {}
-    ytd_player_ids = {p.player_id for p in players}
-
-    # Batch-load all Steamer player rows we don't already have
-    steamer_player_ids = {s.player_id for s in steamer_rows} - ytd_player_ids
-    extra_player_map = {
-        p.player_id: p
-        for p in db.query(Player).filter(Player.player_id.in_(steamer_player_ids)).all()
-    }
-    # Merge with already-loaded player_map
-    full_player_map = {**player_map, **extra_player_map}
-
     for stats in steamer_rows:
         player = full_player_map.get(stats.player_id)
         if not player:

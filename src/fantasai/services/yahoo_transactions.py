@@ -180,12 +180,17 @@ def build_participants(
     return []
 
 
-def poll_all_leagues() -> int:
+def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
     """Poll Yahoo transaction logs for all connected leagues.
 
     Fetches new transactions, stores them in the DB, and kicks off grading.
     Returns count of new transactions found.
     Called by APScheduler every 20 minutes.
+
+    Args:
+        count: Number of most-recent transactions to fetch from Yahoo.
+        is_backfill: If True, marks all inserted transactions as backfill so
+            they never appear in the ticker.
     """
     from fantasai.database import SessionLocal
     from fantasai.models.league import League, Team
@@ -229,7 +234,7 @@ def poll_all_leagues() -> int:
             all_players = db.query(Player).all()
             players_by_name: dict[str, int] = {p.name: p.player_id for p in all_players}
 
-            raw_transactions = fetch_league_transactions(access_token, conn.league_key)
+            raw_transactions = fetch_league_transactions(access_token, conn.league_key, count=count)
 
             for txn in raw_transactions:
                 yahoo_id = f"{conn.league_key}:{txn['transaction_id']}"
@@ -247,6 +252,7 @@ def poll_all_leagues() -> int:
                     transaction_type=txn["type"],
                     participants=participants,
                     yahoo_timestamp=txn.get("timestamp"),
+                    is_backfill=is_backfill,
                 )
                 db.add(new_txn)
                 total_new += 1
@@ -263,7 +269,7 @@ def poll_all_leagues() -> int:
         db.close()
 
     if total_new:
-        _log.info("poll_all_leagues: found %d new transactions", total_new)
+        _log.info("poll_all_leagues: found %d new transactions (backfill=%s)", total_new, is_backfill)
     return total_new
 
 

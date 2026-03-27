@@ -45,6 +45,17 @@ export default function TransactionTicker() {
   const getSeenId   = () => parseInt(localStorage.getItem(LS_SEEN_KEY) || '0', 10)
   const getHidden   = () => JSON.parse(localStorage.getItem(LS_HIDDEN_KEY) || '[]')
 
+  // On first mount, if no watermark is stored yet, fetch the current max id
+  // so that backfilled transactions never appear in the ticker.
+  const initWatermark = useCallback(async () => {
+    if (!user) return
+    if (localStorage.getItem(LS_SEEN_KEY) !== null) return  // already initialized
+    try {
+      const { max_id } = await req('GET', '/api/v1/transactions/watermark')
+      localStorage.setItem(LS_SEEN_KEY, String(max_id))
+    } catch { /* silent */ }
+  }, [user])
+
   const fetchItems = useCallback(async () => {
     if (!user) return
     try {
@@ -64,10 +75,10 @@ export default function TransactionTicker() {
 
   // Initial load + polling
   useEffect(() => {
-    fetchItems()
+    initWatermark().then(() => fetchItems())
     const pollId = setInterval(fetchItems, POLL_MS)
     return () => clearInterval(pollId)
-  }, [fetchItems])
+  }, [initWatermark, fetchItems])
 
   // Rotation
   useEffect(() => {

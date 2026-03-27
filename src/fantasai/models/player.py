@@ -44,7 +44,7 @@ class Player(TimestampMixin, Base):
 class PlayerStats(TimestampMixin, Base):
     __tablename__ = "player_stats"
     __table_args__ = (
-        UniqueConstraint("player_id", "season", "week", "stat_type", name="uq_player_stats"),
+        UniqueConstraint("player_id", "season", "week", "stat_type", "data_source", name="uq_player_stats"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

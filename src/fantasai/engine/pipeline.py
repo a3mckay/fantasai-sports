@@ -733,22 +733,19 @@ def _upsert_player_stats(
     data: NormalizedPlayerData,
     season: int,
     week: Optional[int],
+    data_source: str = "projection",
 ) -> None:
     """Insert or update a PlayerStats record."""
-    existing = (
-        db.query(PlayerStats)
-        .filter(
-            and_(
-                PlayerStats.player_id == data.player_id,
-                PlayerStats.season == season,
-                PlayerStats.week == week
-                if week is not None
-                else PlayerStats.week.is_(None),
-                PlayerStats.stat_type == data.stat_type,
-            )
+    q = db.query(PlayerStats).filter(
+        and_(
+            PlayerStats.player_id == data.player_id,
+            PlayerStats.season == season,
+            PlayerStats.week == week if week is not None else PlayerStats.week.is_(None),
+            PlayerStats.stat_type == data.stat_type,
+            PlayerStats.data_source == data_source,
         )
-        .first()
     )
+    existing = q.first()
 
     if existing is None:
         stats = PlayerStats(
@@ -756,6 +753,7 @@ def _upsert_player_stats(
             season=season,
             week=week,
             stat_type=data.stat_type,
+            data_source=data_source,
             counting_stats=data.counting_stats,
             rate_stats=data.rate_stats,
             advanced_stats=data.advanced_stats,
@@ -870,6 +868,7 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                     PlayerStats.season == season,
                     PlayerStats.week.is_(None),
                     PlayerStats.stat_type == "batting",
+                    PlayerStats.data_source == "actual",
                 )
             )
             .first()
@@ -886,7 +885,6 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                 advanced_stats={},
             ))
         else:
-            existing.data_source = "actual"
             existing.counting_stats = counting_stats
             existing.rate_stats = rate_stats
             existing.advanced_stats = {}
@@ -975,6 +973,7 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                     PlayerStats.season == season,
                     PlayerStats.week.is_(None),
                     PlayerStats.stat_type == "pitching",
+                    PlayerStats.data_source == "actual",
                 )
             )
             .first()
@@ -991,7 +990,6 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                 advanced_stats={},
             ))
         else:
-            existing.data_source = "actual"
             existing.counting_stats = counting_stats
             existing.rate_stats = rate_stats
             existing.advanced_stats = {}
