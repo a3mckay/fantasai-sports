@@ -6,10 +6,12 @@ from fantasai.models.recommendation import Recommendation
 from fantasai.models.prospect import ProspectProfile
 from fantasai.models.user import User, YahooConnection, UserSettings, AnonymousUsage
 from fantasai.models.transaction import Transaction, GRADE_SCORES, GRADE_LETTERS
+from fantasai.models.matchup import MatchupAnalysis
 
 __all__ = [
     "Base", "Player", "PlayerStats", "League", "Team",
     "Ranking", "RankingSnapshot", "Recommendation", "ProspectProfile",
     "User", "YahooConnection", "UserSettings", "AnonymousUsage",
     "Transaction", "GRADE_SCORES", "GRADE_LETTERS",
+    "MatchupAnalysis",
 ]

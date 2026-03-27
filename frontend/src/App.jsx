@@ -21,6 +21,7 @@ import Profile        from './pages/Profile'
 import AdminPanel        from './pages/AdminPanel'
 import Transactions     from './pages/Transactions'
 import TransactionTicker from './components/TransactionTicker'
+import Matchups          from './pages/Matchups'
 
 const KEEPALIVE_MS = 2 * 60 * 1000 // 2 minutes — keeps Railway from sleeping
 
@@ -58,6 +59,7 @@ export default function App() {
                   <Route path="/compare-teams" element={<CompareTeams />} />
                   <Route path="/league-power"  element={<LeaguePower />} />
                   <Route path="/transactions"   element={<Transactions />} />
+                  <Route path="/matchups"       element={<Matchups />} />
                   <Route path="/profile"       element={<Profile />} />
                   <Route path="/admin"         element={<AdminPanel />} />
                 </Routes>

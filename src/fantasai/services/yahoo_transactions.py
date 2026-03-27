@@ -18,6 +18,22 @@ _log = logging.getLogger(__name__)
 
 _YAHOO_FANTASY_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
 
+# Map Yahoo's verbose transaction types → our canonical set (add | drop | trade)
+_TYPE_MAP: dict[str, str] = {
+    "add": "add",
+    "drop": "drop",
+    "waiver": "add",          # waiver claim: shows as an "add" (may also drop)
+    "add/drop": "add",        # combined waiver claim
+    "trade": "trade",
+    "accepted_trade": "trade",
+    "pending_trade": "trade",
+}
+
+
+def _normalize_txn_type(raw_type: str) -> str:
+    """Normalize a Yahoo transaction type to our canonical add/drop/trade."""
+    return _TYPE_MAP.get(raw_type, raw_type)
+
 
 def fetch_league_transactions(access_token: str, league_key: str, count: int = 50) -> list[dict]:
     """Fetch the most recent `count` transactions for a league from Yahoo.
@@ -28,16 +44,20 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
     """
     import httpx
 
-    url = f"{_YAHOO_FANTASY_BASE}/league/{league_key}/transactions"
-    params = {
-        "type": "add,drop,trade",
-        "count": count,
-        "format": "json",
-    }
+    # Yahoo Fantasy API v2 uses semicolons for path-level resource filters,
+    # not query params.  type/count must be in the path.
+    # Include all relevant transaction types: waiver (add from waivers + optional drop),
+    # add (add from FA), drop, and accepted_trade / pending_trade for trades.
+    url = (
+        f"{_YAHOO_FANTASY_BASE}/league/{league_key}"
+        f"/transactions;type=add,drop,waiver,accepted_trade,pending_trade;count={count}"
+    )
+    params = {"format": "json"}
     headers = {"Authorization": f"Bearer {access_token}"}
 
     try:
         resp = httpx.get(url, params=params, headers=headers, timeout=15)
+        _log.debug("fetch_league_transactions: %s → HTTP %s", resp.url, resp.status_code)
         resp.raise_for_status()
         data = resp.json()
     except Exception:
@@ -56,10 +76,17 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
         return []
 
     if not transactions_raw or not isinstance(transactions_raw, dict):
+        _log.warning(
+            "fetch_league_transactions: no transactions block in response for %s — raw keys: %s",
+            league_key,
+            list(data.get("fantasy_content", {}).get("league", [{}])[-1].keys())[:10]
+            if isinstance(data.get("fantasy_content", {}).get("league"), list) else "N/A",
+        )
         return []
 
     results = []
     count_val = transactions_raw.get("count", 0)
+    _log.info("fetch_league_transactions: Yahoo reports %s transactions for %s", count_val, league_key)
     for i in range(int(count_val)):
         raw = transactions_raw.get(str(i), {}).get("transaction", [])
         if not raw:
@@ -68,7 +95,9 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
             meta = raw[0]
             players_block = raw[1].get("players", {}) if len(raw) > 1 else {}
             txn_id = meta.get("transaction_id", "")
-            txn_type = meta.get("type", "")  # "add", "drop", "trade"
+            # Normalize Yahoo's verbose types to our canonical set (add/drop/trade)
+            _raw_type = meta.get("type", "")
+            txn_type = _normalize_txn_type(_raw_type)
             timestamp_raw = meta.get("timestamp")
             timestamp = (
                 datetime.fromtimestamp(int(timestamp_raw), tz=timezone.utc)
@@ -128,7 +157,9 @@ def build_participants(
     if txn_type in ("add", "drop"):
         parts = []
         for p in players:
-            action = p.get("type", txn_type)
+            # Each player entry carries its own per-player action ("add" or "drop"),
+            # which matters for waiver claims stored as "add" that also drop a player.
+            action = p.get("type") or txn_type
             team_key = p.get("destination_team_key") or p.get("source_team_key", "")
             team = teams_by_key.get(team_key, {})
             parts.append({

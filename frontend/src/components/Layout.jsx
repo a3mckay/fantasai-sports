@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   BarChart2, ArrowLeftRight, Search, Star, Users,
-  Trophy, Zap, Menu, X, Activity, TrendingUp, UserCircle, Shield, LogOut, ScrollText
+  Trophy, Zap, Menu, X, Activity, TrendingUp, UserCircle, Shield, LogOut, ScrollText, Swords
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
@@ -16,6 +16,7 @@ const NAV = [
   { to: '/compare-teams', icon: Users,          label: 'Compare Teams'      },
   { to: '/league-power',  icon: Zap,            label: 'League Power'       },
   { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning'    },
+  { to: '/matchups',      icon: Swords,         label: 'Matchup Analyzer'   },
   { to: '/transactions',  icon: ScrollText,     label: 'Move Grades'        },
 ]
 
