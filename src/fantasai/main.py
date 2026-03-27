@@ -45,20 +45,21 @@ from fantasai.api.v1.analysis import router as analysis_router  # noqa: E402
 from fantasai.api.v1.auth import router as auth_router  # noqa: E402
 from fantasai.api.v1.users import router as users_router  # noqa: E402
 from fantasai.api.v1.settings import router as settings_router  # noqa: E402
+from fantasai.api.v1.transactions import router as transactions_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
 
 def _nightly_stats_refresh() -> None:
-    """Nightly 4am EST: fetch current-season stats, recompute rankings, write snapshots."""
+    """Nightly 4am EST: fetch current-season stats via MLB Stats API, recompute rankings."""
     from fantasai.database import SessionLocal
-    from fantasai.engine.pipeline import sync_current_season_stats, write_ranking_snapshots
+    from fantasai.engine.pipeline import sync_mlb_api_current_season
 
     _log.info("Nightly stats refresh starting")
 
     db = SessionLocal()
     try:
-        count = sync_current_season_stats(db, season=2026)
+        count = sync_mlb_api_current_season(db, season=2026)
         _log.info("Nightly refresh: upserted %d stat rows", count)
 
         # Clear rankings cache so next request recomputes with fresh data
@@ -196,6 +197,29 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=600,
     )
 
+    # Daytime MLB Stats API refresh every 3 hours (noon–9pm EST) during the season
+    # so current rankings stay up-to-date between the nightly run and live games
+    scheduler.add_job(
+        _nightly_stats_refresh,
+        trigger="cron",
+        hour="15,18,21",  # 10am / 1pm / 4pm EST (UTC-5)
+        minute=0,
+        id="daytime-stats-refresh",
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
+    # Transaction polling every 20 min — grade new adds/drops/trades from Yahoo
+    from fantasai.services.yahoo_transactions import poll_all_leagues
+    scheduler.add_job(
+        poll_all_leagues,
+        trigger="interval",
+        minutes=20,
+        id="transaction-poll",
+        max_instances=1,
+        misfire_grace_time=120,
+    )
+
     scheduler.start()
     _log.info("Yahoo sync scheduler started (interval=2h)")
 
@@ -235,3 +259,4 @@ app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(settings_router, prefix="/api/v1")
+app.include_router(transactions_router, prefix="/api/v1")

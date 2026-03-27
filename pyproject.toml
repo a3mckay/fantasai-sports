@@ -20,6 +20,7 @@ dependencies = [
     "cryptography>=41",
     "resend>=2.0",
     "apscheduler>=3.10",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]

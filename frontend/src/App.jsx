@@ -18,7 +18,9 @@ import LeaguePower    from './pages/LeaguePower'
 import Login          from './pages/Login'
 import Onboarding     from './pages/Onboarding'
 import Profile        from './pages/Profile'
-import AdminPanel     from './pages/AdminPanel'
+import AdminPanel        from './pages/AdminPanel'
+import Transactions     from './pages/Transactions'
+import TransactionTicker from './components/TransactionTicker'
 
 const KEEPALIVE_MS = 2 * 60 * 1000 // 2 minutes — keeps Railway from sleeping
 
@@ -35,6 +37,7 @@ export default function App() {
       <AuthProvider>
         <LeagueProvider>
         <MeterBanner />
+        <TransactionTicker />
         <Routes>
           {/* Public routes — no auth required */}
           <Route path="/login"      element={<Login />} />
@@ -54,6 +57,7 @@ export default function App() {
                   <Route path="/keeper-eval"   element={<KeeperEval />} />
                   <Route path="/compare-teams" element={<CompareTeams />} />
                   <Route path="/league-power"  element={<LeaguePower />} />
+                  <Route path="/transactions"   element={<Transactions />} />
                   <Route path="/profile"       element={<Profile />} />
                   <Route path="/admin"         element={<AdminPanel />} />
                 </Routes>

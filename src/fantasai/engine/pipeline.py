@@ -765,3 +765,243 @@ def _upsert_player_stats(
         existing.counting_stats = data.counting_stats
         existing.rate_stats = data.rate_stats
         existing.advanced_stats = data.advanced_stats
+
+
+def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
+    """Fetch current-season stats from MLB Stats API and upsert to PlayerStats.
+
+    More real-time than pybaseball/FanGraphs — updates same day, ~2 hours after
+    games finish.  Matches players via Player.mlbam_id.
+
+    Returns: number of PlayerStats rows upserted.
+    """
+    import math
+
+    import httpx
+
+    from fantasai.models.player import Player, PlayerStats
+
+    MLB_BASE = "https://statsapi.mlb.com/api/v1"
+
+    # Build mlbam_id → player_id lookup
+    players_with_mlbam = db.query(Player).filter(Player.mlbam_id.isnot(None)).all()
+    mlbam_to_player_id: dict[int, int] = {p.mlbam_id: p.player_id for p in players_with_mlbam}
+
+    if not mlbam_to_player_id:
+        logger.warning(
+            "sync_mlb_api_current_season: no players with mlbam_id — run backfill_mlbam_ids first"
+        )
+        return 0
+
+    logger.info(
+        "sync_mlb_api_current_season: %d players with mlbam_id available", len(mlbam_to_player_id)
+    )
+
+    def _fv(stat: dict, key: str) -> Optional[float]:
+        v = stat.get(key)
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    total_upserted = 0
+
+    # ── Hitting ───────────────────────────────────────────────────────────────
+    try:
+        resp = httpx.get(
+            f"{MLB_BASE}/stats",
+            params={
+                "stats": "season",
+                "group": "hitting",
+                "playerPool": "all",
+                "season": season,
+                "sportId": 1,
+                "limit": 2000,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        hitting_splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        logger.info("sync_mlb_api_current_season: %d hitting splits", len(hitting_splits))
+    except Exception:
+        logger.error("sync_mlb_api_current_season: hitting fetch failed", exc_info=True)
+        hitting_splits = []
+
+    for split in hitting_splits:
+        mlbam_id = split.get("player", {}).get("id")
+        if not mlbam_id:
+            continue
+        player_id = mlbam_to_player_id.get(int(mlbam_id))
+        if not player_id:
+            continue
+        stat = split.get("stat", {})
+        pa = _fv(stat, "plateAppearances")
+        if not pa:
+            continue  # skip players with no plate appearances
+
+        counting_stats = {
+            "PA":  pa,
+            "AB":  _fv(stat, "atBats"),
+            "H":   _fv(stat, "hits"),
+            "HR":  _fv(stat, "homeRuns"),
+            "R":   _fv(stat, "runs"),
+            "RBI": _fv(stat, "rbi"),
+            "SB":  _fv(stat, "stolenBases"),
+            "BB":  _fv(stat, "baseOnBalls"),
+            "SO":  _fv(stat, "strikeOuts"),
+            "2B":  _fv(stat, "doubles"),
+            "3B":  _fv(stat, "triples"),
+        }
+        rate_stats = {
+            "AVG": _fv(stat, "avg"),
+            "OBP": _fv(stat, "obp"),
+            "SLG": _fv(stat, "slg"),
+            "OPS": _fv(stat, "ops"),
+        }
+
+        existing = (
+            db.query(PlayerStats)
+            .filter(
+                and_(
+                    PlayerStats.player_id == player_id,
+                    PlayerStats.season == season,
+                    PlayerStats.week.is_(None),
+                    PlayerStats.stat_type == "batting",
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            db.add(PlayerStats(
+                player_id=player_id,
+                season=season,
+                week=None,
+                stat_type="batting",
+                data_source="actual",
+                counting_stats=counting_stats,
+                rate_stats=rate_stats,
+                advanced_stats={},
+            ))
+        else:
+            existing.data_source = "actual"
+            existing.counting_stats = counting_stats
+            existing.rate_stats = rate_stats
+            existing.advanced_stats = {}
+        total_upserted += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("sync_mlb_api_current_season: hitting commit failed", exc_info=True)
+
+    # ── Pitching ─────────────────────────────────────────────────────────────
+    try:
+        resp = httpx.get(
+            f"{MLB_BASE}/stats",
+            params={
+                "stats": "season",
+                "group": "pitching",
+                "playerPool": "all",
+                "season": season,
+                "sportId": 1,
+                "limit": 2000,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        pitching_splits = resp.json().get("stats", [{}])[0].get("splits", [])
+        logger.info("sync_mlb_api_current_season: %d pitching splits", len(pitching_splits))
+    except Exception:
+        logger.error("sync_mlb_api_current_season: pitching fetch failed", exc_info=True)
+        pitching_splits = []
+
+    for split in pitching_splits:
+        mlbam_id = split.get("player", {}).get("id")
+        if not mlbam_id:
+            continue
+        player_id = mlbam_to_player_id.get(int(mlbam_id))
+        if not player_id:
+            continue
+        stat = split.get("stat", {})
+        ip_raw = stat.get("inningsPitched")
+        if not ip_raw:
+            continue
+
+        try:
+            ip = float(ip_raw)
+        except (TypeError, ValueError):
+            continue
+        if ip <= 0:
+            continue
+
+        # K/9 and BB/9 computed from raw totals
+        so = _fv(stat, "strikeOuts") or 0.0
+        bb = _fv(stat, "baseOnBalls") or 0.0
+        k9 = round(so / ip * 9, 2) if ip > 0 else None
+        bb9 = round(bb / ip * 9, 2) if ip > 0 else None
+        kbb_pct = round((so - bb) / max(1, _fv(stat, "battersFaced") or 1), 4) if ip > 0 else None
+
+        counting_stats = {
+            "IP":  ip,
+            "W":   _fv(stat, "wins"),
+            "L":   _fv(stat, "losses"),
+            "SV":  _fv(stat, "saves"),
+            "HLD": _fv(stat, "holds"),
+            "SO":  so,
+            "K":   so,
+            "BB":  bb,
+            "G":   _fv(stat, "gamesPlayed"),
+            "GS":  _fv(stat, "gamesStarted"),
+            "QS":  None,   # not in MLB Stats API
+            "ERA": _fv(stat, "era"),
+        }
+        rate_stats = {
+            "ERA":   _fv(stat, "era"),
+            "WHIP":  _fv(stat, "whip"),
+            "K/9":   k9,
+            "BB/9":  bb9,
+            "K-BB%": kbb_pct,
+        }
+
+        existing = (
+            db.query(PlayerStats)
+            .filter(
+                and_(
+                    PlayerStats.player_id == player_id,
+                    PlayerStats.season == season,
+                    PlayerStats.week.is_(None),
+                    PlayerStats.stat_type == "pitching",
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            db.add(PlayerStats(
+                player_id=player_id,
+                season=season,
+                week=None,
+                stat_type="pitching",
+                data_source="actual",
+                counting_stats=counting_stats,
+                rate_stats=rate_stats,
+                advanced_stats={},
+            ))
+        else:
+            existing.data_source = "actual"
+            existing.counting_stats = counting_stats
+            existing.rate_stats = rate_stats
+            existing.advanced_stats = {}
+        total_upserted += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("sync_mlb_api_current_season: pitching commit failed", exc_info=True)
+
+    logger.info("sync_mlb_api_current_season: upserted %d total rows", total_upserted)
+    return total_upserted
