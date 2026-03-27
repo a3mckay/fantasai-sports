@@ -128,8 +128,32 @@ def _warm_rankings_cache() -> None:
         _log.warning("Rankings cache warm-up failed (non-fatal)", exc_info=True)
 
 
+def _run_migrations() -> None:
+    """Run any pending Alembic migrations on startup.
+
+    Runs synchronously before the scheduler starts so the DB schema is always
+    up-to-date by the time any job or request touches it.  Safe to call on
+    every startup — Alembic is idempotent (skips already-applied migrations).
+    """
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        import os
+        # Resolve alembic.ini relative to the project root (one level above src/)
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        alembic_cfg = Config(os.path.join(project_root, "alembic.ini"))
+        command.upgrade(alembic_cfg, "head")
+        _log.info("Alembic migrations applied (or already up-to-date)")
+    except Exception:
+        _log.error("Alembic migration failed — DB schema may be out of date", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run pending DB migrations before anything else starts
+    _run_migrations()
+
     # Warm the rankings cache in a background thread so startup is non-blocking
     t = threading.Thread(target=_warm_rankings_cache, daemon=True, name="cache-warmer")
     t.start()

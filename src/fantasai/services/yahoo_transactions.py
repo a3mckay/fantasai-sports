@@ -265,7 +265,22 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
             all_players = db.query(Player).all()
             players_by_name: dict[str, int] = {p.name: p.player_id for p in all_players}
 
-            raw_transactions = fetch_league_transactions(access_token, conn.league_key, count=count)
+            # If this league has never had transactions polled, do a full backfill
+            # automatically so the Move Grades feed is populated on first use.
+            existing_count = db.query(Transaction).filter(
+                Transaction.league_id == conn.league_key
+            ).count()
+            effective_count = count
+            effective_backfill = is_backfill
+            if existing_count == 0 and not is_backfill:
+                effective_count = 200
+                effective_backfill = True
+                _log.info(
+                    "poll_all_leagues: first-run backfill for league %s (no existing transactions)",
+                    conn.league_key,
+                )
+
+            raw_transactions = fetch_league_transactions(access_token, conn.league_key, count=effective_count)
 
             for txn in raw_transactions:
                 yahoo_id = f"{conn.league_key}:{txn['transaction_id']}"
@@ -283,7 +298,7 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
                     transaction_type=txn["type"],
                     participants=participants,
                     yahoo_timestamp=txn.get("timestamp"),
-                    is_backfill=is_backfill,
+                    is_backfill=effective_backfill,
                 )
                 db.add(new_txn)
                 total_new += 1
