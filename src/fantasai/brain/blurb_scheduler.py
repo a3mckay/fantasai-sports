@@ -17,6 +17,45 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# Abbreviation → full team name (2026 rosters)
+_MLB_TEAM_NAMES: dict[str, str] = {
+    "ARI": "Arizona Diamondbacks",
+    "ATL": "Atlanta Braves",
+    "BAL": "Baltimore Orioles",
+    "BOS": "Boston Red Sox",
+    "CHC": "Chicago Cubs",
+    "CWS": "Chicago White Sox",
+    "CIN": "Cincinnati Reds",
+    "CLE": "Cleveland Guardians",
+    "COL": "Colorado Rockies",
+    "DET": "Detroit Tigers",
+    "HOU": "Houston Astros",
+    "KC":  "Kansas City Royals",
+    "KCR": "Kansas City Royals",
+    "LAA": "Los Angeles Angels",
+    "LAD": "Los Angeles Dodgers",
+    "MIA": "Miami Marlins",
+    "MIL": "Milwaukee Brewers",
+    "MIN": "Minnesota Twins",
+    "NYM": "New York Mets",
+    "NYY": "New York Yankees",
+    "OAK": "Oakland Athletics",
+    "PHI": "Philadelphia Phillies",
+    "PIT": "Pittsburgh Pirates",
+    "SD":  "San Diego Padres",
+    "SDP": "San Diego Padres",
+    "SF":  "San Francisco Giants",
+    "SFG": "San Francisco Giants",
+    "SEA": "Seattle Mariners",
+    "STL": "St. Louis Cardinals",
+    "TB":  "Tampa Bay Rays",
+    "TBR": "Tampa Bay Rays",
+    "TEX": "Texas Rangers",
+    "TOR": "Toronto Blue Jays",
+    "WSH": "Washington Nationals",
+    "WSN": "Washington Nationals",
+}
+
 # Mode → (ranking_type, horizon) mapping
 _MODE_MAP: dict[str, tuple[str, str | None]] = {
     "season": ("predictive", "season"),
@@ -133,9 +172,13 @@ def generate_rankings_blurbs(
                     player.player_id, ps, stat_type, positions
                 )
 
+        full_team = _MLB_TEAM_NAMES.get(player.team, player.team)
         prompt = (
             f"Write a 2-sentence fantasy baseball note for {player.name} "
-            f"({player.team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
+            f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
+            f"PLAYER FACTS — 2026 live roster data, non-negotiable: "
+            f"{player.name} currently plays for the {full_team}. "
+            f"Do not name any other team as his current employer.\n\n"
             f"Category strengths: {cat_summary}\n\n"
             f"Focus on fantasy value and category impact. Direct and specific. No hedging."
         )

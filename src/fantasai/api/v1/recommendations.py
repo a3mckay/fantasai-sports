@@ -154,6 +154,7 @@ def _compute_rankings(
             PlayerStats.season == 2026,
             PlayerStats.stat_type.in_(["batting", "pitching"]),
             PlayerStats.week.is_(None),
+            PlayerStats.data_source == "actual",
         ).all()
 
         if not stats_rows:

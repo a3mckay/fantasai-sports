@@ -52,6 +52,9 @@ class PlayerStats(TimestampMixin, Base):
     season: Mapped[int] = mapped_column(Integer)
     week: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     stat_type: Mapped[str] = mapped_column(String(20))  # "batting" or "pitching"
+    # "projection" = Steamer/consensus forward projections
+    # "actual"     = real accumulated stats from FanGraphs (current season)
+    data_source: Mapped[str] = mapped_column(String(20), default="projection")
     counting_stats: Mapped[dict] = mapped_column(JSON, default=dict)
     rate_stats: Mapped[dict] = mapped_column(JSON, default=dict)
     advanced_stats: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -472,6 +472,12 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
         logger.error("pybaseball not installed — cannot sync current season stats")
         return 0
 
+    # Disable pybaseball's disk cache so we always fetch fresh data from FanGraphs.
+    try:
+        pybaseball.cache.disable()
+    except Exception:
+        pass
+
     def _fval(row: dict, key: str) -> Optional[float]:
         """Return a float value from a row dict, or None if missing/NaN/Inf."""
         v = row.get(key)
@@ -559,11 +565,13 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
                     season=season,
                     week=None,
                     stat_type="batting",
+                    data_source="actual",
                     counting_stats=counting_stats,
                     rate_stats=rate_stats,
                     advanced_stats=advanced_stats,
                 ))
             else:
+                existing.data_source = "actual"
                 existing.counting_stats = counting_stats
                 existing.rate_stats = rate_stats
                 existing.advanced_stats = advanced_stats
@@ -649,11 +657,13 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
                     season=season,
                     week=None,
                     stat_type="pitching",
+                    data_source="actual",
                     counting_stats=counting_stats,
                     rate_stats=rate_stats,
                     advanced_stats=advanced_stats,
                 ))
             else:
+                existing.data_source = "actual"
                 existing.counting_stats = counting_stats
                 existing.rate_stats = rate_stats
                 existing.advanced_stats = advanced_stats

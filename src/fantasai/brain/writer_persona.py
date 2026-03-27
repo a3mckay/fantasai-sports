@@ -490,6 +490,12 @@ HARD RULES
    a dry/irreverent observation, or an opinion the writer actually holds. \
    A blurb consisting entirely of stat recitation with neutral commentary \
    is not acceptable.
+9. NEVER contradict the player facts in the prompt header — specifically \
+   team and position. These are sourced from live 2026 roster data and are \
+   ground truth. Your training knowledge about where a player used to play \
+   is irrelevant and wrong if it conflicts with the prompt. If the prompt \
+   says a player is on the New York Yankees, he is on the New York Yankees. \
+   Full stop. Do not name any other team as his current employer.
 
 ───────────────────────────────────────
 BATCH VARIETY (when writing multiple blurbs in one response)
