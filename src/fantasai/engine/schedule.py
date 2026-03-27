@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Optional
 
@@ -162,6 +162,7 @@ class PlayerSchedule:
     home_park: Optional[str]  # team abbreviation for home games this week
     weather_hr_factor: float = 1.0  # 0.85–1.15 wind/temp modifier for outdoor games
     vegas_run_factor: float = 1.0   # 0.90–1.10 implied-runs modifier from Vegas totals
+    opponent_teams: list = field(default_factory=list)  # opponent team abbrevs (pitchers)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +449,7 @@ def fetch_weekly_schedule(
     # ── Parse games ─────────────────────────────────────────────────────────
     # Counts keyed by MLBAM ID
     pitcher_starts: dict[int, int] = {}       # mlbam_pitcher_id → start count
+    pitcher_opponents: dict[int, list[str]] = {}  # mlbam_pitcher_id → [opp_abbrs]
     team_game_counts: dict[int, int] = {}     # mlbam_team_id    → game count
     team_mlbam_to_abbr: dict[int, str] = {}   # mlbam_team_id    → abbreviation
 
@@ -499,9 +501,15 @@ def fetch_weekly_schedule(
             if home_pitcher_id is not None:
                 prev = pitcher_starts.get(home_pitcher_id, 0)
                 pitcher_starts[home_pitcher_id] = min(prev + 1, 2)
+                # Home pitcher faces the away team
+                if away_abbr:
+                    pitcher_opponents.setdefault(home_pitcher_id, []).append(away_abbr.upper())
             if away_pitcher_id is not None:
                 prev = pitcher_starts.get(away_pitcher_id, 0)
                 pitcher_starts[away_pitcher_id] = min(prev + 1, 2)
+                # Away pitcher faces the home team
+                if home_abbr:
+                    pitcher_opponents.setdefault(away_pitcher_id, []).append(home_abbr.upper())
 
     if not team_game_counts and not pitcher_starts:
         logger.warning("MLB schedule response contained no usable game data")
@@ -565,6 +573,7 @@ def fetch_weekly_schedule(
             probable_starts=starts,
             team_games=6,       # will be updated below if we can match the team
             home_park=None,
+            opponent_teams=pitcher_opponents.get(mlbam_pitcher_id, []),
         )
 
     # Add all-player schedule entries using team game counts
@@ -586,6 +595,7 @@ def fetch_weekly_schedule(
                     home_park=abbr_upper,
                     weather_hr_factor=weather_factor,
                     vegas_run_factor=vegas_factor,
+                    opponent_teams=existing.opponent_teams,
                 )
             else:
                 result[player_id] = PlayerSchedule(
@@ -680,13 +690,19 @@ def build_player_week_context(
     stat_type: str,   # "batting" or "pitching"
     positions: list[str],
 ) -> str | None:
-    """Return a short context string with notable schedule facts for This Week blurbs.
+    """Return a schedule context string for This Week blurb prompts.
 
-    Returns None when nothing is notable enough to mention.
+    For SPs: always includes probable starts + opponent(s).
+    For batters/RPs: includes games count, park, Vegas, and adverse weather when notable.
+    Favorable weather is intentionally omitted — only cold/wind is surfaced.
+
+    Returns None only for non-SP players with nothing notable.
+
     Examples:
-      "2 starts this week; pitching at Coors (+22% HR)"
-      "playing at Petco Park (suppressed HR environment); Vegas implies 3.8 runs/game"
-      "7-game week; strong offensive implied total (5.3 R/G)"
+      "2 starts this week (vs PHI, NYM)"
+      "1 start this week (vs CHC); pitching environment at Coors (+22% HR)"
+      "7-game week; Vegas implies 4.9 R/G (above avg)"
+      "light schedule (4 games); cold/adverse weather conditions"
     """
     ps = player_schedule
     notes: list[str] = []
@@ -694,13 +710,18 @@ def build_player_week_context(
     is_sp = "SP" in positions
     is_rp = "RP" in positions and not is_sp
 
-    # ── Starts note (pitchers only) ──────────────────────────────────────────
+    # ── Starts note (SPs) — always included, with opponent(s) ───────────────
     if stat_type == "pitching" and is_sp:
+        opp_suffix = ""
+        if ps.opponent_teams:
+            opp_suffix = f" (vs {', '.join(ps.opponent_teams)})"
         if ps.probable_starts == 2:
-            notes.append("2 starts this week")
-        elif ps.probable_starts == 0:
-            notes.append("no probable starts this week")
-        # 1 start is default — only call it out if combined with other context
+            notes.append(f"2 starts this week{opp_suffix}")
+        elif ps.probable_starts == 1:
+            notes.append(f"1 start this week{opp_suffix}")
+        else:
+            # 0 probable starts — still call it out so blurb can reflect the risk
+            notes.append("no confirmed probable start this week")
 
     # ── Games note (batters / RPs when non-standard) ─────────────────────────
     if stat_type == "batting" or is_rp:
@@ -717,26 +738,25 @@ def build_player_week_context(
         pct = int(round((pf - 1.0) * 100))
         direction = "+" if pct > 0 else ""
         if stat_type == "batting":
-            notes.append(f"games at {park_name} ({direction}{pct}% HR)")
+            notes.append(f"games at {park_name} ({direction}{pct}% HR park)")
         else:
-            notes.append(f"pitching environment at {park_name} ({direction}{pct}% HR)")
+            notes.append(f"pitching at {park_name} ({direction}{pct}% HR park)")
 
     # ── Vegas run environment ────────────────────────────────────────────────
     vf = ps.vegas_run_factor
     if abs(vf - 1.0) >= _VEGAS_NOTABLE_THRESHOLD:
         implied_per_game = round(4.4 * vf, 1)
         if vf > 1.0:
-            notes.append(f"Vegas implies {implied_per_game} R/G (above avg)")
+            notes.append(f"Vegas implies {implied_per_game} R/G (high-scoring environment)")
         else:
-            notes.append(f"Vegas implies {implied_per_game} R/G (below avg)")
+            notes.append(f"Vegas implies {implied_per_game} R/G (low-scoring environment)")
 
-    # ── Weather ──────────────────────────────────────────────────────────────
+    # ── Weather — ONLY mention adverse conditions (cold/wind); skip favorable ─
     wf = ps.weather_hr_factor
-    if abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
-        if wf > 1.0:
-            notes.append("favorable weather conditions (wind/heat)")
-        else:
-            notes.append("cold/adverse weather conditions")
+    if wf < 1.0 and abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
+        # factor < 1.0 means cold suppresses scoring — worth flagging
+        notes.append("cold/adverse weather conditions expected")
+    # Favorable weather (wf > 1.0) is intentionally not mentioned
 
     if not notes:
         return None

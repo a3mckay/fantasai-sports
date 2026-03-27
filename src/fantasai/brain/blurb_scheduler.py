@@ -129,9 +129,10 @@ def generate_rankings_blurbs(
         return {"generated": 0, "skipped": 0, "errors": 0, "mode": mode}
 
     top_players = player_rankings[:top_n]
+    top_player_ids = [p.player_id for p in top_players]
 
     # For week mode, pre-fetch the schedule so we can enrich blurb prompts
-    # with notable context (starts, park factors, Vegas odds, weather).
+    # with starts, opponent teams, park factors, Vegas odds, and weather.
     week_player_schedules: dict = {}
     if mode == "week":
         try:
@@ -140,11 +141,70 @@ def generate_rankings_blurbs(
         except Exception:
             _log.warning("blurb_scheduler: could not fetch weekly schedule for blurb context", exc_info=True)
 
+    # Bulk-fetch key raw stats for all top players so we can include actual
+    # metric values in prompts (SwStr%, xFIP, Barrel%, xwOBA, etc.)
+    from fantasai.models.player import PlayerStats as _PlayerStats
+    raw_stats_map: dict[int, dict] = {}
+    try:
+        # Prefer actual stats, fall back to projection if actual is absent
+        all_stat_rows = (
+            db.query(_PlayerStats)
+            .filter(
+                _PlayerStats.player_id.in_(top_player_ids),
+                _PlayerStats.season == 2026,
+                _PlayerStats.week.is_(None),
+            )
+            .all()
+        )
+        # Build per player: prefer actual over projection
+        for row in all_stat_rows:
+            pid = row.player_id
+            existing = raw_stats_map.get(pid)
+            if existing is None or row.data_source == "actual":
+                raw_stats_map[pid] = {
+                    "counting": row.counting_stats or {},
+                    "rate": row.rate_stats or {},
+                    "advanced": row.advanced_stats or {},
+                    "stat_type": row.stat_type or "batting",
+                }
+    except Exception:
+        _log.warning("blurb_scheduler: could not bulk-fetch raw stats", exc_info=True)
+
     client = _anthropic.Anthropic(api_key=api_key)
 
     generated = 0
     skipped = 0
     errors = 0
+
+    # Key predictive metrics to surface per stat type
+    _PITCHER_METRICS = ["SwStr%", "CSW%", "K/9", "K9", "BB/9", "BB9", "BB%", "xERA", "xFIP", "SIERA", "WHIP", "GB%"]
+    _BATTER_METRICS  = ["Barrel%", "HardHit%", "xwOBA", "xBA", "xSLG", "OBP", "AVG", "BB%", "K%"]
+
+    def _fmt_metric(key: str, val: float) -> str:
+        """Format a raw metric value for a prompt data block."""
+        pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "HardHit%", "Barrel%"}
+        if key in pct_keys:
+            return f"{key}: {val:.1f}%"
+        if key in {"xwOBA", "xBA", "xSLG", "OBP", "AVG"}:
+            return f"{key}: {val:.3f}"
+        return f"{key}: {val:.2f}"
+
+    def _build_key_stats(player_id: int, stat_type: str) -> str:
+        raw = raw_stats_map.get(player_id)
+        if not raw:
+            return "(stats not yet available this season)"
+        rate = raw.get("rate", {})
+        adv  = raw.get("advanced", {})
+        keys = _PITCHER_METRICS if stat_type == "pitching" else _BATTER_METRICS
+        parts = []
+        for k in keys:
+            v = rate.get(k) if rate.get(k) is not None else adv.get(k)
+            if v is not None:
+                try:
+                    parts.append(_fmt_metric(k, float(v)))
+                except (TypeError, ValueError):
+                    pass
+        return " | ".join(parts[:6]) if parts else "(stats not yet available this season)"
 
     for player in top_players:
         # Skip MiLB prospects — they have PAV blurbs
@@ -155,44 +215,79 @@ def generate_rankings_blurbs(
         positions = getattr(player, "positions", []) or []
         contributions: dict = getattr(player, "category_contributions", {}) or {}
 
-        # Build prompt with top 3 category contributions by absolute z-score
-        top_cats = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:3]
+        # Top 4 category contributions by absolute z-score
+        top_cats = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:4]
         cat_summary = ", ".join(
-            f"{c} ({'+' if v > 0 else ''}{v:.1f})" for c, v in top_cats
+            f"{c} ({'+' if v > 0 else ''}{v:.1f}σ)" for c, v in top_cats
         )
 
         stat_type = getattr(player, "stat_type", "batting") or "batting"
+        full_team = _MLB_TEAM_NAMES.get(player.team, player.team)
 
-        # Build week context note for notable schedule factors (SP starts, park, Vegas, weather)
+        # Build week context note
         week_context_note: str | None = None
-        if mode == "week" and week_player_schedules:
+        if mode == "week":
             ps = week_player_schedules.get(player.player_id)
             if ps is not None:
                 week_context_note = build_player_week_context(
                     player.player_id, ps, stat_type, positions
                 )
+            elif stat_type == "pitching" and "SP" in positions:
+                # SP with no schedule data — flag clearly
+                week_context_note = "no probable start confirmed yet (schedule data unavailable)"
 
-        full_team = _MLB_TEAM_NAMES.get(player.team, player.team)
-        prompt = (
-            f"Write a 2-sentence fantasy baseball note for {player.name} "
-            f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
-            f"PLAYER FACTS — 2026 live roster data, non-negotiable: "
-            f"{player.name} currently plays for the {full_team}. "
-            f"Do not name any other team as his current employer.\n\n"
-            f"Category strengths: {cat_summary}\n\n"
-            f"Focus on fantasy value and category impact. Direct and specific. No hedging."
-        )
+        # Key predictive metrics for the data block
+        key_stats = _build_key_stats(player.player_id, stat_type)
 
-        if week_context_note:
-            prompt += (
-                f"\n\nThis week's schedule context: {week_context_note}\n\n"
-                "If any of these factors are particularly notable, weave them into the note naturally."
+        # ── Prompt — week mode gets a schedule-first, metric-specific prompt ──
+        if mode == "week":
+            is_sp = "SP" in positions
+            if is_sp or stat_type == "pitching":
+                prompt = (
+                    f"THIS WEEK FANTASY NOTE — {player.name} "
+                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
+                    f"Do not reference any other team.\n\n"
+                    f"WEEKLY SCHEDULE:\n{week_context_note or '1 probable start (schedule TBD)'}\n\n"
+                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    f"Write 2-3 sentences for a fantasy owner deciding whether to start this pitcher "
+                    f"this week. LEAD with the start count and opponent(s). Cite at least one specific "
+                    f"predictive metric by actual value (e.g. '14.2% SwStr%', '3.1 xFIP'). "
+                    f"Note any significant park or weather concern. Direct and specific — no hedging."
+                )
+            else:
+                prompt = (
+                    f"THIS WEEK FANTASY NOTE — {player.name} "
+                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
+                    f"Do not reference any other team.\n\n"
+                    f"WEEKLY SCHEDULE:\n{week_context_note or 'standard 6-game week'}\n\n"
+                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    f"Write 2-3 sentences for a fantasy owner deciding whether to start this batter "
+                    f"this week. Cite at least one actual metric value (e.g. '12% Barrel%', '.384 xwOBA'). "
+                    f"Note any significant run environment, park factor, or schedule advantage. "
+                    f"Direct and specific — no hedging."
+                )
+        else:
+            # ── Non-week modes: season/month/current — talent-focused ──────────
+            prompt = (
+                f"Write a 2-sentence fantasy baseball note for {player.name} "
+                f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
+                f"PLAYER FACTS — 2026 live roster data, non-negotiable: "
+                f"{player.name} currently plays for the {full_team}. "
+                f"Do not name any other team as his current employer.\n\n"
+                f"KEY METRICS:\n{key_stats}\n\n"
+                f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                f"Focus on fantasy value and category impact. Cite at least one specific metric value. "
+                f"Direct and specific. No hedging."
             )
 
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=150,
+                max_tokens=200,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )

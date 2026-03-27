@@ -369,6 +369,41 @@ def _compute_rankings(
             week_configs = None
             _week_schedule = None
 
+        # Ensure every pitcher in the player pool has an explicit week_configs
+        # entry so none fall through to the base config (sp_ip=6.0).
+        #
+        # Case 1: schedule came back completely empty (preseason / API outage) →
+        #   zero ALL SP innings.
+        # Case 2: schedule has data but some pitchers weren't matched (team
+        #   abbreviation mismatch, call-up not yet in our DB, etc.) →
+        #   zero just those uncovered pitchers.
+        #
+        # Either way, every pitcher who doesn't have a confirmed probable start
+        # this week should project for 0 SP IP.
+        if week_configs is not None:
+            import logging as _logging
+            from dataclasses import replace as _replace
+            _base = HORIZON_CONFIGS[ProjectionHorizon.WEEK]
+            _zero_sp = _replace(_base, sp_ip=0.0)
+            uncovered = [
+                nd.player_id
+                for nd in players
+                if nd.stat_type == "pitching" and nd.player_id not in week_configs
+            ]
+            if uncovered:
+                if not _week_schedule:
+                    _logging.getLogger(__name__).info(
+                        "Week schedule is empty — zeroing SP ip for all %d pitchers",
+                        len(uncovered),
+                    )
+                else:
+                    _logging.getLogger(__name__).debug(
+                        "Zeroing SP ip for %d pitchers not found in schedule",
+                        len(uncovered),
+                    )
+                for pid in uncovered:
+                    week_configs[pid] = _zero_sp
+
     # ── Inject weather/Vegas factors into NormalizedPlayerData ──────────────
     if horizon == ProjectionHorizon.WEEK and _week_schedule:
         for nd in players:
