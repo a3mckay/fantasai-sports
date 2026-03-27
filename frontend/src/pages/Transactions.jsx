@@ -112,9 +112,11 @@ export default function Transactions() {
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState(null)
   const [filter, setFilter]     = useState('')
-  const [polling, setPolling]   = useState(false)
-  const [offset, setOffset]     = useState(0)
-  const [hasMore, setHasMore]   = useState(true)
+  const [polling, setPolling]       = useState(false)
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillDone, setBackfillDone] = useState(false)
+  const [offset, setOffset]         = useState(0)
+  const [hasMore, setHasMore]       = useState(true)
 
   const LIMIT = 20
 
@@ -154,6 +156,17 @@ export default function Transactions() {
     }
   }
 
+  const handleBackfill = async () => {
+    setBackfilling(true)
+    try {
+      await req('POST', '/api/v1/transactions/backfill?count=200')
+      // Grading takes ~30s for 200 transactions; reload after a delay
+      setTimeout(() => { load(true); setBackfilling(false); setBackfillDone(true) }, 35000)
+    } catch {
+      setBackfilling(false)
+    }
+  }
+
   const handleDownloadCard = async (id) => {
     try {
       const res = await fetch(`/api/v1/transactions/${id}/card`, {
@@ -178,14 +191,25 @@ export default function Transactions() {
           <h1 className="text-2xl font-bold text-white">Move Grades</h1>
           <p className="text-sm text-slate-400 mt-0.5">AI-graded adds, drops &amp; trades from your league</p>
         </div>
-        <button
-          onClick={handlePoll}
-          disabled={polling}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={polling ? 'animate-spin' : ''} />
-          {polling ? 'Polling…' : 'Refresh Now'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleBackfill}
+            disabled={backfilling || backfillDone}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-400 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
+            title="Import up to 200 historical moves from Yahoo"
+          >
+            <Download size={14} className={backfilling ? 'animate-pulse' : ''} />
+            {backfilling ? 'Importing…' : backfillDone ? 'Imported' : 'Import History'}
+          </button>
+          <button
+            onClick={handlePoll}
+            disabled={polling}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={polling ? 'animate-spin' : ''} />
+            {polling ? 'Polling…' : 'Refresh Now'}
+          </button>
+        </div>
       </div>
 
       {/* Filter tabs */}
@@ -214,7 +238,16 @@ export default function Transactions() {
         <div className="text-center py-16 text-slate-500">
           <Filter size={32} className="mx-auto mb-3 opacity-40" />
           <p>No graded transactions yet.</p>
-          <p className="text-sm mt-1">Moves are graded automatically every 20 minutes.</p>
+          {backfilling ? (
+            <p className="text-sm mt-1 text-slate-400">Importing and grading moves — this takes about 30 seconds…</p>
+          ) : backfillDone ? (
+            <p className="text-sm mt-1 text-slate-400">Import complete. Try refreshing the page if moves aren't showing yet.</p>
+          ) : (
+            <p className="text-sm mt-1">
+              Click <button onClick={handleBackfill} className="text-field-400 hover:underline">Import History</button> to pull in recent league moves,
+              or new moves appear automatically every 20 minutes.
+            </p>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
