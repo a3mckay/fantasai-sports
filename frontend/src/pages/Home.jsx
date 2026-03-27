@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, ChevronRight, RefreshCw } from 'lucide-react'
+import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, Swords, ScrollText, ChevronRight, RefreshCw } from 'lucide-react'
 import { useLeague } from '../contexts/LeagueContext'
 
 // Order mirrors the left-hand nav
@@ -10,6 +10,13 @@ const FEATURES = [
     color: 'field',
     title: 'Rankings',
     description: 'Predictive and current-season player rankings powered by advanced metrics and FanGraphs data.',
+  },
+  {
+    to: '/matchups',
+    icon: Swords,
+    color: 'stitch',
+    title: 'Matchup Analyzer',
+    description: 'Weekly H2H projections by category with a Claude-generated preview — see where you have the edge before the week starts.',
   },
   {
     to: '/find-player',
@@ -52,6 +59,13 @@ const FEATURES = [
     color: 'field',
     title: 'League Power Rankings',
     description: 'Full league standings by roster strength. Contenders, middle of the pack, and rebuilders — plus the top trade pairings.',
+  },
+  {
+    to: '/transactions',
+    icon: ScrollText,
+    color: 'leather',
+    title: 'Move Grades',
+    description: 'Every add, drop, and trade in your league graded A–F by Claude. See who won the waiver wire this week.',
   },
   {
     to: '/keeper-eval',
