@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Download, RefreshCw, Filter } from 'lucide-react'
-import { apiFetch } from '../lib/api'
+import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 
@@ -125,7 +125,7 @@ export default function Transactions() {
     try {
       const params = new URLSearchParams({ limit: LIMIT, offset: o })
       if (filter) params.set('transaction_type', filter)
-      const data = await apiFetch(`/api/v1/transactions?${params}`)
+      const data = await req('GET',`/api/v1/transactions?${params}`)
       if (resetOffset) {
         setTxns(data)
         setOffset(LIMIT)
@@ -146,7 +146,7 @@ export default function Transactions() {
   const handlePoll = async () => {
     setPolling(true)
     try {
-      await apiFetch('/api/v1/transactions/poll', { method: 'POST' })
+      await req('POST', '/api/v1/transactions/poll')
       // Wait a moment then reload
       setTimeout(() => { load(true); setPolling(false) }, 3000)
     } catch {

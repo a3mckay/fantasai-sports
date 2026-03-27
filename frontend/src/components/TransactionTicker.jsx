@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { X, ChevronRight } from 'lucide-react'
-import { apiFetch } from '../lib/api'
+import { req } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 
 const LS_SEEN_KEY   = 'fantasai_ticker_seen_id'
@@ -49,7 +49,7 @@ export default function TransactionTicker() {
     if (!user) return
     try {
       const sinceId = getSeenId()
-      const data = await apiFetch(`/api/v1/transactions/unseen?since_id=${sinceId}`)
+      const data = await req('GET', `/api/v1/transactions/unseen?since_id=${sinceId}`)
       const hidden = getHidden()
       const visible = data.filter(t => !hidden.includes(t.id))
       if (visible.length > 0) {
