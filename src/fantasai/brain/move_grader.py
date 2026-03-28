@@ -581,3 +581,543 @@ def grade_transaction(
         "grade_transaction: %s → %s (%.2f) for %s",
         txn.yahoo_transaction_id, grade_letter, grade_score, txn.transaction_type,
     )
+
+
+# ── Lookback grading ──────────────────────────────────────────────────────────
+
+
+def _was_player_re_added(
+    db: "Session",
+    txn: "Transaction",
+    player_id: int,
+    team_key: str,
+) -> bool:
+    """Return True if the same manager re-added this player after the drop."""
+    try:
+        from fantasai.models.transaction import Transaction as Txn
+        from sqlalchemy import and_
+
+        # Look for any ADD transaction by the same team_key after this transaction's timestamp
+        # that contains this player_id in its participants
+        candidates = (
+            db.query(Txn)
+            .filter(
+                and_(
+                    Txn.transaction_type == "add",
+                    Txn.yahoo_timestamp > txn.yahoo_timestamp,
+                    Txn.league_id == txn.league_id,
+                )
+            )
+            .all()
+        )
+        for candidate in candidates:
+            for p in (candidate.participants or []):
+                if (
+                    p.get("action") == "add"
+                    and p.get("player_id") == player_id
+                    and p.get("team_key") == team_key
+                ):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
+def _get_actual_stats_summary(db: "Session", player_id: int) -> dict:
+    """Return actual 2026 stats for a player and whether there is enough sample to assess."""
+    result: dict = {
+        "has_sample": False,
+        "stat_type": None,
+        "actual_label": None,
+        "stats_str": None,
+        "vs_proj": "unknown",
+        "g": 0,
+        "pa": 0,
+    }
+    try:
+        from fantasai.models.player import PlayerStats
+
+        actual_row = (
+            db.query(PlayerStats)
+            .filter(
+                PlayerStats.player_id == player_id,
+                PlayerStats.season == 2026,
+                PlayerStats.data_source == "actual",
+                PlayerStats.week.is_(None),
+            )
+            .first()
+        )
+        if not actual_row:
+            return result
+
+        proj_row = (
+            db.query(PlayerStats)
+            .filter(
+                PlayerStats.player_id == player_id,
+                PlayerStats.season == 2026,
+                PlayerStats.data_source == "projection",
+                PlayerStats.week.is_(None),
+            )
+            .first()
+        )
+
+        rate = actual_row.rate_stats or {}
+        adv = actual_row.advanced_stats or {}
+        counting = actual_row.counting_stats or {}
+        stat_type = actual_row.stat_type or "batting"
+
+        result["stat_type"] = stat_type
+
+        if stat_type == "pitching":
+            gs = int(float(counting.get("GS", 0) or 0))
+            ip = float(counting.get("IP", 0) or 0)
+            result["gs"] = gs
+            result["ip"] = ip
+            has_sample = gs >= 3 or ip >= 15
+            result["has_sample"] = has_sample
+            result["actual_label"] = f"[2026 actual — {gs} GS, {ip:.1f} IP]"
+
+            stat_parts: list[str] = []
+            era = rate.get("ERA")
+            whip = rate.get("WHIP")
+            k9 = rate.get("K/9") or rate.get("K9")
+            if era is not None:
+                stat_parts.append(f"ERA={float(era):.2f}")
+            if whip is not None:
+                stat_parts.append(f"WHIP={float(whip):.2f}")
+            if k9 is not None:
+                stat_parts.append(f"K/9={float(k9):.2f}")
+            for k in ["xERA", "SV"]:
+                v = adv.get(k) or counting.get(k)
+                if v is not None:
+                    try:
+                        stat_parts.append(f"{k}={float(v):.2f}")
+                    except (TypeError, ValueError):
+                        pass
+            result["stats_str"] = ", ".join(stat_parts) if stat_parts else "no stats"
+
+            # Compare to projection
+            if proj_row and era is not None:
+                proj_rate = proj_row.rate_stats or {}
+                proj_era = proj_rate.get("ERA")
+                proj_whip = proj_rate.get("WHIP")
+                if proj_era is not None:
+                    try:
+                        delta_era = float(proj_era) - float(era)  # positive = better than proj
+                        delta_whip = (
+                            float(proj_whip) - float(whip)
+                            if (proj_whip is not None and whip is not None)
+                            else 0.0
+                        )
+                        if delta_era >= 0.30:
+                            result["vs_proj"] = "above projection"
+                        elif delta_era <= -0.30:
+                            result["vs_proj"] = "below projection"
+                        else:
+                            result["vs_proj"] = "on track"
+                    except (TypeError, ValueError):
+                        pass
+
+        else:  # batting
+            pa = int(float(counting.get("PA", 0) or counting.get("AB", 0) or 0))
+            g = int(float(counting.get("G", 0) or 0))
+            result["pa"] = pa
+            result["g"] = g
+            has_sample = pa >= 20
+            result["has_sample"] = has_sample
+            result["actual_label"] = f"[2026 actual — {g} G, {pa} PA]"
+
+            stat_parts = []
+            avg = rate.get("AVG")
+            obp = rate.get("OBP")
+            slg = rate.get("SLG")
+            if avg is not None:
+                stat_parts.append(f"AVG={float(avg):.3f}")
+            if obp is not None:
+                stat_parts.append(f"OBP={float(obp):.3f}")
+            if slg is not None:
+                stat_parts.append(f"SLG={float(slg):.3f}")
+            for k in ["HR", "SB", "R", "RBI"]:
+                v = counting.get(k)
+                if v is not None:
+                    try:
+                        stat_parts.append(f"{k}={int(float(v))}")
+                    except (TypeError, ValueError):
+                        pass
+            result["stats_str"] = ", ".join(stat_parts) if stat_parts else "no stats"
+
+            # Compare to projection
+            if proj_row and avg is not None and obp is not None:
+                proj_rate = proj_row.rate_stats or {}
+                proj_avg = proj_rate.get("AVG")
+                proj_obp = proj_rate.get("OBP")
+                if proj_avg is not None and proj_obp is not None:
+                    try:
+                        avg_delta = float(avg) - float(proj_avg)
+                        obp_delta = float(obp) - float(proj_obp)
+                        if avg_delta >= 0.010 and obp_delta >= 0.010:
+                            result["vs_proj"] = "above projection"
+                        elif avg_delta <= -0.010 and obp_delta <= -0.010:
+                            result["vs_proj"] = "below projection"
+                        else:
+                            result["vs_proj"] = "on track"
+                    except (TypeError, ValueError):
+                        pass
+
+    except Exception:
+        _log.debug("_get_actual_stats_summary failed for player_id=%s", player_id, exc_info=True)
+
+    return result
+
+
+def _build_lookback_prompt(
+    txn: "Transaction",
+    league: "League",
+    db: "Session",
+    context: dict,
+) -> str:
+    """Build a Claude prompt for the lookback (hindsight) grade rationale."""
+    categories = league.scoring_categories or []
+    cat_str = ", ".join(str(c) for c in categories[:8]) if categories else "H/AB, R, HR, RBI, SB, AVG, OPS, IP"
+    league_format = _league_format_str(league)
+
+    txn_type = context.get("txn_type", txn.transaction_type)
+    original_grade = context.get("original_grade", txn.grade_letter or "?")
+    player_summaries = context.get("player_summaries", [])
+    re_add_note = context.get("re_add_note")
+    scenario = context.get("scenario", "normal")
+
+    lines: list[str] = [
+        f"LEAGUE FORMAT: {league_format}",
+        f"SCORING CATEGORIES: {cat_str}",
+        f"ORIGINAL GRADE AT TIME OF TRANSACTION: {original_grade}",
+        "",
+        "ACTUAL 2026 PLAYER PERFORMANCE (from live DB — authoritative):",
+    ]
+    for ps in player_summaries:
+        role = ps.get("role", "")
+        name = ps.get("name", "?")
+        actual_label = ps.get("actual_label") or "[no 2026 stats]"
+        stats_str = ps.get("stats_str") or "no stats"
+        vs_proj = ps.get("vs_proj", "unknown")
+        lines.append(f"  - {name} ({role}): {actual_label} {stats_str} — vs projection: {vs_proj}")
+
+    if re_add_note:
+        lines.append(f"\nNOTE: {re_add_note}")
+
+    # Tone guidance based on scenario
+    if txn_type == "add":
+        if scenario == "normal":
+            tone = (
+                "This was an add. Evaluate how the player actually performed versus what was expected. "
+                "If the player exceeded projection, confirm the add aged well. "
+                "If the player disappointed, call it out directly."
+            )
+    elif txn_type == "drop":
+        if scenario == "re_added_good":
+            tone = (
+                "The manager dropped this player then brought them back. "
+                "The player has performed well since being re-added. "
+                "Acknowledge the full arc: acknowledge the initial drop was questionable, "
+                "but credit the course correction."
+            )
+        elif scenario == "re_added_bad":
+            tone = (
+                "The manager dropped this player then brought them back — "
+                "and the player is still struggling. Be playful but fair about going back "
+                "to a player who hasn't delivered."
+            )
+        else:
+            if context.get("vs_proj_main") == "above projection":
+                tone = (
+                    "This was a drop. The player has since thrived — call out this was a bad drop in hindsight."
+                )
+            elif context.get("vs_proj_main") == "below projection":
+                tone = (
+                    "This was a drop. The player has since flopped — validate the decision was correct."
+                )
+            else:
+                tone = "This was a drop. Assess whether it aged well based on the player's actual performance."
+    else:  # trade
+        tone = (
+            "This was a trade. Looking back, evaluate which side got the better end of it based on actual performance."
+        )
+
+    lines.append("")
+    lines.append(tone)
+    lines.append("")
+    lines.append(
+        "Write a 2-sentence HINDSIGHT verdict. "
+        "Refer to the outcome as 'in hindsight' or 'looking back'. "
+        "Be witty but fair. Use ONLY the player data above."
+    )
+
+    return "\n".join(lines)
+
+
+def grade_transaction_lookback(
+    db: "Session",
+    txn: "Transaction",
+    league: "League",
+) -> None:
+    """Grade a transaction in hindsight 4+ weeks after it occurred.
+
+    Sets lookback_grade_letter, lookback_grade_score, lookback_grade_rationale,
+    lookback_graded_at on txn.  Does NOT commit — caller is responsible.
+    """
+    from datetime import datetime, timedelta, timezone
+    from fantasai.config import settings
+
+    # Safety guard — never run on transactions less than 4 weeks old
+    if txn.yahoo_timestamp:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(weeks=4)
+        if txn.yahoo_timestamp > cutoff:
+            _log.debug(
+                "grade_transaction_lookback: skipping %s — less than 4 weeks old",
+                txn.yahoo_transaction_id,
+            )
+            return
+
+    txn_type = txn.transaction_type
+    participants = txn.participants or []
+
+    lookback_score: Optional[float] = None
+    context: dict = {"txn_type": txn_type, "original_grade": txn.grade_letter or "?"}
+    player_summaries: list[dict] = []
+
+    if txn_type == "add":
+        adds = [p for p in participants if p.get("action") == "add"]
+        if not adds:
+            return
+        player = adds[0]
+        player_id = player.get("player_id")
+        if not player_id:
+            return
+
+        summary = _get_actual_stats_summary(db, player_id)
+        if not summary["has_sample"]:
+            _log.debug(
+                "grade_transaction_lookback: skipping %s — not enough sample for add player %s",
+                txn.yahoo_transaction_id, player_id,
+            )
+            return
+
+        player_summaries.append({
+            "name": player.get("player_name", "?"),
+            "actual_label": summary.get("actual_label"),
+            "stats_str": summary.get("stats_str"),
+            "vs_proj": summary.get("vs_proj", "unknown"),
+            "role": "added",
+        })
+
+        vs_proj = summary.get("vs_proj", "unknown")
+        base_score = txn.grade_score or 2.5
+        if vs_proj == "above projection":
+            lookback_score = min(4.3, base_score + 0.5)
+        elif vs_proj == "below projection":
+            lookback_score = max(0.0, base_score - 0.7)
+        else:
+            lookback_score = base_score
+
+        context["scenario"] = "normal"
+
+    elif txn_type == "drop":
+        if not participants:
+            return
+        player = participants[0]
+        player_id = player.get("player_id")
+        if not player_id:
+            return
+        team_key = player.get("team_key", "")
+
+        summary = _get_actual_stats_summary(db, player_id)
+        re_added = _was_player_re_added(db, txn, player_id, team_key)
+
+        player_summaries.append({
+            "name": player.get("player_name", "?"),
+            "actual_label": summary.get("actual_label"),
+            "stats_str": summary.get("stats_str"),
+            "vs_proj": summary.get("vs_proj", "unknown"),
+            "role": "dropped",
+        })
+
+        if re_added:
+            vs_proj = summary.get("vs_proj", "unknown")
+            if vs_proj in ("above projection", "on track"):
+                scenario = "re_added_good"
+                lookback_score = 2.3  # C+ — drop was questionable but course corrected
+            else:
+                scenario = "re_added_bad"
+                lookback_score = 1.0  # D — went back to a struggling player
+
+            # Estimate days until re-add for the note
+            context["re_add_note"] = "Manager re-added this player after the drop"
+            context["scenario"] = scenario
+        else:
+            if not summary["has_sample"]:
+                _log.debug(
+                    "grade_transaction_lookback: skipping %s — not enough sample for drop player %s",
+                    txn.yahoo_transaction_id, player_id,
+                )
+                return
+
+            vs_proj = summary.get("vs_proj", "unknown")
+            context["scenario"] = "normal"
+            context["vs_proj_main"] = vs_proj
+
+            if vs_proj == "above projection":
+                # Player thrived after being dropped → bad drop
+                lookback_score = max(0.0, (txn.grade_score - 1.0) if txn.grade_score is not None else 1.0)
+            elif vs_proj == "below projection":
+                # Player flopped → good drop
+                lookback_score = min(4.3, (txn.grade_score or 3.0) + 0.5)
+            else:
+                lookback_score = txn.grade_score or 2.5
+
+    elif txn_type == "trade":
+        if len(participants) < 2:
+            return
+
+        # Collect summaries for all players; require at least 1 player per side with a sample
+        side0 = participants[0]
+        side1 = participants[1]
+
+        side0_received = side0.get("players_added", [])
+        side0_given = side0.get("players_dropped", [])
+
+        all_player_ids: list[int] = []
+        for p in side0_received + side0_given:
+            pid = p.get("player_id")
+            if pid:
+                all_player_ids.append(pid)
+        for p in side1.get("players_added", []) + side1.get("players_dropped", []):
+            pid = p.get("player_id")
+            if pid:
+                all_player_ids.append(pid)
+
+        if not all_player_ids:
+            return
+
+        summaries_by_id: dict[int, dict] = {}
+        for pid in all_player_ids:
+            summaries_by_id[pid] = _get_actual_stats_summary(db, pid)
+
+        # Need at least 1 player with a sample per side
+        side0_received_has_sample = any(
+            summaries_by_id.get(p.get("player_id", 0), {}).get("has_sample")
+            for p in side0_received
+            if p.get("player_id")
+        )
+        side1_received_has_sample = any(
+            summaries_by_id.get(p.get("player_id", 0), {}).get("has_sample")
+            for p in side1.get("players_added", [])
+            if p.get("player_id")
+        )
+
+        if not side0_received_has_sample and not side1_received_has_sample:
+            _log.debug(
+                "grade_transaction_lookback: skipping trade %s — no player has enough sample yet",
+                txn.yahoo_transaction_id,
+            )
+            return
+
+        # Build player_summaries for prompt
+        for p in side0_received:
+            pid = p.get("player_id")
+            s = summaries_by_id.get(pid or 0, {})
+            player_summaries.append({
+                "name": p.get("player_name", "?"),
+                "actual_label": s.get("actual_label"),
+                "stats_str": s.get("stats_str"),
+                "vs_proj": s.get("vs_proj", "unknown"),
+                "role": f"received by {side0.get('manager_name', 'side A')}",
+            })
+        for p in side0_given:
+            pid = p.get("player_id")
+            s = summaries_by_id.get(pid or 0, {})
+            player_summaries.append({
+                "name": p.get("player_name", "?"),
+                "actual_label": s.get("actual_label"),
+                "stats_str": s.get("stats_str"),
+                "vs_proj": s.get("vs_proj", "unknown"),
+                "role": f"given up by {side0.get('manager_name', 'side A')}",
+            })
+
+        # Score: compare vs_proj for received vs given for side 0
+        def _count_direction(player_list: list[dict], direction: str) -> int:
+            return sum(
+                1 for p in player_list
+                if summaries_by_id.get(p.get("player_id", 0), {}).get("vs_proj") == direction
+            )
+
+        received_above = _count_direction(side0_received, "above projection")
+        received_below = _count_direction(side0_received, "below projection")
+        given_above = _count_direction(side0_given, "above projection")
+        given_below = _count_direction(side0_given, "below projection")
+
+        base_score = txn.grade_score or 2.5
+
+        # Side 0 won if received more "above projection" players than they gave up
+        if received_above > given_above and received_above > received_below:
+            lookback_score = min(4.3, base_score + 0.5)
+        elif given_above > received_above and given_below < given_above:
+            lookback_score = max(0.0, base_score - 0.7)
+        else:
+            lookback_score = base_score
+
+        context["scenario"] = "normal"
+
+    else:
+        return
+
+    if lookback_score is None:
+        return
+
+    lookback_letter = _score_to_letter(lookback_score)
+
+    context["player_summaries"] = player_summaries
+
+    # Generate rationale via Claude Haiku
+    lookback_rationale: Optional[str] = None
+    if settings.anthropic_api_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            prompt = _build_lookback_prompt(txn, league, db, context)
+            response = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=150,
+                system=(
+                    "You are a sharp fantasy baseball analyst writing HINDSIGHT reviews of past transactions. "
+                    "You have real outcome data and are grading decisions in retrospect.\n\n"
+                    "CRITICAL RULES:\n"
+                    "1. You are writing a HINDSIGHT review, not a real-time grade. "
+                    "Refer to the outcome as 'in hindsight' or 'looking back'.\n"
+                    "2. Be witty but fair. If a drop aged well, validate it. "
+                    "If a player was added and flopped, call it out specifically.\n"
+                    "3. Use ONLY the player data provided — do not cite stats or events not listed.\n"
+                    "4. NEVER begin your response with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. "
+                    "Jump straight into the analysis.\n"
+                    "5. K/9 benchmarks: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
+                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            lookback_rationale = response.content[0].text.strip()
+        except Exception:
+            _log.error(
+                "grade_transaction_lookback: Claude call failed for txn %s",
+                txn.yahoo_transaction_id,
+                exc_info=True,
+            )
+            lookback_rationale = f"Lookback grade: {lookback_letter}."
+
+    txn.lookback_grade_letter = lookback_letter
+    txn.lookback_grade_score = lookback_score
+    txn.lookback_grade_rationale = lookback_rationale
+    txn.lookback_graded_at = datetime.now(tz=timezone.utc)
+
+    _log.info(
+        "grade_transaction_lookback: %s → lookback %s (%.2f) for %s",
+        txn.yahoo_transaction_id, lookback_letter, lookback_score, txn_type,
+    )

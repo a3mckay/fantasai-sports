@@ -91,6 +91,44 @@ def _monday_week_reset() -> None:
     _log.info("This Week reset to current week")
 
 
+def _weekly_lookback_pass() -> None:
+    """Weekly: find transactions 4+ weeks old with no lookback grade and grade them."""
+    from fantasai.database import SessionLocal
+    from fantasai.models.transaction import Transaction
+    from fantasai.models.league import League
+    from fantasai.brain.move_grader import grade_transaction_lookback
+    from datetime import datetime, timezone, timedelta
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(weeks=4)
+        txns = (
+            db.query(Transaction)
+            .filter(
+                Transaction.yahoo_timestamp <= cutoff,
+                Transaction.lookback_graded_at.is_(None),
+                Transaction.grade_letter.isnot(None),  # only grade already-graded transactions
+            )
+            .limit(50)  # batch to avoid long-running jobs
+            .all()
+        )
+        _log.info("Lookback pass: found %d transactions to grade", len(txns))
+        for txn in txns:
+            try:
+                league = db.get(League, txn.league_id)
+                if not league:
+                    continue
+                grade_transaction_lookback(db, txn, league)
+            except Exception:
+                _log.warning("Lookback grade failed for txn %s", txn.yahoo_transaction_id, exc_info=True)
+        db.commit()
+    except Exception:
+        _log.error("Weekly lookback pass failed", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _monday_blurb_generation() -> None:
     """Monday 4am EST: generate fresh AI blurbs for top 300 players in all ranking modes."""
     from fantasai.database import SessionLocal
@@ -227,6 +265,18 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         misfire_grace_time=120,
         next_run_time=_dt.now(_tz.utc),  # run immediately on startup
+    )
+
+    # Weekly Wednesday lookback pass — re-grade transactions 4+ weeks old in hindsight
+    scheduler.add_job(
+        _weekly_lookback_pass,
+        trigger="cron",
+        day_of_week="wed",
+        hour=10,  # 10 UTC = 5am EST
+        minute=0,
+        id="weekly-lookback",
+        max_instances=1,
+        misfire_grace_time=600,
     )
 
     scheduler.start()

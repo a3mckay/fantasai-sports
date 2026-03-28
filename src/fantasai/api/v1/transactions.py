@@ -34,6 +34,10 @@ class TransactionRead(BaseModel):
     yahoo_timestamp: Optional[str]
     graded_at: Optional[str]
     has_card: bool
+    lookback_grade_letter: Optional[str]
+    lookback_grade_score: Optional[float]
+    lookback_grade_rationale: Optional[str]
+    lookback_graded_at: Optional[str]
 
     model_config = {"from_attributes": True}
 
@@ -53,6 +57,10 @@ def _txn_to_read(txn: Transaction) -> TransactionRead:
         yahoo_timestamp=txn.yahoo_timestamp.isoformat() if txn.yahoo_timestamp else None,
         graded_at=txn.graded_at.isoformat() if txn.graded_at else None,
         has_card=bool(txn.card_image_path and os.path.exists(txn.card_image_path)),
+        lookback_grade_letter=txn.lookback_grade_letter,
+        lookback_grade_score=txn.lookback_grade_score,
+        lookback_grade_rationale=txn.lookback_grade_rationale,
+        lookback_graded_at=txn.lookback_graded_at.isoformat() if txn.lookback_graded_at else None,
     )
 
 

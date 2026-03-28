@@ -96,6 +96,35 @@ function TransactionCard({ txn, onShareCard }) {
           {txn.grade_rationale}
         </p>
       )}
+
+      {/* Lookback grade */}
+      {txn.lookback_grade_letter && (
+        <div className="mt-3 pt-3 border-t border-navy-700">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Lookback</span>
+            <span
+              className="text-xs font-bold px-1.5 py-0.5 rounded"
+              style={{
+                color: GRADE_COLOR[txn.lookback_grade_letter] || '#94a3b8',
+                backgroundColor: `${GRADE_COLOR[txn.lookback_grade_letter] || '#94a3b8'}22`,
+                border: `1px solid ${GRADE_COLOR[txn.lookback_grade_letter] || '#94a3b8'}55`,
+              }}
+            >
+              {txn.lookback_grade_letter}
+            </span>
+          </div>
+          {txn.lookback_grade_rationale && (
+            <p className="text-sm text-slate-400 italic leading-relaxed">
+              {txn.lookback_grade_rationale}
+            </p>
+          )}
+          {txn.lookback_graded_at && (
+            <div className="text-[11px] text-slate-600 mt-1">
+              Reviewed {new Date(txn.lookback_graded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

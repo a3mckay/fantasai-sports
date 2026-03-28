@@ -75,5 +75,11 @@ class Transaction(TimestampMixin, Base):
     yahoo_timestamp: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     graded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Lookback grade — set 4+ weeks after transaction based on actual player performance
+    lookback_grade_letter: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+    lookback_grade_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    lookback_grade_rationale: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    lookback_graded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Set True when importing historical transactions so they never surface in the ticker
     is_backfill: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
