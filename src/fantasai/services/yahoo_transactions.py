@@ -44,13 +44,15 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
     """
     import httpx
 
-    # Yahoo Fantasy API v2 uses semicolons for path-level resource filters,
-    # not query params.  type/count must be in the path.
-    # Include all relevant transaction types: waiver (add from waivers + optional drop),
-    # add (add from FA), drop, and accepted_trade / pending_trade for trades.
+    # Yahoo Fantasy API v2 uses semicolons for path-level resource filters.
+    # Do NOT include a comma-separated type filter — Yahoo's parser does not
+    # reliably handle multiple comma-separated values in a semicolon path
+    # segment, causing it to return an empty transactions block.  Omitting
+    # the type filter returns all transaction types (add, drop, waiver, trade)
+    # which we then normalize client-side via _normalize_txn_type().
     url = (
         f"{_YAHOO_FANTASY_BASE}/league/{league_key}"
-        f"/transactions;type=add,drop,waiver,accepted_trade,pending_trade;count={count}"
+        f"/transactions;count={count}"
     )
     params = {"format": "json"}
     headers = {"Authorization": f"Bearer {access_token}"}
