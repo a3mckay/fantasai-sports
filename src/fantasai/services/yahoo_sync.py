@@ -325,11 +325,12 @@ def import_yahoo_league(
             if is_my_team:
                 existing.owner_user_id = user.id
 
-            # Compute IL and injury data from roster slot info
+            # Compute IL, bench, and injury data from roster slot info
             IL_SLOT_LABELS = {"IL", "IL+", "IL10", "IL60", "IR", "NA"}
             INJURY_STATUS_LABELS = {"DTD", "Q", "O", "NA"}
 
             il_ids: list = []
+            bench_ids: list = []
             injured_statuses: dict = {}
             for entry in roster_data:
                 pname = entry["name"]
@@ -344,10 +345,13 @@ def import_yahoo_league(
                 status = entry.get("yahoo_status", "").upper()
                 if slot in IL_SLOT_LABELS:
                     il_ids.append(pid)
+                elif slot == "BN":
+                    bench_ids.append(pid)
                 elif status in INJURY_STATUS_LABELS and status != "NA":
                     injured_statuses[str(pid)] = status
 
             existing.il_player_ids = il_ids
+            existing.bench_player_ids = bench_ids
             existing.injured_player_statuses = injured_statuses
 
             _log.info(

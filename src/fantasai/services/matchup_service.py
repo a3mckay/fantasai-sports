@@ -727,8 +727,21 @@ def analyze_league_matchups(
         team1 = team_by_yahoo_key.get(t1_key)
         team2 = team_by_yahoo_key.get(t2_key)
 
-        roster1: list[int] = (team1.roster if team1 else []) or []
-        roster2: list[int] = (team2.roster if team2 else []) or []
+        # Exclude bench (BN) and IL players — they don't contribute to weekly
+        # scoring.  Projecting the full roster inflates counting stat totals
+        # by 20–30% because bench players are counted at full 26 PA each.
+        def _active_roster(team: Optional[object]) -> list[int]:
+            if team is None:
+                return []
+            all_ids: list[int] = list(team.roster or [])
+            excluded: set[int] = set(
+                list(getattr(team, "bench_player_ids", None) or [])
+                + list(getattr(team, "il_player_ids", None) or [])
+            )
+            return [pid for pid in all_ids if pid not in excluded]
+
+        roster1: list[int] = _active_roster(team1)
+        roster2: list[int] = _active_roster(team2)
 
         # b. Project each team's week stats
         try:
