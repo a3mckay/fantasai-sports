@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Download, RefreshCw, Filter } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Download, RefreshCw } from 'lucide-react'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -107,16 +107,18 @@ const FILTERS = [
   { value: 'trade', label: 'Trades' },
 ]
 
+// How long to wait for backfill+grading before reloading (ms)
+const BACKFILL_RELOAD_DELAY = 35000
+
 export default function Transactions() {
-  const [txns, setTxns]         = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState(null)
-  const [filter, setFilter]     = useState('')
-  const [polling, setPolling]       = useState(false)
-  const [backfilling, setBackfilling] = useState(false)
-  const [backfillDone, setBackfillDone] = useState(false)
-  const [offset, setOffset]         = useState(0)
-  const [hasMore, setHasMore]       = useState(true)
+  const [txns, setTxns]       = useState([])
+  const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)  // background backfill in progress
+  const [error, setError]     = useState(null)
+  const [filter, setFilter]   = useState('')
+  const [offset, setOffset]   = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+  const didAutoSync           = useRef(false)   // prevent double-firing in StrictMode
 
   const LIMIT = 20
 
@@ -127,7 +129,7 @@ export default function Transactions() {
     try {
       const params = new URLSearchParams({ limit: LIMIT, offset: o })
       if (filter) params.set('transaction_type', filter)
-      const data = await req('GET',`/api/v1/transactions?${params}`)
+      const data = await req('GET', `/api/v1/transactions?${params}`)
       if (resetOffset) {
         setTxns(data)
         setOffset(LIMIT)
@@ -136,34 +138,51 @@ export default function Transactions() {
         setOffset(o + LIMIT)
       }
       setHasMore(data.length === LIMIT)
+      return data.length
     } catch (e) {
       setError(e.message || 'Failed to load transactions')
+      return 0
     } finally {
       setLoading(false)
     }
   }, [filter, offset])
 
+  // On first load: if the feed is empty, automatically trigger a backfill
+  // so historical moves appear without the user needing to do anything.
+  useEffect(() => {
+    const init = async () => {
+      const count = await load(true)
+      if (count === 0 && !didAutoSync.current) {
+        didAutoSync.current = true
+        setSyncing(true)
+        try {
+          await req('POST', '/api/v1/transactions/backfill?count=200')
+          // Grading ~200 moves takes ~30s; reload once done
+          setTimeout(async () => {
+            await load(true)
+            setSyncing(false)
+          }, BACKFILL_RELOAD_DELAY)
+        } catch {
+          setSyncing(false)
+        }
+      }
+    }
+    init()
+  }, []) // eslint-disable-line
+
+  // Reload when filter changes (after initial mount)
   useEffect(() => { load(true) }, [filter]) // eslint-disable-line
 
   const handlePoll = async () => {
-    setPolling(true)
+    setSyncing(true)
     try {
       await req('POST', '/api/v1/transactions/poll')
-      // Wait a moment then reload
-      setTimeout(() => { load(true); setPolling(false) }, 3000)
+      setTimeout(async () => {
+        await load(true)
+        setSyncing(false)
+      }, 3000)
     } catch {
-      setPolling(false)
-    }
-  }
-
-  const handleBackfill = async () => {
-    setBackfilling(true)
-    try {
-      await req('POST', '/api/v1/transactions/backfill?count=200')
-      // Grading takes ~30s for 200 transactions; reload after a delay
-      setTimeout(() => { load(true); setBackfilling(false); setBackfillDone(true) }, 35000)
-    } catch {
-      setBackfilling(false)
+      setSyncing(false)
     }
   }
 
@@ -191,25 +210,14 @@ export default function Transactions() {
           <h1 className="text-2xl font-bold text-white">Move Grades</h1>
           <p className="text-sm text-slate-400 mt-0.5">AI-graded adds, drops &amp; trades from your league</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleBackfill}
-            disabled={backfilling || backfillDone}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-400 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
-            title="Import up to 200 historical moves from Yahoo"
-          >
-            <Download size={14} className={backfilling ? 'animate-pulse' : ''} />
-            {backfilling ? 'Importing…' : backfillDone ? 'Imported' : 'Import History'}
-          </button>
-          <button
-            onClick={handlePoll}
-            disabled={polling}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={polling ? 'animate-spin' : ''} />
-            {polling ? 'Polling…' : 'Refresh Now'}
-          </button>
-        </div>
+        <button
+          onClick={handlePoll}
+          disabled={syncing}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+          {syncing ? 'Syncing…' : 'Refresh Now'}
+        </button>
       </div>
 
       {/* Filter tabs */}
@@ -232,22 +240,17 @@ export default function Transactions() {
       <ErrorBanner error={error} />
 
       {/* Feed */}
-      {loading && txns.length === 0 ? (
-        <div className="flex justify-center py-16"><Spinner /></div>
+      {(loading && txns.length === 0) || syncing ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3">
+          <Spinner />
+          {syncing && txns.length === 0 && (
+            <p className="text-sm text-slate-500">Loading move history from Yahoo — this takes about 30 seconds on first visit…</p>
+          )}
+        </div>
       ) : txns.length === 0 ? (
         <div className="text-center py-16 text-slate-500">
-          <Filter size={32} className="mx-auto mb-3 opacity-40" />
-          <p>No graded transactions yet.</p>
-          {backfilling ? (
-            <p className="text-sm mt-1 text-slate-400">Importing and grading moves — this takes about 30 seconds…</p>
-          ) : backfillDone ? (
-            <p className="text-sm mt-1 text-slate-400">Import complete. Try refreshing the page if moves aren't showing yet.</p>
-          ) : (
-            <p className="text-sm mt-1">
-              Click <button onClick={handleBackfill} className="text-field-400 hover:underline">Import History</button> to pull in recent league moves,
-              or new moves appear automatically every 20 minutes.
-            </p>
-          )}
+          <p>No moves found yet.</p>
+          <p className="text-sm mt-1">New moves are checked automatically every 20 minutes.</p>
         </div>
       ) : (
         <div className="space-y-4">
