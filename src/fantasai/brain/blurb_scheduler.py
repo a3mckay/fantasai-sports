@@ -224,6 +224,12 @@ def generate_rankings_blurbs(
         stat_type = getattr(player, "stat_type", "batting") or "batting"
         full_team = _MLB_TEAM_NAMES.get(player.team, player.team)
 
+        # Classify pitcher role — use positions list, not stat_type alone,
+        # so two-way Ohtani batting entries (stat_type="batting") are never
+        # confused with his pitching entry.
+        is_sp = stat_type == "pitching" and "SP" in positions
+        is_rp = stat_type == "pitching" and not is_sp  # RP/CL — no starts
+
         # Build week context note
         week_context_note: str | None = None
         if mode == "week":
@@ -232,29 +238,45 @@ def generate_rankings_blurbs(
                 week_context_note = build_player_week_context(
                     player.player_id, ps, stat_type, positions
                 )
-            elif stat_type == "pitching" and "SP" in positions:
+            elif is_sp:
                 # SP with no schedule data — flag clearly
                 week_context_note = "no probable start confirmed yet (schedule data unavailable)"
+            elif is_rp:
+                # RPs don't have probable-start entries; give neutral fallback
+                week_context_note = "standard relief appearances expected this week (no scheduled starts)"
 
         # Key predictive metrics for the data block
         key_stats = _build_key_stats(player.player_id, stat_type)
 
         # ── Prompt — week mode gets a schedule-first, metric-specific prompt ──
         if mode == "week":
-            is_sp = "SP" in positions
-            if is_sp or stat_type == "pitching":
+            if is_sp:
                 prompt = (
                     f"THIS WEEK FANTASY NOTE — {player.name} "
                     f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
-                    f"WEEKLY SCHEDULE:\n{week_context_note or '1 probable start (schedule TBD)'}\n\n"
+                    f"WEEKLY SCHEDULE:\n{week_context_note or 'no probable start confirmed yet'}\n\n"
                     f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
                     f"Write 2-3 sentences for a fantasy owner deciding whether to start this pitcher "
                     f"this week. LEAD with the start count and opponent(s). Cite at least one specific "
                     f"predictive metric by actual value (e.g. '14.2% SwStr%', '3.1 xFIP'). "
                     f"Note any significant park or weather concern. Direct and specific — no hedging."
+                )
+            elif is_rp:
+                prompt = (
+                    f"THIS WEEK FANTASY NOTE — {player.name} "
+                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
+                    f"Do not reference any other team.\n\n"
+                    f"ROLE: Relief pitcher / closer — makes NO starts. "
+                    f"Value comes from saves, strikeouts, ERA, and WHIP in high-leverage appearances.\n\n"
+                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    f"Write 2-3 sentences for a fantasy owner. Focus on save opportunities, "
+                    f"strikeout rate, and ratios — never mention starts. "
+                    f"Cite at least one specific metric value. Direct and specific — no hedging."
                 )
             else:
                 prompt = (
