@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -185,6 +186,80 @@ def list_matchups(
     )
 
     return [_to_read(row) for row in rows]
+
+
+@router.get("/debug/raw-scoreboard")
+def debug_raw_scoreboard(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return the raw Yahoo scoreboard JSON and our parsed result.
+
+    Use this to debug why fetch_league_scoreboard returns empty.
+    """
+    from fantasai.services.matchup_service import fetch_league_scoreboard
+    from fantasai.services.yahoo_sync import get_valid_access_token
+
+    league_id = _get_league_id(user, db)
+    if not league_id:
+        return {"error": "no_league", "league_id": None}
+
+    conn: Optional[YahooConnection] = (
+        db.query(YahooConnection)
+        .filter(YahooConnection.league_key == league_id)
+        .first()
+    )
+    if not conn:
+        return {"error": "no_yahoo_connection", "league_id": league_id}
+
+    # Fetch raw JSON directly so we can return it unmodified
+    try:
+        access_token = get_valid_access_token(conn, db)
+    except Exception as exc:
+        return {"error": f"token_error: {exc}", "league_id": league_id}
+
+    url = f"https://fantasysports.yahooapis.com/fantasy/v2/league/{league_id}/scoreboard"
+    raw_response: Any = None
+    http_status: int = 0
+    http_error: Optional[str] = None
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                url,
+                params={"format": "json"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            http_status = resp.status_code
+            try:
+                raw_response = resp.json()
+            except Exception:
+                raw_response = resp.text
+    except Exception as exc:
+        http_error = str(exc)
+
+    # Also run the parser to see what it produces
+    parsed_matchups: list[dict] = []
+    parse_error: Optional[str] = None
+    if raw_response and not http_error:
+        try:
+            parsed_matchups = fetch_league_scoreboard(
+                access_token=access_token,
+                league_key=league_id,
+            )
+        except Exception as exc:
+            parse_error = str(exc)
+
+    return {
+        "league_id": league_id,
+        "yahoo_url": url,
+        "http_status": http_status,
+        "http_error": http_error,
+        "raw_response": raw_response,
+        "parsed_matchup_count": len(parsed_matchups),
+        "parsed_matchups": parsed_matchups,
+        "parse_error": parse_error,
+    }
 
 
 @router.post("/refresh", status_code=202)
