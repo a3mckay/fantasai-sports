@@ -44,6 +44,42 @@ _HITTER_RATE_CATS: frozenset[str] = frozenset({"AVG", "OBP", "SLG", "OPS"})
 # ERA/WHIP: lower is better
 _LOWER_IS_BETTER: frozenset[str] = frozenset({"ERA", "WHIP"})
 
+# Yahoo Fantasy stat ID → canonical fantasy category name.
+# Only IDs that appear in standard fantasy baseball leagues are included.
+# Unknown / league-specific IDs are silently dropped when building live_stats.
+_YAHOO_STAT_ID_TO_CAT: dict[str, str] = {
+    "2":  "AB",
+    "3":  "AVG",
+    "4":  "OBP",
+    "5":  "SLG",
+    "6":  "BB",
+    "7":  "HR",
+    "8":  "H",
+    "9":  "1B",
+    "10": "2B",
+    "11": "3B",
+    "12": "RBI",
+    "13": "R",
+    "16": "SB",
+    "17": "CS",
+    "23": "IP",
+    "24": "W",
+    "25": "L",
+    "26": "GS",
+    "27": "CG",
+    "28": "SHO",
+    "29": "SV",
+    "30": "BS",
+    "31": "K",
+    "32": "ERA",
+    "33": "WHIP",
+    "37": "K/9",
+    "39": "BB/9",
+    "42": "HLD",
+    "55": "H",   # alternate H stat_id used by some leagues
+    "60": "OPS",
+}
+
 
 # ---------------------------------------------------------------------------
 # Yahoo scoreboard fetch
@@ -194,15 +230,23 @@ def fetch_league_scoreboard(
             t1_key, t1_name, t1_mgr, t1_live = _parse_team(team_entries[0])
             t2_key, t2_name, t2_mgr, t2_live = _parse_team(team_entries[1])
 
-            # Merge live stats: {category_key: {team1_key: val, team2_key: val}}
+            # Merge live stats: {category_name: {"team1": val, "team2": val}}
+            # Translate Yahoo numeric stat IDs to readable category names.
+            # Unknown stat IDs are skipped to keep the dict clean.
             live_stats_merged: dict = {}
             all_stat_keys = set(t1_live.keys()) | set(t2_live.keys())
             for stat_key in all_stat_keys:
-                live_stats_merged[stat_key] = {}
+                cat_name = _YAHOO_STAT_ID_TO_CAT.get(str(stat_key))
+                if cat_name is None:
+                    continue  # skip unknown/unused stat IDs
+                if cat_name in live_stats_merged:
+                    continue  # don't overwrite (e.g. both "8" and "55" → "H")
+                entry: dict = {}
                 if stat_key in t1_live:
-                    live_stats_merged[stat_key][t1_key] = t1_live[stat_key]
+                    entry["team1"] = t1_live[stat_key]
                 if stat_key in t2_live:
-                    live_stats_merged[stat_key][t2_key] = t2_live[stat_key]
+                    entry["team2"] = t2_live[stat_key]
+                live_stats_merged[cat_name] = entry
 
             matchups.append({
                 "team1_key": t1_key,
@@ -327,11 +371,13 @@ def project_team_week_stats(
                 week_run_factor=1.0,
             )
 
-            # Inject schedule factors if available
+            # Inject schedule factors if available; also resolve actual game count
+            team_games: int = 7  # default = full 7-game week
             if week_schedule and pid in week_schedule:
                 sched = week_schedule[pid]
                 npd.week_hr_factor = getattr(sched, "weather_hr_factor", 1.0)
                 npd.week_run_factor = getattr(sched, "vegas_run_factor", 1.0)
+                team_games = int(getattr(sched, "team_games", 7) or 7)
 
             # Build Steamer NormalizedPlayerData if available
             steamer_npd: Optional[NormalizedPlayerData] = None
@@ -371,6 +417,15 @@ def project_team_week_stats(
                         steamer_data=steamer_npd,
                         park_factor=park_factor,
                     )
+                    # Scale counting stats to actual games scheduled this week.
+                    # hitter_pa=26 assumes 7 games; a short week (e.g. 4 games)
+                    # should produce ~4/7 of that volume, not a full week's worth.
+                    if team_games != 7:
+                        game_scale = team_games / 7.0
+                        proj = {
+                            cat: (val * game_scale if cat not in _RATE_CATS else val)
+                            for cat, val in proj.items()
+                        }
                     # Weight for rate stats: approximate PA
                     ip_weight = float(config.hitter_pa)
             except Exception as exc:

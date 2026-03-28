@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { RefreshCw, Swords } from 'lucide-react'
+import { RefreshCw, Swords, BarChart2 } from 'lucide-react'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -94,14 +94,8 @@ function CategoryTable({ categoryProjections, team1Name, team2Name }) {
             const lowerIsBetter = LOWER_IS_BETTER.has(cat.toUpperCase())
             const isTossUp = proj.edge === 'toss_up'
 
-            // For lower-is-better stats, the winner is the one with a LOWER value
-            const team1Wins = lowerIsBetter
-              ? proj.edge === 'team1'  // "team1" edge still means team1 wins
-              : proj.edge === 'team1'
-
-            const team2Wins = lowerIsBetter
-              ? proj.edge === 'team2'
-              : proj.edge === 'team2'
+            const team1Wins = proj.edge === 'team1'
+            const team2Wins = proj.edge === 'team2'
 
             const team1Class = isTossUp
               ? 'text-slate-400'
@@ -140,10 +134,12 @@ function CategoryTable({ categoryProjections, team1Name, team2Name }) {
   )
 }
 
-function LiveStatsSection({ liveStats, categoryProjections }) {
+function LiveStatsSection({ liveStats, categoryProjections, team1Name, team2Name }) {
   if (!liveStats || Object.keys(liveStats).length === 0) return null
 
-  const cats = Object.keys(liveStats)
+  // Only show categories we have both live stats and projections for
+  const cats = Object.keys(liveStats).filter(cat => categoryProjections[cat] !== undefined)
+  if (cats.length === 0) return null
 
   return (
     <div className="border-t border-navy-700 pt-3 mt-3 space-y-2">
@@ -156,10 +152,10 @@ function LiveStatsSection({ liveStats, categoryProjections }) {
             <tr>
               <th className="text-left pb-1 text-slate-500 font-medium w-1/5">Cat</th>
               <th className="text-center pb-1 text-slate-500 font-medium" colSpan={2}>
-                Team 1
+                {team1Name}
               </th>
               <th className="text-center pb-1 text-slate-500 font-medium" colSpan={2}>
-                Team 2
+                {team2Name}
               </th>
             </tr>
             <tr>
@@ -293,6 +289,8 @@ function MatchupCard({ matchup }) {
       <LiveStatsSection
         liveStats={matchup.live_stats}
         categoryProjections={matchup.category_projections}
+        team1Name={matchup.team1_name}
+        team2Name={matchup.team2_name}
       />
 
       {/* Suggestions */}
@@ -319,6 +317,80 @@ function MatchupCard({ matchup }) {
 }
 
 // ---------------------------------------------------------------------------
+// Matchup tab selector
+// ---------------------------------------------------------------------------
+
+function MatchupTabs({ matchups, selectedIdx, onSelect }) {
+  if (matchups.length <= 1) return null
+  return (
+    <div className="flex flex-wrap gap-2">
+      {matchups.map((m, i) => (
+        <button
+          key={m.id}
+          onClick={() => onSelect(i)}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
+            i === selectedIdx
+              ? 'bg-field-900 border-field-700 text-field-400'
+              : 'bg-navy-800 border-navy-600 text-slate-400 hover:text-white hover:border-navy-500'
+          } ${m.is_user_matchup ? 'ring-1 ring-field-600' : ''}`}
+        >
+          {m.team1_name} vs {m.team2_name}
+          {m.is_user_matchup && (
+            <span className="ml-1.5 text-[10px] text-field-500 font-normal">you</span>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Power rankings table
+// ---------------------------------------------------------------------------
+
+function PowerRankingsTable({ rankings }) {
+  if (!rankings || rankings.length === 0) return null
+  return (
+    <div className="bg-navy-900 border border-navy-700 rounded-xl p-5 space-y-3">
+      <div>
+        <div className="text-sm font-semibold text-white">Power Rankings</div>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Projected W-L if each team played every other team this week.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="text-xs text-slate-500 font-medium border-b border-navy-700">
+              <th className="text-left pb-2 pr-3">#</th>
+              <th className="text-left pb-2 pr-3">Team</th>
+              <th className="text-center pb-2 px-2">W</th>
+              <th className="text-center pb-2 px-2">L</th>
+              <th className="text-center pb-2 px-2">T</th>
+              <th className="text-right pb-2 pl-2">Win%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rankings.map((r, idx) => (
+              <tr key={r.team_key} className={idx % 2 === 0 ? 'bg-navy-800/40' : ''}>
+                <td className="py-1.5 pr-3 text-slate-500 tabular-nums text-xs">{r.rank}</td>
+                <td className="py-1.5 pr-3 text-white font-medium text-sm">{r.team_name}</td>
+                <td className="py-1.5 px-2 text-center text-field-400 tabular-nums font-semibold">{r.wins}</td>
+                <td className="py-1.5 px-2 text-center text-stitch-400 tabular-nums">{r.losses}</td>
+                <td className="py-1.5 px-2 text-center text-slate-500 tabular-nums">{r.ties}</td>
+                <td className="py-1.5 pl-2 text-right text-slate-300 tabular-nums text-xs">
+                  {(r.win_pct * 100).toFixed(1)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -326,16 +398,34 @@ const POLL_INTERVAL = 6000   // ms between polls while generating
 const POLL_MAX      = 10     // max poll attempts (~60 seconds)
 
 export default function Matchups() {
-  const [matchups, setMatchups]   = useState([])
-  const [loading, setLoading]     = useState(true)
-  const [error, setError]         = useState(null)
-  const [refreshing, setRefreshing] = useState(false)
+  const [matchups, setMatchups]         = useState([])
+  const [selectedIdx, setSelectedIdx]   = useState(0)
+  const [powerRankings, setPowerRankings] = useState([])
+  const [showPowerRankings, setShowPowerRankings] = useState(false)
+  const [loading, setLoading]           = useState(true)
+  const [error, setError]               = useState(null)
+  const [refreshing, setRefreshing]     = useState(false)
 
   const didAutoTrigger = useRef(false)
   const pollCount      = useRef(0)
   const pollTimer      = useRef(null)
 
   const currentWeek = matchups.length > 0 ? matchups[0].week : null
+
+  // Auto-select the user's own matchup when data loads
+  useEffect(() => {
+    if (matchups.length === 0) return
+    const userIdx = matchups.findIndex(m => m.is_user_matchup)
+    setSelectedIdx(userIdx >= 0 ? userIdx : 0)
+  }, [matchups])
+
+  // Fetch power rankings whenever matchup data is available
+  useEffect(() => {
+    if (matchups.length === 0) return
+    req('GET', '/api/v1/matchups/power-rankings')
+      .then(data => setPowerRankings(data))
+      .catch(() => {}) // non-fatal — power rankings are optional
+  }, [matchups.length])
 
   const load = useCallback(async () => {
     try {
@@ -412,14 +502,29 @@ export default function Matchups() {
             </p>
           )}
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing || loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-          {refreshing ? 'Analyzing…' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          {matchups.length > 0 && (
+            <button
+              onClick={() => setShowPowerRankings(v => !v)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition-colors ${
+                showPowerRankings
+                  ? 'bg-navy-700 border-navy-500 text-white'
+                  : 'bg-navy-800 border-navy-600 text-slate-300 hover:text-white hover:border-navy-500'
+              }`}
+            >
+              <BarChart2 size={14} />
+              Power Rankings
+            </button>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing || loading}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-600 text-slate-300 hover:text-white hover:border-navy-500 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Analyzing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       <ErrorBanner error={error} />
@@ -443,10 +548,23 @@ export default function Matchups() {
           </p>
         </div>
       ) : (
-        <div className="space-y-6">
-          {matchups.map(m => (
-            <MatchupCard key={m.id} matchup={m} />
-          ))}
+        <div className="space-y-4">
+          {/* Matchup tab selector */}
+          <MatchupTabs
+            matchups={matchups}
+            selectedIdx={selectedIdx}
+            onSelect={setSelectedIdx}
+          />
+
+          {/* Selected matchup card */}
+          {matchups[selectedIdx] && (
+            <MatchupCard matchup={matchups[selectedIdx]} />
+          )}
+
+          {/* Power rankings table (toggled) */}
+          {showPowerRankings && (
+            <PowerRankingsTable rankings={powerRankings} />
+          )}
         </div>
       )}
     </div>

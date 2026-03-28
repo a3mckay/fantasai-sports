@@ -6,7 +6,7 @@ builder = "dockerfile"
 # $PORT is injected by Railway at runtime.
 startCommand = "/entrypoint.sh"
 healthcheckPath = "/health"
-healthcheckTimeout = 120
+healthcheckTimeout = 300
 # LLM analysis endpoints can take 30–60 s; raise the proxy timeout accordingly.
 httpTimeout = 120
 restartPolicyType = "on_failure"
