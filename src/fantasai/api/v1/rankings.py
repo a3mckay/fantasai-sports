@@ -174,14 +174,26 @@ def list_rankings(
 
     # Pull pre-generated blurbs from the Ranking table.
     # Keyed on (player_id, ranking_type, period); league_id=None = global blurbs.
-    # Also pull PAV blurbs for prospects.
+    # Each mode (season/week/month/current) stores blurbs under its own period
+    # string so they never overwrite each other.
+    _BLURB_PERIOD_MAP: dict[str, str] = {
+        "season":  "2026-season",
+        "week":    "2026-week",
+        "month":   "2026-month",
+        "current": "2026-current",
+    }
+    if ranking_type == "predictive":
+        blurb_period = _BLURB_PERIOD_MAP.get(horizon, CURRENT_PERIOD)
+    else:
+        blurb_period = _BLURB_PERIOD_MAP.get("current", CURRENT_PERIOD)
+
     player_ids = [r.player_id for r in rankings]
     blurb_rows = (
         db.query(Ranking)
         .filter(
             Ranking.player_id.in_(player_ids),
             Ranking.ranking_type.in_([ranking_type, "pav"]),
-            Ranking.period == CURRENT_PERIOD,
+            Ranking.period == blurb_period,
             Ranking.league_id.is_(None),
         )
         .all()

@@ -92,7 +92,17 @@ def generate_rankings_blurbs(
         _log.warning("blurb_scheduler: anthropic package not installed, skipping")
         return {"generated": 0, "skipped": 0, "errors": 0, "mode": mode}
 
-    from fantasai.api.v1.rankings import CURRENT_PERIOD, RANKINGS_DEFAULT_CATEGORIES
+    from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES
+
+    # Use mode-specific period strings so season/week/month blurbs each get
+    # their own Ranking row and never overwrite each other.
+    _PERIOD_MAP: dict[str, str] = {
+        "season":  "2026-season",
+        "week":    "2026-week",
+        "month":   "2026-month",
+        "current": "2026-current",
+    }
+    CURRENT_PERIOD = _PERIOD_MAP.get(mode, "2026-season")
     from fantasai.api.v1.recommendations import _compute_rankings
     from fantasai.brain.writer_persona import SYSTEM_PROMPT
     from fantasai.engine.projection import ProjectionHorizon

@@ -224,6 +224,76 @@ def get_shared_card(
     )
 
 
+@router.post("/regrade", status_code=202)
+def regrade_transactions(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Re-grade all existing transactions for the user's league.
+
+    Clears grade_letter/grade_rationale/card_image_path on every transaction
+    so the next poll cycle regenerates them with the current grader logic.
+    Runs in the background — takes ~30s for 25 transactions.
+    """
+    from fantasai.models.user import YahooConnection
+
+    conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
+    if not conn or not conn.league_key:
+        return {"status": "no_league", "message": "No active league found"}
+
+    league_id = conn.league_key
+
+    def _do_regrade(lid: str) -> None:
+        try:
+            from fantasai.config import settings
+            from fantasai.database import SessionLocal
+            from fantasai.models.league import League
+            from fantasai.models.transaction import Transaction
+            from fantasai.services.yahoo_transactions import _grade_ungraded
+
+            _db = SessionLocal()
+            try:
+                # Reset all grades so _grade_ungraded picks them up
+                _db.query(Transaction).filter(
+                    Transaction.league_id == lid,
+                    Transaction.grade_letter.isnot(None),
+                ).update(
+                    {
+                        "grade_letter": None,
+                        "grade_score": None,
+                        "grade_rationale": None,
+                        "graded_at": None,
+                        "card_image_path": None,
+                    },
+                    synchronize_session=False,
+                )
+                _db.commit()
+
+                league = _db.query(League).filter(League.league_id == lid).first()
+                if league:
+                    # Grade in batches of 50 until done
+                    while True:
+                        before = (
+                            _db.query(Transaction)
+                            .filter(
+                                Transaction.league_id == lid,
+                                Transaction.grade_letter.is_(None),
+                            )
+                            .count()
+                        )
+                        if before == 0:
+                            break
+                        _grade_ungraded(_db, lid, league)
+            finally:
+                _db.close()
+        except Exception:
+            logger.error("regrade_transactions: failed for league %s", lid, exc_info=True)
+
+    background_tasks.add_task(_do_regrade, league_id)
+    return {"status": "regrading", "message": "Re-grading all transactions in background"}
+
+
 @router.post("/poll", status_code=202)
 def poll_transactions(
     background_tasks: BackgroundTasks,
