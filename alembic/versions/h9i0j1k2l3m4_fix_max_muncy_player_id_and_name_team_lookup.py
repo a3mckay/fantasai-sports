@@ -31,7 +31,11 @@ def upgrade() -> None:
     # is a fringe player rarely added in competitive leagues, and the LAD Max Muncy
     # is a well-known player, this corrects the common-case error.
     # The correct long-term fix (team_abbr lookup) is in the application code.
+    # Use a SAVEPOINT so that if the UPDATE fails (e.g. SQLite in tests, or
+    # JSONB not available), we can roll back just this statement without
+    # leaving the outer Alembic transaction in an aborted state.
     try:
+        conn.execute(sa.text("SAVEPOINT fix_muncy"))
         conn.execute(sa.text("""
             UPDATE transactions
             SET
@@ -54,9 +58,14 @@ def upgrade() -> None:
             WHERE participants::text LIKE '%"Max Muncy"%'
               AND participants::text LIKE '%29779%'
         """))
+        conn.execute(sa.text("RELEASE SAVEPOINT fix_muncy"))
     except Exception:
-        # SQLite (used in tests) doesn't support JSONB — safe to skip
-        pass
+        # SQLite (used in tests) doesn't support JSONB / SAVEPOINTs —
+        # roll back to the savepoint so the outer transaction stays clean.
+        try:
+            conn.execute(sa.text("ROLLBACK TO SAVEPOINT fix_muncy"))
+        except Exception:
+            pass
 
 
 def downgrade() -> None:
