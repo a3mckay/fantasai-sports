@@ -154,6 +154,9 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
                     players.append({
                         "player_key": p_meta.get("player_key", ""),
                         "name": p_meta.get("full_name", p_meta.get("name", {}).get("full", "")),
+                        # editorial_team_abbr is Yahoo's team abbreviation for the player
+                        # (e.g. "LAD", "OAK") — used to disambiguate same-name players
+                        "team_abbr": p_meta.get("editorial_team_abbr", ""),
                         "type": p_txn_data.get("type", ""),           # "add" | "drop"
                         "source_team_key": p_txn_data.get("source_team_key", ""),
                         "destination_team_key": p_txn_data.get("destination_team_key", ""),
@@ -178,14 +181,64 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
     return results
 
 
+# Yahoo sometimes uses different team abbreviations than FanGraphs/our DB.
+# This maps known Yahoo abbrs to the DB values.
+_YAHOO_TEAM_NORM: dict[str, str] = {
+    "OAK": "ATH",   # Athletics moved; Yahoo may still show OAK
+    "WSH": "WSN",
+    "CWS": "CHW",
+    "KCR": "KC",
+    "SDP": "SD",
+    "SFG": "SF",
+    "TBR": "TB",
+}
+
+
+def _resolve_player_id(
+    name: str,
+    team_abbr: str,
+    players_by_name: dict[str, int],
+    players_by_name_team: dict[tuple[str, str], int],
+) -> Optional[int]:
+    """Resolve Yahoo player name + team to our internal player_id.
+
+    Tries (name, normalised_team) first, then (name, raw_team), then
+    name-only as a last resort.  The team-qualified lookup prevents
+    same-name players (e.g. two Max Muncys) from colliding.
+    """
+    norm_team = _YAHOO_TEAM_NORM.get(team_abbr, team_abbr).upper()
+
+    # Try team-qualified lookup first
+    pid = players_by_name_team.get((name, norm_team))
+    if pid is not None:
+        return pid
+    if team_abbr and team_abbr != norm_team:
+        pid = players_by_name_team.get((name, team_abbr.upper()))
+        if pid is not None:
+            return pid
+
+    # Fall back to name-only (works when no same-name collision exists)
+    return players_by_name.get(name)
+
+
 def build_participants(
     txn: dict,
     teams_by_key: dict[str, Any],
     players_by_name: dict[str, int],
+    players_by_name_team: Optional[dict[tuple[str, str], int]] = None,
 ) -> list[dict]:
     """Convert a raw Yahoo transaction dict into our participants JSON schema."""
     txn_type = txn["type"]
     players = txn.get("players", [])
+    _pbt = players_by_name_team or {}
+
+    def _pid(p: dict) -> Optional[int]:
+        return _resolve_player_id(
+            p.get("name", ""),
+            p.get("team_abbr", ""),
+            players_by_name,
+            _pbt,
+        )
 
     if txn_type in ("add", "drop"):
         parts = []
@@ -200,7 +253,7 @@ def build_participants(
                 "team_key": team_key,
                 "team_name": team.get("team_name", ""),
                 "player_name": p.get("name", ""),
-                "player_id": players_by_name.get(p.get("name", "")),
+                "player_id": _pid(p),
                 "action": action,
             })
         return parts
@@ -223,7 +276,7 @@ def build_participants(
                 }
             sides[dest_key]["players_added"].append({
                 "player_name": p.get("name", ""),
-                "player_id": players_by_name.get(p.get("name", "")),
+                "player_id": _pid(p),
             })
             if src_key and src_key not in sides:
                 team = teams_by_key.get(src_key, {})
@@ -237,7 +290,7 @@ def build_participants(
             if src_key:
                 sides[src_key]["players_dropped"].append({
                     "player_name": p.get("name", ""),
-                    "player_id": players_by_name.get(p.get("name", "")),
+                    "player_id": _pid(p),
                 })
         return list(sides.values())
 
@@ -293,10 +346,18 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
                 for t in teams if t.yahoo_team_key
             }
 
-            # Build player name → player_id lookup
+            # Build player lookups — primary key is (name, team) to handle
+            # same-name players (e.g. two Max Muncys on different teams).
             from fantasai.models.player import Player
             all_players = db.query(Player).all()
+            # name-only fallback (last writer wins — only used when no team info)
             players_by_name: dict[str, int] = {p.name: p.player_id for p in all_players}
+            # team-qualified lookup: prefer this when Yahoo provides team_abbr
+            players_by_name_team: dict[tuple[str, str], int] = {
+                (p.name, (p.team or "").upper()): p.player_id
+                for p in all_players
+                if p.team
+            }
 
             # If this league has never had transactions polled, do a full backfill
             # automatically so the Move Grades feed is populated on first use.
@@ -350,7 +411,7 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
                 if existing:
                     continue  # already seen
 
-                participants = build_participants(txn, teams_by_key, players_by_name)
+                participants = build_participants(txn, teams_by_key, players_by_name, players_by_name_team)
 
                 new_txn = Transaction(
                     yahoo_transaction_id=yahoo_id,
