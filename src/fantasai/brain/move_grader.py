@@ -551,15 +551,20 @@ def grade_transaction(
                     "4. If a player's team is listed, use that team. Never substitute a different team.\n"
                     "5. NEVER begin your response with 'VERDICT:', 'PASS', 'FAIL', or any verdict "
                     "label. Jump straight into the analysis.\n"
-                    "6. Stats labeled '[2026 Steamer projection]' are full-season projections — "
-                    "say 'projects for' or 'Steamer projects', never state them as current stats. "
+                    "6. Stats labeled '[2026 Steamer projection — full-season]' are full-season "
+                    "projections. When citing them, ALWAYS include the time period — say 'projects "
+                    "for X this season' or 'Steamer projects X over the full season'. Never quote "
+                    "projected stats without specifying it is a full-season projection.\n"
                     "Stats labeled '[2026 actual — N G/PA/IP]' are real but may have tiny samples; "
                     "flag the sample size if under 50 PA or 5 GS.\n"
                     "7. 'predicted-season-rank' means our internal rest-of-season model rank. "
                     "Refer to it as 'ranked #N in our season projections' — never as a generic "
                     "'#N pitcher' without context.\n"
                     "8. K/9 benchmarks: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
-                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite."
+                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite.\n"
+                    "9. ALWAYS refer to players as 'Name (TEAM)' on first mention when a team is "
+                    "provided in the player data — e.g. 'Max Muncy (ATH)' not just 'Muncy'. "
+                    "This is critical when two players share the same name."
                 ),
                 messages=[{"role": "user", "content": prompt}],
             )
