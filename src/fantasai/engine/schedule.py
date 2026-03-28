@@ -433,9 +433,13 @@ def fetch_weekly_schedule(
     from fantasai.models.player import Player
 
     # ── Fetch MLB Stats API ─────────────────────────────────────────────────
+    # gameType=R restricts to regular-season games only — Spring Training (S),
+    # exhibition (E) and other game types must be excluded because a ST start
+    # is irrelevant for fantasy lineup decisions this week.
     url = (
         f"https://statsapi.mlb.com/api/v1/schedule"
         f"?sportId=1"
+        f"&gameType=R"
         f"&startDate={week_start.isoformat()}"
         f"&endDate={week_end.isoformat()}"
         f"&hydrate=probablePitcher,venue"
@@ -475,6 +479,11 @@ def fetch_weekly_schedule(
 
         games = day.get("games") or []
         for game in games:
+            # Skip Spring Training (S), exhibition (E) and any non-regular-season game.
+            # gameType=R is already in the URL but double-check here as a safety net.
+            game_type = game.get("gameType", "R")
+            if game_type != "R":
+                continue
             all_games.append(game)
             teams = game.get("teams") or {}
             home = teams.get("home") or {}
