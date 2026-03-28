@@ -1,7 +1,7 @@
 """add matchup_analyses table and transactions.is_backfill column
 
 Revision ID: a3f7b2c1d4e5
-Revises: 5ebf874800fb
+Revises: 721421699845
 Create Date: 2026-03-27 14:00:00.000000
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'a3f7b2c1d4e5'
-down_revision: Union[str, None] = '5ebf874800fb'
+down_revision: Union[str, None] = '721421699845'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
