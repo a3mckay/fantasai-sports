@@ -153,7 +153,7 @@ def get_grade_card_image(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Download the grade card PNG for a transaction."""
+    """Serve the grade card PNG for a transaction, regenerating if needed."""
     txn = db.get(Transaction, transaction_id)
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -161,13 +161,66 @@ def get_grade_card_image(
     conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
     if not conn or conn.league_key != txn.league_id:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # Regenerate the card if the stored file is missing (e.g. after a deploy
+    # that wiped /tmp) so sharing always works.
     if not txn.card_image_path or not os.path.exists(txn.card_image_path):
-        raise HTTPException(status_code=404, detail="Grade card image not yet generated")
+        try:
+            from fantasai.brain.grade_card import render_grade_card
+            card_path = render_grade_card(txn, db)
+            if card_path:
+                txn.card_image_path = card_path
+                db.commit()
+        except Exception:
+            pass
+
+    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
+        raise HTTPException(status_code=404, detail="Grade card could not be generated")
+
     filename = f"grade_{txn.transaction_type}_{txn.grade_letter}_{txn.share_token[:8]}.png"
     return FileResponse(
         txn.card_image_path,
         media_type="image/png",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/share/{share_token}")
+def get_shared_card(
+    share_token: str,
+    db: Session = Depends(get_db),
+):
+    """Public endpoint — serves a grade card PNG by share token (no auth required).
+
+    Used by the frontend Share button so recipients don't need to be logged in.
+    """
+    txn = (
+        db.query(Transaction)
+        .filter(Transaction.share_token == share_token)
+        .first()
+    )
+    if not txn:
+        raise HTTPException(status_code=404, detail="Grade card not found")
+
+    # Regenerate if missing (ephemeral /tmp storage)
+    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
+        try:
+            from fantasai.brain.grade_card import render_grade_card
+            card_path = render_grade_card(txn, db)
+            if card_path:
+                txn.card_image_path = card_path
+                db.commit()
+        except Exception:
+            pass
+
+    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
+        raise HTTPException(status_code=404, detail="Grade card could not be generated")
+
+    filename = f"grade_{txn.transaction_type}_{txn.grade_letter}_{txn.share_token[:8]}.png"
+    return FileResponse(
+        txn.card_image_path,
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

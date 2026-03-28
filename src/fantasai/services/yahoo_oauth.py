@@ -201,6 +201,13 @@ def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
                     result["num_keepers"] = int(elem.text.strip())
                 except ValueError:
                     pass
+
+        # Extract league start date (waiver/free-agent pickup period start)
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag == "start_date" and elem.text:
+                result["start_date"] = elem.text.strip()
+                break
     except Exception:
         _log.warning("Could not fetch league settings for %s", league_key, exc_info=True)
     return result

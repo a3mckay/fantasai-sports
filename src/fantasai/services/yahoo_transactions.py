@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -315,8 +315,35 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
 
             raw_transactions = fetch_league_transactions(access_token, conn.league_key, count=effective_count)
 
+            # Determine the earliest transaction date we'll store.
+            # Use the league start_date from Yahoo settings when available;
+            # fall back to March 1 of the current season year so keeper /
+            # pre-draft transactions (which have empty participant data and
+            # produce meaningless "C+" cards) are never stored.
+            from fantasai.models.league import League as _League
+            _season_cutoff: Optional[datetime] = None
+            _league_obj = db.query(_League).filter(_League.league_id == conn.league_key).first()
+            if _league_obj and _league_obj.settings:
+                _sd = _league_obj.settings.get("start_date")
+                if _sd:
+                    try:
+                        _season_cutoff = datetime.strptime(_sd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        pass
+            if _season_cutoff is None:
+                # Safe fallback: March 1 of the current year
+                _season_cutoff = datetime(datetime.now(timezone.utc).year, 3, 1, tzinfo=timezone.utc)
+
             for txn in raw_transactions:
                 yahoo_id = f"{conn.league_key}:{txn['transaction_id']}"
+
+                # Skip transactions from before the regular pick-up period
+                if _season_cutoff and txn.get("timestamp") and txn["timestamp"] < _season_cutoff:
+                    _log.debug(
+                        "poll_all_leagues: skipping pre-season txn %s (ts=%s < cutoff=%s)",
+                        yahoo_id, txn["timestamp"], _season_cutoff,
+                    )
+                    continue
                 existing = db.query(Transaction).filter(
                     Transaction.yahoo_transaction_id == yahoo_id
                 ).first()

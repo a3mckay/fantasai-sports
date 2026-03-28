@@ -258,6 +258,7 @@ def import_yahoo_league(
             "name": league_info.get("name"),
             "season": league_info.get("season"),
             "keepers_per_team": settings_data.get("num_keepers", 0),
+            "start_date": settings_data.get("start_date"),
         }
         db.flush()
 

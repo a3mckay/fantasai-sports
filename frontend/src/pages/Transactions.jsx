@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Download, RefreshCw } from 'lucide-react'
+import { Share2, RefreshCw } from 'lucide-react'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -53,7 +53,7 @@ function ParticipantLine({ p, type }) {
   )
 }
 
-function TransactionCard({ txn, onDownloadCard }) {
+function TransactionCard({ txn, onShareCard }) {
   const ts = txn.yahoo_timestamp
     ? new Date(txn.yahoo_timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     : txn.graded_at
@@ -79,13 +79,13 @@ function TransactionCard({ txn, onDownloadCard }) {
           </div>
         </div>
 
-        {txn.has_card && (
+        {txn.grade_letter && (
           <button
-            onClick={() => onDownloadCard(txn.id)}
-            title="Download grade card"
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-navy-700 transition-colors shrink-0"
+            onClick={() => onShareCard(txn.share_token)}
+            title="Share this grade card"
+            className="p-2 rounded-lg text-slate-500 hover:text-field-400 hover:bg-navy-700 transition-colors shrink-0"
           >
-            <Download size={15} />
+            <Share2 size={15} />
           </button>
         )}
       </div>
@@ -186,21 +186,27 @@ export default function Transactions() {
     }
   }
 
-  const handleDownloadCard = async (id) => {
+  const handleShareCard = useCallback(async (shareToken) => {
+    // Build the public share URL — this serves the card without auth
+    const shareUrl = `${window.location.origin}/api/v1/transactions/share/${shareToken}`
     try {
-      const res = await fetch(`/api/v1/transactions/${id}/card`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
-      })
-      if (!res.ok) return
-      const blob = await res.blob()
-      const url  = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `grade_card_${id}.png`
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch { /* ignore */ }
-  }
+      // Try native Web Share API first (works great on mobile)
+      if (navigator.share) {
+        await navigator.share({
+          title: 'FantasAI Move Grade',
+          url: shareUrl,
+        })
+        return
+      }
+      // Fall back to copying the link to clipboard
+      await navigator.clipboard.writeText(shareUrl)
+      // Brief visual feedback — we'll use a simple alert for now
+      // (the user can see the URL was copied via the system clipboard)
+    } catch {
+      // Last resort: open in new tab so user can at least see the card
+      window.open(shareUrl, '_blank')
+    }
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -255,7 +261,7 @@ export default function Transactions() {
       ) : (
         <div className="space-y-4">
           {txns.map(t => (
-            <TransactionCard key={t.id} txn={t} onDownloadCard={handleDownloadCard} />
+            <TransactionCard key={t.id} txn={t} onShareCard={handleShareCard} />
           ))}
 
           {hasMore && (
