@@ -191,80 +191,187 @@ def _compute_trade_score(
     return _side_score(participants[0]), _side_score(participants[1])
 
 
+def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str) -> str:
+    """Return a verified-facts string for a player from our live DB.
+
+    Includes team, positions, injury status, and a few key current-season stats.
+    This is injected verbatim into the prompt so Claude uses DB data instead
+    of its training knowledge (which may have stale/wrong team assignments).
+    """
+    if not player_id:
+        return f"{player_name}: (no DB record — use name only, state no team or stats)"
+    try:
+        from fantasai.models.player import Player, PlayerStats
+        player = db.get(Player, player_id)
+        if not player:
+            return f"{player_name}: (no DB record — use name only, state no team or stats)"
+
+        parts: list[str] = []
+        if player.team:
+            parts.append(f"team={player.team}")
+        if player.positions:
+            parts.append(f"positions={'/'.join(player.positions[:3])}")
+        if player.status and player.status.upper() not in ("", "ACTIVE", "ACT"):
+            parts.append(f"status={player.status}")
+
+        # Fetch current-season stats (prefer actual over projection)
+        stats_rows = (
+            db.query(PlayerStats)
+            .filter(
+                PlayerStats.player_id == player_id,
+                PlayerStats.season == 2026,
+                PlayerStats.week.is_(None),
+            )
+            .all()
+        )
+        # Pick actual first, fall back to projection
+        stats_row = None
+        for row in stats_rows:
+            if row.data_source == "actual":
+                stats_row = row
+                break
+        if stats_row is None and stats_rows:
+            stats_row = stats_rows[0]
+
+        if stats_row:
+            rate = stats_row.rate_stats or {}
+            adv = stats_row.advanced_stats or {}
+            if stats_row.stat_type == "pitching":
+                for k in ["ERA", "WHIP", "K/9", "K9", "SV"]:
+                    v = rate.get(k)
+                    if v is not None:
+                        try:
+                            parts.append(f"{k}={float(v):.2f}")
+                        except (TypeError, ValueError):
+                            pass
+                for k in ["xERA", "xFIP", "SIERA"]:
+                    v = adv.get(k)
+                    if v is not None:
+                        try:
+                            parts.append(f"{k}={float(v):.2f}")
+                        except (TypeError, ValueError):
+                            pass
+            else:
+                for k in ["AVG", "OBP", "SLG"]:
+                    v = rate.get(k)
+                    if v is not None:
+                        try:
+                            parts.append(f"{k}={float(v):.3f}")
+                        except (TypeError, ValueError):
+                            pass
+                for k in ["HR", "SB", "R", "RBI"]:
+                    v = (stats_row.counting_stats or {}).get(k)
+                    if v is not None:
+                        try:
+                            parts.append(f"{k}={int(float(v))}")
+                        except (TypeError, ValueError):
+                            pass
+
+        return f"{player_name}: {', '.join(parts)}" if parts else player_name
+    except Exception:
+        return player_name
+
+
+def _league_format_str(league: "League") -> str:
+    """Return a human-readable league format string."""
+    lt = (league.league_type or "").lower()
+    if "h2h" in lt or "head" in lt:
+        return "H2H categories"
+    if "roto" in lt:
+        return "rotisserie"
+    if "point" in lt:
+        return "points"
+    return "H2H categories"  # safe default
+
+
 def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
     """Build a Claude prompt for the move grade rationale."""
     categories = league.scoring_categories or []
-    cat_str = ", ".join(str(c) for c in categories[:8]) if categories else "standard H2H categories"
+    cat_str = ", ".join(str(c) for c in categories[:8]) if categories else "H/AB, R, HR, RBI, SB, AVG, OPS, IP"
+    league_format = _league_format_str(league)
 
     txn_type = txn.transaction_type
     participants = txn.participants or []
 
+    # ── Shared data header injected into every prompt ────────────────────────
+    # Providing verified DB facts prevents Claude from hallucinating stale
+    # team names, injuries, or league types from its training data.
+    data_block_lines: list[str] = [
+        f"LEAGUE FORMAT: {league_format}",
+        f"SCORING CATEGORIES: {cat_str}",
+        "PLAYER DATA (live DB — authoritative; ignore any conflicting training knowledge):",
+    ]
+
+    # Collect all relevant player IDs from this transaction
+    players_to_lookup: list[tuple[Optional[int], str]] = []
+    if txn_type in ("add", "drop"):
+        for p in participants:
+            players_to_lookup.append((p.get("player_id"), p.get("player_name", "?")))
+    else:  # trade
+        for side in participants:
+            for p in side.get("players_added", []) + side.get("players_dropped", []):
+                players_to_lookup.append((p.get("player_id"), p.get("player_name", "?")))
+
+    seen_ids: set = set()
+    for pid, pname in players_to_lookup:
+        key = pid or pname
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        rank = _get_player_rank(db, pid, categories)
+        rank_str = f" | rank=#{rank}" if rank else ""
+        facts = _get_player_facts(db, pid, pname)
+        data_block_lines.append(f"  - {facts}{rank_str}")
+
+    data_block = "\n".join(data_block_lines)
+
+    # ── Per-type prompt bodies ────────────────────────────────────────────────
     if txn_type == "add":
         adds = [p for p in participants if p.get("action") == "add"]
         drops = [p for p in participants if p.get("action") == "drop"]
-        player_names = [p.get("player_name", "?") for p in adds]
-        drop_names = [p.get("player_name", "?") for p in drops]
         manager = adds[0].get("manager_name", "A manager") if adds else "A manager"
-
-        rank_info = ""
-        for p in adds:
-            pid = p.get("player_id")
-            rank = _get_player_rank(db, pid, categories)
-            if rank:
-                rank_info += f"\n- {p.get('player_name', '?')}: ranked #{rank} overall"
+        added_names = ", ".join(p.get("player_name", "?") for p in adds)
+        drop_line = ""
+        if drops:
+            drop_line = f"\nDropped: {', '.join(p.get('player_name', '?') for p in drops)}"
 
         prompt = (
-            f"Grade this fantasy baseball add in the context of a {cat_str} league.\n\n"
-            f"Manager: {manager}\n"
-            f"Added: {', '.join(player_names)}"
+            f"{data_block}\n\n"
+            f"TRANSACTION: {manager} adds {added_names}{drop_line}\n"
+            f"GRADE: {txn.grade_letter}\n\n"
+            f"Write a 2-sentence verdict on this add. "
+            f"Use ONLY the player data above — never cite team, stats, or injuries "
+            f"not listed there. Direct, specific, no hedging."
         )
-        if drop_names:
-            prompt += f"\nDropped: {', '.join(drop_names)}"
-        if rank_info:
-            prompt += f"\n\nCurrent rankings:{rank_info}"
-        prompt += f"\n\nGrade: {txn.grade_letter}\n\nWrite a 2-sentence verdict on this move. Direct, specific, no hedging."
 
     elif txn_type == "drop":
-        drops = participants
-        player_names = [p.get("player_name", "?") for p in drops]
-        manager = drops[0].get("manager_name", "A manager") if drops else "A manager"
-
-        rank_info = ""
-        for p in drops:
-            pid = p.get("player_id")
-            rank = _get_player_rank(db, pid, categories)
-            if rank:
-                rank_info += f"\n- {p.get('player_name', '?')}: ranked #{rank} overall"
+        manager = participants[0].get("manager_name", "A manager") if participants else "A manager"
+        drop_names = ", ".join(p.get("player_name", "?") for p in participants)
 
         prompt = (
-            f"Grade this fantasy baseball drop in the context of a {cat_str} league.\n\n"
-            f"Manager: {manager}\n"
-            f"Dropped: {', '.join(player_names)}"
+            f"{data_block}\n\n"
+            f"TRANSACTION: {manager} drops {drop_names}\n"
+            f"GRADE: {txn.grade_letter}\n\n"
+            f"Write a 2-sentence verdict on this drop. "
+            f"Use ONLY the player data above — never cite team, stats, or injuries "
+            f"not listed there. Direct, specific, no hedging."
         )
-        if rank_info:
-            prompt += f"\n\nCurrent rankings:{rank_info}"
-        prompt += f"\n\nGrade: {txn.grade_letter}\n\nWrite a 2-sentence verdict on this drop. Direct, specific, no hedging."
 
     else:  # trade
-        side_descriptions = []
+        side_lines: list[str] = []
         for side in participants:
-            added = [p.get("player_name", "?") for p in side.get("players_added", [])]
-            dropped = [p.get("player_name", "?") for p in side.get("players_dropped", [])]
+            added = ", ".join(p.get("player_name", "?") for p in side.get("players_added", []))
+            dropped = ", ".join(p.get("player_name", "?") for p in side.get("players_dropped", []))
             mgr = side.get("manager_name", "Manager")
-            rank_info = ""
-            for p in side.get("players_added", []):
-                pid = p.get("player_id")
-                rank = _get_player_rank(db, pid, categories)
-                if rank:
-                    rank_info += f" ({p.get('player_name', '?')} = #{rank})"
-            side_descriptions.append(
-                f"{mgr} receives: {', '.join(added)}{rank_info} | gives up: {', '.join(dropped)}"
-            )
+            side_lines.append(f"{mgr} receives: {added} | gives up: {dropped}")
 
         prompt = (
-            f"Grade this fantasy baseball trade in the context of a {cat_str} league.\n\n"
-            + "\n".join(side_descriptions)
-            + f"\n\nOverall grade: {txn.grade_letter}\n\nWrite a 2-sentence verdict identifying who won this trade and why. Direct, specific, no hedging."
+            f"{data_block}\n\n"
+            f"TRANSACTION (trade):\n" + "\n".join(side_lines) + "\n"
+            f"OVERALL GRADE: {txn.grade_letter}\n\n"
+            f"Write a 2-sentence verdict identifying who won this trade and why. "
+            f"Use ONLY the player data above — never cite team, stats, or injuries "
+            f"not listed there. Direct, specific, no hedging."
         )
 
     return prompt
@@ -333,8 +440,16 @@ def grade_transaction(
                 max_tokens=120,
                 system=(
                     "You are a sharp fantasy baseball analyst. Write brief, direct verdicts on "
-                    "transactions. No hedging. No filler. Sound like someone who actually knows "
-                    "what they're talking about."
+                    "transactions. No hedging. No filler.\n\n"
+                    "CRITICAL RULES:\n"
+                    "1. Use ONLY the player data, team names, stats, and league format provided "
+                    "in the prompt. Your training knowledge about players is outdated — the "
+                    "provided data is authoritative.\n"
+                    "2. Never mention injuries, surgeries, or health history unless explicitly "
+                    "listed in the provided player data.\n"
+                    "3. Never reference a league format (points, roto, etc.) other than the one "
+                    "stated in the prompt's LEAGUE FORMAT field.\n"
+                    "4. If a player's team is listed, use that team. Never substitute a different team."
                 ),
                 messages=[{"role": "user", "content": prompt}],
             )
