@@ -482,7 +482,7 @@ def compare_category_projections(
         if cat in _RATE_CATS:
             # Rate-stat thresholds
             if cat in {"AVG", "OBP", "SLG", "OPS"}:
-                threshold = 0.005
+                threshold = 0.003  # 3 batting-average points; 0.259 vs 0.263 is a real edge
             elif cat in {"ERA", "WHIP"}:
                 threshold = 0.05
             elif cat == "K/9":

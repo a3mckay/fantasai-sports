@@ -11,6 +11,11 @@ import ErrorBanner from '../components/ErrorBanner'
 // Rate stats where lower is better — the team with the LOWER value wins the edge
 const LOWER_IS_BETTER = new Set(['ERA', 'WHIP', 'BB/9', 'BB9', 'BB', 'HBP'])
 
+// Categories that are always hidden from the matchup table — either not meaningful
+// in H2H (H/AB is a ratio artifact) or not real scoring categories (Batting, Pitching
+// are Yahoo placeholder rows).
+const HIDE_CATS = new Set(['H/AB', 'Batting', 'Pitching', 'H'])
+
 // Format a stat value based on the category name
 function formatStat(cat, value) {
   if (value === null || value === undefined) return '—'
@@ -47,7 +52,8 @@ function EdgeSummary({ categoryProjections }) {
   let team1Leads = 0
   let team2Leads = 0
 
-  for (const proj of Object.values(categoryProjections)) {
+  for (const [cat, proj] of Object.entries(categoryProjections)) {
+    if (HIDE_CATS.has(cat)) continue
     if (proj.edge === 'team1') team1Leads++
     else if (proj.edge === 'team2') team2Leads++
   }
@@ -69,8 +75,8 @@ function EdgeSummary({ categoryProjections }) {
   )
 }
 
-function CategoryTable({ categoryProjections, team1Name, team2Name }) {
-  const entries = Object.entries(categoryProjections)
+function CategoryTable({ categoryProjections }) {
+  const entries = Object.entries(categoryProjections).filter(([cat]) => !HIDE_CATS.has(cat))
   if (entries.length === 0) return null
 
   return (
@@ -78,15 +84,11 @@ function CategoryTable({ categoryProjections, team1Name, team2Name }) {
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr>
-            <th className="text-right pr-3 pb-1.5 text-xs font-medium text-slate-500 w-1/3">
-              {team1Name}
-            </th>
+            <th className="text-right pr-3 pb-1.5 w-1/3" />
             <th className="text-center pb-1.5 text-xs font-medium text-slate-500 w-1/3">
               Category
             </th>
-            <th className="text-left pl-3 pb-1.5 text-xs font-medium text-slate-500 w-1/3">
-              {team2Name}
-            </th>
+            <th className="text-left pl-3 pb-1.5 w-1/3" />
           </tr>
         </thead>
         <tbody>
@@ -280,18 +282,10 @@ function MatchupCard({ matchup }) {
       {Object.keys(matchup.category_projections).length > 0 && (
         <CategoryTable
           categoryProjections={matchup.category_projections}
-          team1Name={matchup.team1_name}
-          team2Name={matchup.team2_name}
         />
       )}
 
-      {/* Live stats (mid-week actuals) */}
-      <LiveStatsSection
-        liveStats={matchup.live_stats}
-        categoryProjections={matchup.category_projections}
-        team1Name={matchup.team1_name}
-        team2Name={matchup.team2_name}
-      />
+      {/* Live stats section intentionally omitted until Yahoo stat_id mapping is verified */}
 
       {/* Suggestions */}
       <SuggestionsSection suggestions={matchup.suggestions} />
