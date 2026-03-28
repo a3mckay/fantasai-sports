@@ -216,17 +216,26 @@ def _compute_trade_score(
 def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str) -> str:
     """Return a verified-facts string for a player from our live DB.
 
-    Includes team, positions, injury status, and a few key current-season stats.
-    This is injected verbatim into the prompt so Claude uses DB data instead
-    of its training knowledge (which may have stale/wrong team assignments).
+    Includes team, positions, injury status, and current-season stats with
+    clear labels indicating whether stats are real 2026 actuals (with sample
+    size) or Steamer full-season projections.  This prevents Claude from
+    quoting projected counting stats as if they are current performance.
     """
     if not player_id:
-        return f"{player_name}: (no DB record — use name only, state no team or stats)"
+        return (
+            f"{player_name}: (no DB record — this player may be a prospect or international "
+            f"signing not yet in our system; evaluate based on what you know about their "
+            f"prospect status and likely 2026 MLB timeline)"
+        )
     try:
         from fantasai.models.player import Player, PlayerStats
         player = db.get(Player, player_id)
         if not player:
-            return f"{player_name}: (no DB record — use name only, state no team or stats)"
+            return (
+                f"{player_name}: (no DB record — this player may be a prospect or international "
+                f"signing not yet in our system; evaluate based on what you know about their "
+                f"prospect status and likely 2026 MLB timeline)"
+            )
 
         parts: list[str] = []
         if player.team:
@@ -236,7 +245,7 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
         if player.status and player.status.upper() not in ("", "ACTIVE", "ACT"):
             parts.append(f"status={player.status}")
 
-        # Fetch current-season stats (prefer actual over projection)
+        # Fetch 2026 stats rows (actual preferred; fall back to projection)
         stats_rows = (
             db.query(PlayerStats)
             .filter(
@@ -246,20 +255,29 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
             )
             .all()
         )
-        # Pick actual first, fall back to projection
-        stats_row = None
-        for row in stats_rows:
-            if row.data_source == "actual":
-                stats_row = row
-                break
-        if stats_row is None and stats_rows:
-            stats_row = stats_rows[0]
+        actual_row = next((r for r in stats_rows if r.data_source == "actual"), None)
+        proj_row = next((r for r in stats_rows if r.data_source == "projection"), None)
+        stats_row = actual_row or proj_row
+        is_actual = stats_row is not None and stats_row.data_source == "actual"
+        is_proj = stats_row is not None and stats_row.data_source == "projection"
 
         if stats_row:
             rate = stats_row.rate_stats or {}
             adv = stats_row.advanced_stats or {}
+            counting = stats_row.counting_stats or {}
+
             if stats_row.stat_type == "pitching":
-                for k in ["ERA", "WHIP", "K/9", "K9", "SV"]:
+                # Sample size context for actuals
+                ip_actual = float(counting.get("IP", 0) or 0) if is_actual else 0.0
+                gs_actual = int(float(counting.get("GS", 0) or 0)) if is_actual else 0
+
+                if is_actual:
+                    stat_label = f"[2026 actual — {gs_actual} GS, {ip_actual:.1f} IP]"
+                else:
+                    stat_label = "[2026 Steamer projection — full-season]"
+                parts.append(stat_label)
+
+                for k in ["ERA", "WHIP", "K/9", "K9"]:
                     v = rate.get(k)
                     if v is not None:
                         try:
@@ -273,7 +291,34 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
                             parts.append(f"{k}={float(v):.2f}")
                         except (TypeError, ValueError):
                             pass
+                # Only include projected counting stats when labelled as projection
+                if is_proj:
+                    for k in ["W", "SV", "K"]:
+                        v = counting.get(k)
+                        if v is not None:
+                            try:
+                                parts.append(f"proj-{k}={int(float(v))}")
+                            except (TypeError, ValueError):
+                                pass
+                elif is_actual:
+                    for k in ["SV", "K"]:
+                        v = counting.get(k)
+                        if v is not None:
+                            try:
+                                parts.append(f"{k}={int(float(v))}")
+                            except (TypeError, ValueError):
+                                pass
             else:
+                # Sample size context for actuals
+                pa_actual = int(float(counting.get("PA", 0) or counting.get("AB", 0) or 0)) if is_actual else 0
+                g_actual = int(float(counting.get("G", 0) or 0)) if is_actual else 0
+
+                if is_actual:
+                    stat_label = f"[2026 actual — {g_actual} G, {pa_actual} PA]"
+                else:
+                    stat_label = "[2026 Steamer projection — full-season]"
+                parts.append(stat_label)
+
                 for k in ["AVG", "OBP", "SLG"]:
                     v = rate.get(k)
                     if v is not None:
@@ -281,11 +326,13 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
                             parts.append(f"{k}={float(v):.3f}")
                         except (TypeError, ValueError):
                             pass
+                # Counting stats: label projected ones clearly
                 for k in ["HR", "SB", "R", "RBI"]:
-                    v = (stats_row.counting_stats or {}).get(k)
+                    v = counting.get(k)
                     if v is not None:
                         try:
-                            parts.append(f"{k}={int(float(v))}")
+                            prefix = "proj-" if is_proj else ""
+                            parts.append(f"{prefix}{k}={int(float(v))}")
                         except (TypeError, ValueError):
                             pass
 
@@ -341,11 +388,38 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
             continue
         seen_ids.add(key)
         rank = _get_player_rank(db, pid, categories)
-        rank_str = f" | rank=#{rank}" if rank else ""
+        # Label rank explicitly so Claude knows what it represents
+        rank_str = f" | predicted-season-rank=#{rank}" if rank else ""
         facts = _get_player_facts(db, pid, pname)
         data_block_lines.append(f"  - {facts}{rank_str}")
 
     data_block = "\n".join(data_block_lines)
+
+    # Early-season context flag — week 1-4 of the season
+    from datetime import date as _date
+    _season_start = _date(2026, 3, 25)
+    _days_in = (_date.today() - _season_start).days
+    _early_season = _days_in < 28  # first 4 weeks
+    early_season_note = (
+        "\nEARLY SEASON CONTEXT: The 2026 season just started. Stats labeled "
+        "'2026 actual' have very small samples — flag this and blend in the "
+        "Steamer projection context where useful. Stats labeled 'Steamer projection' "
+        "are full-season projections, not current-year accumulations."
+        if _early_season else ""
+    )
+
+    stat_instructions = (
+        "When referencing stats:\n"
+        "- Stats labeled '[2026 actual — N G/PA/IP]' are real 2026 performance; "
+        "mention the sample size if small (under 50 PA or 5 GS).\n"
+        "- Stats labeled '[2026 Steamer projection]' are full-season projections; "
+        "say 'projects for X' or 'Steamer projects', never 'has X'.\n"
+        "- 'proj-HR', 'proj-K', etc. are projected season totals, not current stats.\n"
+        "- 'predicted-season-rank' is our internal rest-of-season ranking model; "
+        "refer to it as 'ranked #N in our season projections' or similar.\n"
+        "K/9 benchmarks for starters: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
+        "below avg=7.0-7.9, poor=<7.0. Do not call anything below 9.0 'elite'."
+    )
 
     # ── Per-type prompt bodies ────────────────────────────────────────────────
     if txn_type == "add":
@@ -358,9 +432,10 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
             drop_line = f"\nDropped: {', '.join(p.get('player_name', '?') for p in drops)}"
 
         prompt = (
-            f"{data_block}\n\n"
+            f"{data_block}{early_season_note}\n\n"
             f"TRANSACTION: {manager} adds {added_names}{drop_line}\n"
             f"GRADE: {txn.grade_letter}\n\n"
+            f"{stat_instructions}\n\n"
             f"Write a 2-sentence verdict on this add. "
             f"Use ONLY the player data above — never cite team, stats, or injuries "
             f"not listed there. Direct, specific, no hedging."
@@ -371,9 +446,10 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
         drop_names = ", ".join(p.get("player_name", "?") for p in participants)
 
         prompt = (
-            f"{data_block}\n\n"
+            f"{data_block}{early_season_note}\n\n"
             f"TRANSACTION: {manager} drops {drop_names}\n"
             f"GRADE: {txn.grade_letter}\n\n"
+            f"{stat_instructions}\n\n"
             f"Write a 2-sentence verdict on this drop. "
             f"Use ONLY the player data above — never cite team, stats, or injuries "
             f"not listed there. Direct, specific, no hedging."
@@ -388,9 +464,10 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
             side_lines.append(f"{mgr} receives: {added} | gives up: {dropped}")
 
         prompt = (
-            f"{data_block}\n\n"
+            f"{data_block}{early_season_note}\n\n"
             f"TRANSACTION (trade):\n" + "\n".join(side_lines) + "\n"
             f"OVERALL GRADE: {txn.grade_letter}\n\n"
+            f"{stat_instructions}\n\n"
             f"Write a 2-sentence verdict identifying who won this trade and why. "
             f"Use ONLY the player data above — never cite team, stats, or injuries "
             f"not listed there. Direct, specific, no hedging."
@@ -459,7 +536,7 @@ def grade_transaction(
             prompt = _build_prompt(txn, league, db)
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=120,
+                max_tokens=150,
                 system=(
                     "You are a sharp fantasy baseball analyst. Write brief, direct verdicts on "
                     "transactions. No hedging. No filler.\n\n"
@@ -471,7 +548,18 @@ def grade_transaction(
                     "listed in the provided player data.\n"
                     "3. Never reference a league format (points, roto, etc.) other than the one "
                     "stated in the prompt's LEAGUE FORMAT field.\n"
-                    "4. If a player's team is listed, use that team. Never substitute a different team."
+                    "4. If a player's team is listed, use that team. Never substitute a different team.\n"
+                    "5. NEVER begin your response with 'VERDICT:', 'PASS', 'FAIL', or any verdict "
+                    "label. Jump straight into the analysis.\n"
+                    "6. Stats labeled '[2026 Steamer projection]' are full-season projections — "
+                    "say 'projects for' or 'Steamer projects', never state them as current stats. "
+                    "Stats labeled '[2026 actual — N G/PA/IP]' are real but may have tiny samples; "
+                    "flag the sample size if under 50 PA or 5 GS.\n"
+                    "7. 'predicted-season-rank' means our internal rest-of-season model rank. "
+                    "Refer to it as 'ranked #N in our season projections' — never as a generic "
+                    "'#N pitcher' without context.\n"
+                    "8. K/9 benchmarks: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
+                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite."
                 ),
                 messages=[{"role": "user", "content": prompt}],
             )
