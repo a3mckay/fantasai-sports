@@ -253,6 +253,25 @@ def project_hitter_stats(
 
     season_pa = max(_safe(cnt, "PA", 1.0), 1.0)
 
+    # Dynamic actual-weight scaling: prevent tiny early-season samples from
+    # distorting projections.  A player hitting .750 over 4 PA is noise, not
+    # signal — blending 50% actual with 50% talent at that sample size massively
+    # inflates or deflates their projected rate stats.
+    #
+    # Ramp from 0 → config.actual_weight linearly between 20 PA and 100 PA.
+    # Below 20 PA: pure talent (aw=0).  Above 100 PA: use the configured weight.
+    # This matches the statistical reality: AVG over 20 PA has a ±0.10 95% CI,
+    # which makes it essentially uninformative; at 100 PA the CI shrinks to ±0.05.
+    _PA_FLOOR = 20.0
+    _PA_FULL  = 100.0
+    if season_pa < _PA_FLOOR:
+        aw = 0.0
+        tw = 1.0
+    elif season_pa < _PA_FULL:
+        aw = config.actual_weight * (season_pa - _PA_FLOOR) / (_PA_FULL - _PA_FLOOR)
+        tw = 1.0 - aw
+    # else: season_pa >= 100 — use config values unchanged
+
     # Effective PA for counting stat scaling.
     # The consensus projection already represents a full-season estimate at
     # whatever playing time the projection system expects (e.g. 120 PA for a
@@ -415,6 +434,20 @@ def project_pitcher_stats(
     ip = (config.sp_ip if is_sp else config.rp_ip) * _availability_multiplier(player, config)
 
     season_ip = max(_safe(cnt, "IP", 0.1), 0.1)
+
+    # Dynamic actual-weight scaling by IP sample size — mirrors the hitter logic.
+    # A 0.00 ERA over 3 IP is noise; blending 50% actual weight on that would
+    # tank everyone else's projected ERA.
+    # Ramp from 0 → config.actual_weight between 5 IP and 30 IP.
+    _IP_FLOOR = 5.0
+    _IP_FULL  = 30.0
+    if season_ip < _IP_FLOOR:
+        aw = 0.0
+        tw = 1.0
+    elif season_ip < _IP_FULL:
+        aw = config.actual_weight * (season_ip - _IP_FLOOR) / (_IP_FULL - _IP_FLOOR)
+        tw = 1.0 - aw
+    # else: season_ip >= 30 — use config values unchanged
 
     # ── ERA ───────────────────────────────────────────────────────────────────
     # Steamer ERA > ensemble of xERA/SIERA/xFIP

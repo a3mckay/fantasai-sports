@@ -496,6 +496,22 @@ HARD RULES
    is irrelevant and wrong if it conflicts with the prompt. If the prompt \
    says a player is on the New York Yankees, he is on the New York Yankees. \
    Full stop. Do not name any other team as his current employer.
+10. EARLY-SEASON SMALL SAMPLES (critical): If the data block shows a SAMPLE \
+    SIZE of fewer than 30 PA or fewer than 10 IP, the current-season rate \
+    stats (.AVG, .OBP, ERA, WHIP, K/9, etc.) are noise — do NOT treat them \
+    as predictive or cite them as evidence of sustained skill. Instead: \
+    • Overperforming player (hot start): use language like "has started the \
+      season on a tear", "off to a scorching start", "cooking early", \
+      "hot out of the gate" — then anchor your actual assessment to \
+      underlying metrics (xwOBA, Barrel%, SwStr%, xFIP, etc.), NOT the \
+      surface stat line. \
+    • Underperforming player (slow start): use "scuffling early", \
+      "slow start", "needs to get it going", "the underlying metrics say \
+      the results will come", "should bounce back as the sample grows". \
+    NEVER write "his .800 OBP is genuinely elite" or "that .750 average \
+    isn't going anywhere" about a 5-game sample. It is factually wrong \
+    and embarrassing. The SAMPLE SIZE line tells you exactly how many PA \
+    or IP they have. Use it. Small sample ≠ talent signal.
 
 ───────────────────────────────────────
 BATCH VARIETY (when writing multiple blurbs in one response)

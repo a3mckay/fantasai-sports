@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -199,10 +200,15 @@ def generate_rankings_blurbs(
             return f"{key}: {val:.3f}"
         return f"{key}: {val:.2f}"
 
+    # Days into the 2026 season — used to build small-sample context
+    _SEASON_START_2026 = date(2026, 3, 26)
+    _days_into_season = max(0, (date.today() - _SEASON_START_2026).days)
+
     def _build_key_stats(player_id: int, stat_type: str) -> str:
         raw = raw_stats_map.get(player_id)
         if not raw:
             return "(stats not yet available this season)"
+        cnt  = raw.get("counting", {})
         rate = raw.get("rate", {})
         adv  = raw.get("advanced", {})
         keys = _PITCHER_METRICS if stat_type == "pitching" else _BATTER_METRICS
@@ -214,7 +220,26 @@ def generate_rankings_blurbs(
                     parts.append(_fmt_metric(k, float(v)))
                 except (TypeError, ValueError):
                     pass
-        return " | ".join(parts[:6]) if parts else "(stats not yet available this season)"
+        stats_line = " | ".join(parts[:6]) if parts else "(stats not yet available this season)"
+
+        # Prepend sample size so the blurb model knows how much to trust the stats.
+        # Rule 10 in writer_persona.py uses this to apply appropriate language.
+        if stat_type == "pitching":
+            sample_val = cnt.get("IP") or cnt.get("ip") or 0.0
+            try:
+                sample_val = float(sample_val)
+            except (TypeError, ValueError):
+                sample_val = 0.0
+            sample_line = f"SAMPLE SIZE: {sample_val:.1f} IP / day {_days_into_season} of season"
+        else:
+            sample_val = cnt.get("PA") or cnt.get("pa") or 0.0
+            try:
+                sample_val = int(float(sample_val))
+            except (TypeError, ValueError):
+                sample_val = 0
+            sample_line = f"SAMPLE SIZE: {sample_val} PA / day {_days_into_season} of season"
+
+        return f"{sample_line}\n{stats_line}"
 
     for player in top_players:
         # Skip MiLB prospects — they have PAV blurbs
