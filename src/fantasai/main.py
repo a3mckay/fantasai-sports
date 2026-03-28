@@ -163,6 +163,7 @@ async def lifespan(app: FastAPI):
     # without manual intervention.
     # NOTE: This runs in-process.  If Railway ever scales to multiple instances,
     # replace with a dedicated job queue or Railway's native cron feature.
+    from datetime import datetime as _dt
     from apscheduler.schedulers.background import BackgroundScheduler
     from fantasai.services.yahoo_sync import sync_all_yahoo_users
 
@@ -174,6 +175,7 @@ async def lifespan(app: FastAPI):
         id="yahoo-sync",
         max_instances=1,          # prevent overlap if a sync takes > 2 hours
         misfire_grace_time=300,   # allow 5-minute late starts
+        next_run_time=_dt.utcnow(),  # run immediately on startup so data is always fresh after a deploy
     )
 
     # Nightly 4am EST stats refresh + rankings snapshot
@@ -243,10 +245,11 @@ async def lifespan(app: FastAPI):
         id="transaction-poll",
         max_instances=1,
         misfire_grace_time=120,
+        next_run_time=_dt.utcnow(),  # run immediately on startup
     )
 
     scheduler.start()
-    _log.info("Yahoo sync scheduler started (interval=2h)")
+    _log.info("Yahoo sync + transaction poll schedulers started (sync=2h, txn=20m, both run immediately on startup)")
 
     yield
 
