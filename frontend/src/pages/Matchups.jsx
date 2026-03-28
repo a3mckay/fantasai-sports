@@ -306,7 +306,7 @@ function MatchupCard({ matchup }) {
       {/* Generated-at timestamp */}
       {matchup.generated_at && (
         <div className="text-[11px] text-slate-600 text-right">
-          Updated {new Date(matchup.generated_at).toLocaleString('en-US', {
+          Projections last updated {new Date(matchup.generated_at).toLocaleString('en-US', {
             month: 'short', day: 'numeric',
             hour: 'numeric', minute: '2-digit',
           })}
@@ -498,7 +498,7 @@ export default function Matchups() {
           <h1 className="text-2xl font-bold text-white">Matchup Analyzer</h1>
           {currentWeek !== null && (
             <p className="text-sm text-slate-400 mt-0.5">
-              Week {currentWeek} — projected category totals
+              Week {currentWeek} — projected full-week category totals · updated daily
             </p>
           )}
         </div>

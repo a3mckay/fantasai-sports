@@ -197,6 +197,7 @@ def _create_stub_players_for_unmatched(
         stub.name      = clean_name
         stub.positions = positions
         stub.status    = "prospect"
+        stub.team      = entry.get("team_abbr") or "MiLB"
 
         # Register in resolved so roster_ids picks this stub up
         resolved[name] = stub_id
