@@ -295,6 +295,7 @@ def _compute_rankings(
     full_player_map = player_map  # already contains all players
 
     steamer_lookup: dict[int, NormalizedPlayerData] = {}
+    _steamer_only_ids: set[int] = set()  # players with Steamer projection but no 2026 actuals
     for stats in steamer_rows:
         player = full_player_map.get(stats.player_id)
         if not player:
@@ -313,8 +314,11 @@ def _compute_rankings(
         # Add Steamer-only players (prospects) to the predictive player pool.
         # They have no 2026 YTD actuals — the projection functions will fall
         # back entirely to the Steamer talent signal.
+        # Weekly horizon: defer the decision to after we have the schedule
+        # (we only add them then if they have confirmed MLB games this week).
         if stats.player_id not in ytd_player_ids:
             players.append(nd)
+            _steamer_only_ids.add(stats.player_id)
 
     # ── Merge injury / risk-flag data into NormalizedPlayerData ────────────
     # InjuryRecord holds current IL status; Player.risk_flag holds chronic
@@ -403,6 +407,25 @@ def _compute_rankings(
                     )
                 for pid in uncovered:
                     week_configs[pid] = _zero_sp
+
+    # ── Exclude MiLB-only players from This Week rankings ───────────────────
+    # Steamer-only players (no 2026 actual stats) are MiLB / not yet on an
+    # MLB roster.  They cannot contribute to H2H weekly categories so ranking
+    # them alongside MLB players is misleading (e.g. Domínguez at #61 because
+    # his Steamer talent signal is elite).
+    # For month/season horizons they stay in (call-up upside matters there).
+    if horizon == ProjectionHorizon.WEEK and _steamer_only_ids:
+        if _week_schedule:
+            # Keep a Steamer-only player only if they actually appear in the
+            # MLB schedule this week — that confirms they're on a roster.
+            players = [
+                nd for nd in players
+                if nd.player_id not in _steamer_only_ids
+                or nd.player_id in _week_schedule
+            ]
+        else:
+            # No schedule data (API outage / preseason): exclude all MiLB-only
+            players = [nd for nd in players if nd.player_id not in _steamer_only_ids]
 
     # ── Inject weather/Vegas factors into NormalizedPlayerData ──────────────
     if horizon == ProjectionHorizon.WEEK and _week_schedule:
