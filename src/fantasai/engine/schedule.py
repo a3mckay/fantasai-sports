@@ -157,12 +157,14 @@ _TEAM_NAME_TO_ABBR: dict[str, str] = {
 class PlayerSchedule:
     """Weekly schedule context for a single player."""
 
-    probable_starts: int      # 0, 1, or 2 — for SPs
+    probable_starts: int      # total starts in Mon–Sun window (for scoring)
     team_games: int           # typically 5-7
     home_park: Optional[str]  # team abbreviation for home games this week
     weather_hr_factor: float = 1.0  # 0.85–1.15 wind/temp modifier for outdoor games
     vegas_run_factor: float = 1.0   # 0.90–1.10 implied-runs modifier from Vegas totals
-    opponent_teams: list = field(default_factory=list)  # opponent team abbrevs (pitchers)
+    opponent_teams: list = field(default_factory=list)       # all opponents this week (pitchers)
+    future_starts: int = 0                                    # starts on/after today (for blurb language)
+    future_opponent_teams: list = field(default_factory=list) # upcoming opponents only
 
 
 # ---------------------------------------------------------------------------
@@ -448,10 +450,13 @@ def fetch_weekly_schedule(
 
     # ── Parse games ─────────────────────────────────────────────────────────
     # Counts keyed by MLBAM ID
-    pitcher_starts: dict[int, int] = {}       # mlbam_pitcher_id → start count
-    pitcher_opponents: dict[int, list[str]] = {}  # mlbam_pitcher_id → [opp_abbrs]
-    team_game_counts: dict[int, int] = {}     # mlbam_team_id    → game count
-    team_mlbam_to_abbr: dict[int, str] = {}   # mlbam_team_id    → abbreviation
+    today = date.today()
+    pitcher_starts: dict[int, int] = {}              # mlbam_pitcher_id → total start count
+    pitcher_future_starts: dict[int, int] = {}       # mlbam_pitcher_id → starts on/after today
+    pitcher_opponents: dict[int, list[str]] = {}     # mlbam_pitcher_id → all opp abbrevs
+    pitcher_future_opponents: dict[int, list[str]] = {}  # mlbam_pitcher_id → upcoming opp abbrevs
+    team_game_counts: dict[int, int] = {}            # mlbam_team_id → game count
+    team_mlbam_to_abbr: dict[int, str] = {}          # mlbam_team_id → abbreviation
 
     # Collect all raw game dicts for weather enrichment
     all_games: list[dict] = []
@@ -461,6 +466,13 @@ def fetch_weekly_schedule(
 
     dates = data.get("dates") or []
     for day in dates:
+        game_date_str = day.get("date", "")
+        try:
+            game_date = date.fromisoformat(game_date_str)
+        except (ValueError, TypeError):
+            game_date = None
+        is_future_game = game_date is not None and game_date >= today
+
         games = day.get("games") or []
         for game in games:
             all_games.append(game)
@@ -501,15 +513,23 @@ def fetch_weekly_schedule(
             if home_pitcher_id is not None:
                 prev = pitcher_starts.get(home_pitcher_id, 0)
                 pitcher_starts[home_pitcher_id] = min(prev + 1, 2)
-                # Home pitcher faces the away team
                 if away_abbr:
                     pitcher_opponents.setdefault(home_pitcher_id, []).append(away_abbr.upper())
+                if is_future_game:
+                    prev_f = pitcher_future_starts.get(home_pitcher_id, 0)
+                    pitcher_future_starts[home_pitcher_id] = min(prev_f + 1, 2)
+                    if away_abbr:
+                        pitcher_future_opponents.setdefault(home_pitcher_id, []).append(away_abbr.upper())
             if away_pitcher_id is not None:
                 prev = pitcher_starts.get(away_pitcher_id, 0)
                 pitcher_starts[away_pitcher_id] = min(prev + 1, 2)
-                # Away pitcher faces the home team
                 if home_abbr:
                     pitcher_opponents.setdefault(away_pitcher_id, []).append(home_abbr.upper())
+                if is_future_game:
+                    prev_f = pitcher_future_starts.get(away_pitcher_id, 0)
+                    pitcher_future_starts[away_pitcher_id] = min(prev_f + 1, 2)
+                    if home_abbr:
+                        pitcher_future_opponents.setdefault(away_pitcher_id, []).append(home_abbr.upper())
 
     if not team_game_counts and not pitcher_starts:
         logger.warning("MLB schedule response contained no usable game data")
@@ -566,14 +586,13 @@ def fetch_weekly_schedule(
         player_id = mlbam_to_player_id.get(mlbam_pitcher_id)
         if player_id is None:
             continue
-        # Find this pitcher's team to get game count and park
-        # We don't know their team MLBAM ID from just the pitcher ID, so
-        # we look at existing result or fall back to 6 (league average)
         result[player_id] = PlayerSchedule(
             probable_starts=starts,
             team_games=6,       # will be updated below if we can match the team
             home_park=None,
             opponent_teams=pitcher_opponents.get(mlbam_pitcher_id, []),
+            future_starts=pitcher_future_starts.get(mlbam_pitcher_id, 0),
+            future_opponent_teams=pitcher_future_opponents.get(mlbam_pitcher_id, []),
         )
 
     # Add all-player schedule entries using team game counts
@@ -596,6 +615,8 @@ def fetch_weekly_schedule(
                     weather_hr_factor=weather_factor,
                     vegas_run_factor=vegas_factor,
                     opponent_teams=existing.opponent_teams,
+                    future_starts=existing.future_starts,
+                    future_opponent_teams=existing.future_opponent_teams,
                 )
             else:
                 result[player_id] = PlayerSchedule(
@@ -710,18 +731,30 @@ def build_player_week_context(
     is_sp = "SP" in positions
     is_rp = "RP" in positions and not is_sp
 
-    # ── Starts note (SPs) — always included, with opponent(s) ───────────────
+    # ── Starts note (SPs) — use future_starts for blurb language so mid-week
+    # viewers see remaining starts, not starts already thrown earlier this week.
     if stat_type == "pitching" and is_sp:
+        future = ps.future_starts
+        past = ps.probable_starts - future  # starts already thrown this week
         opp_suffix = ""
-        if ps.opponent_teams:
+        if ps.future_opponent_teams:
+            opp_suffix = f" (vs {', '.join(ps.future_opponent_teams)})"
+        elif ps.opponent_teams and future == 0:
+            # All starts already happened — still list opponents for context
             opp_suffix = f" (vs {', '.join(ps.opponent_teams)})"
-        if ps.probable_starts == 2:
-            notes.append(f"2 starts this week{opp_suffix}")
-        elif ps.probable_starts == 1:
-            notes.append(f"1 start this week{opp_suffix}")
-        else:
-            # 0 probable starts — still call it out so blurb can reflect the risk
-            notes.append("no confirmed probable start this week")
+
+        if future == 2:
+            notes.append(f"2 starts remaining this week{opp_suffix}")
+        elif future == 1:
+            if past >= 1:
+                notes.append(f"already started once this week; 1 start remaining{opp_suffix}")
+            else:
+                notes.append(f"1 start this week{opp_suffix}")
+        elif future == 0:
+            if past >= 1:
+                notes.append(f"already made {past} start{'s' if past > 1 else ''} this week; no more scheduled")
+            else:
+                notes.append("no confirmed probable start this week")
 
     # ── Games note (batters / RPs when non-standard) ─────────────────────────
     if stat_type == "batting" or is_rp:
