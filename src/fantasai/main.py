@@ -191,7 +191,8 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
 
-    # Monday 4am EST — generate fresh AI blurbs for top 300 players in all ranking modes
+    # Monday 4am EST — generate fresh AI blurbs for top 300 players in all ranking modes.
+    # Also runs immediately on startup so updated blurb logic takes effect on deploy.
     scheduler.add_job(
         _monday_blurb_generation,
         trigger="cron",
@@ -201,6 +202,7 @@ async def lifespan(app: FastAPI):
         id="monday-blurbs",
         max_instances=1,
         misfire_grace_time=600,
+        next_run_time=_dt.now(_tz.utc),  # run immediately on this deploy
     )
 
     # Daytime MLB Stats API refresh every 3 hours (noon–9pm EST) during the season
