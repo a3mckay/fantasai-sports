@@ -127,6 +127,16 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
                 if timestamp_raw else None
             )
 
+            # Skip transaction types we don't handle (draft picks, commish
+            # actions, etc.).  Only add/drop/waiver/trade variants are
+            # meaningful for Move Grades.
+            if _raw_type not in _TYPE_MAP:
+                _log.debug(
+                    "fetch_league_transactions: skipping unknown type %r for %s",
+                    _raw_type, league_key,
+                )
+                continue
+
             # Parse players involved
             players = []
             if isinstance(players_block, dict):

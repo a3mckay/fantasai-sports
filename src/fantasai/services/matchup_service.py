@@ -90,8 +90,17 @@ def fetch_league_scoreboard(
         scoreboard_container = league_data[-1]
         matchups_raw = scoreboard_container["scoreboard"]["matchups"]
     except (KeyError, IndexError, TypeError) as exc:
-        logger.warning("Unexpected Yahoo scoreboard shape for %s: %s", league_key, exc)
+        logger.warning(
+            "Unexpected Yahoo scoreboard shape for %s: %s — top-level keys: %s",
+            league_key, exc,
+            list(data.get("fantasy_content", {}).keys()) if isinstance(data, dict) else type(data).__name__,
+        )
         return []
+
+    logger.info(
+        "fetch_league_scoreboard: parsing matchups for league %s (matchups type=%s)",
+        league_key, type(matchups_raw).__name__,
+    )
 
     matchups: list[dict] = []
 
@@ -101,7 +110,22 @@ def fetch_league_scoreboard(
             continue
 
         try:
-            matchup_list = value.get("matchup", [])
+            matchup_raw_val = value.get("matchup", []) if isinstance(value, dict) else []
+
+            # Yahoo may return "matchup" as a flat dict (all fields at top level,
+            # including "teams") OR as a 2-element list [metadata_dict, teams_dict].
+            # Normalise to a list so the rest of the parsing is uniform.
+            if isinstance(matchup_raw_val, dict):
+                matchup_list = [matchup_raw_val]
+            elif isinstance(matchup_raw_val, list):
+                matchup_list = matchup_raw_val
+            else:
+                logger.debug(
+                    "fetch_league_scoreboard: unexpected matchup type %s in entry %s",
+                    type(matchup_raw_val).__name__, key,
+                )
+                continue
+
             # The week number sits at matchup_list[0] as {"week": "N"}
             week_num: int = 0
             if matchup_list and isinstance(matchup_list[0], dict):
@@ -110,7 +134,9 @@ def fetch_league_scoreboard(
                 except (TypeError, ValueError):
                     week_num = 0
 
-            # Teams are nested under a "teams" key within the matchup object
+            # Teams are nested under a "teams" key within the matchup object.
+            # In the flat-dict format the first (and only) item IS the matchup
+            # with "teams" inline; in the list format it's the second element.
             teams_data: Optional[dict] = None
             for item in matchup_list:
                 if isinstance(item, dict) and "teams" in item:
@@ -606,6 +632,7 @@ def analyze_league_matchups(
         week_schedule_raw = fetch_weekly_schedule(
             week_start=week_start,
             week_end=week_end,
+            db=db,
         )
         if isinstance(week_schedule_raw, dict):
             week_schedule = week_schedule_raw
