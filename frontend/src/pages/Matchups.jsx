@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { RefreshCw, Swords } from 'lucide-react'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
@@ -322,36 +322,78 @@ function MatchupCard({ matchup }) {
 // Page
 // ---------------------------------------------------------------------------
 
+const POLL_INTERVAL = 6000   // ms between polls while generating
+const POLL_MAX      = 10     // max poll attempts (~60 seconds)
+
 export default function Matchups() {
   const [matchups, setMatchups]   = useState([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState(null)
   const [refreshing, setRefreshing] = useState(false)
 
+  const didAutoTrigger = useRef(false)
+  const pollCount      = useRef(0)
+  const pollTimer      = useRef(null)
+
   const currentWeek = matchups.length > 0 ? matchups[0].week : null
 
   const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
     try {
       const data = await req('GET', '/api/v1/matchups')
       setMatchups(data)
+      return data.length
     } catch (e) {
       setError(e.message || 'Failed to load matchups')
-    } finally {
-      setLoading(false)
+      return 0
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  // Poll until results appear or we hit the limit
+  const startPolling = useCallback(() => {
+    pollCount.current = 0
+    const tick = async () => {
+      const count = await load()
+      pollCount.current += 1
+      if (count > 0 || pollCount.current >= POLL_MAX) {
+        setRefreshing(false)
+        setLoading(false)
+      } else {
+        pollTimer.current = setTimeout(tick, POLL_INTERVAL)
+      }
+    }
+    pollTimer.current = setTimeout(tick, POLL_INTERVAL)
+  }, [load])
+
+  // On mount: load then auto-trigger analysis if empty
+  useEffect(() => {
+    const init = async () => {
+      setLoading(true)
+      const count = await load()
+      if (count === 0 && !didAutoTrigger.current) {
+        didAutoTrigger.current = true
+        setRefreshing(true)
+        try {
+          await req('POST', '/api/v1/matchups/refresh')
+          startPolling()
+        } catch {
+          setRefreshing(false)
+          setLoading(false)
+        }
+      } else {
+        setLoading(false)
+      }
+    }
+    init()
+    return () => { if (pollTimer.current) clearTimeout(pollTimer.current) }
+  }, [load, startPolling])
 
   const handleRefresh = async () => {
+    if (pollTimer.current) clearTimeout(pollTimer.current)
     setRefreshing(true)
     setError(null)
     try {
       await req('POST', '/api/v1/matchups/refresh')
-      // Poll after a short delay to pick up results as they arrive
-      setTimeout(() => { load(); setRefreshing(false) }, 4000)
+      startPolling()
     } catch (e) {
       setError(e.message || 'Refresh failed')
       setRefreshing(false)
@@ -383,17 +425,21 @@ export default function Matchups() {
       <ErrorBanner error={error} />
 
       {/* Body */}
-      {loading ? (
-        <div className="flex justify-center py-20">
+      {loading || refreshing ? (
+        <div className="bg-navy-900 border border-navy-700 rounded-xl p-10 text-center space-y-3">
           <Spinner />
+          <p className="text-slate-400 text-sm mt-3">
+            {refreshing
+              ? 'Generating matchup projections — this takes about 30 seconds…'
+              : 'Loading…'}
+          </p>
         </div>
       ) : matchups.length === 0 ? (
         <div className="bg-navy-900 border border-navy-700 rounded-xl p-10 text-center space-y-3">
           <Swords size={36} className="mx-auto text-slate-600" />
-          <p className="text-slate-400 font-medium">No matchup analysis yet.</p>
+          <p className="text-slate-400 font-medium">No matchup analysis generated.</p>
           <p className="text-slate-500 text-sm">
-            Click <span className="font-semibold text-slate-300">Refresh</span> to
-            generate projections for the current week.
+            Click <span className="font-semibold text-slate-300">Refresh</span> to try again.
           </p>
         </div>
       ) : (

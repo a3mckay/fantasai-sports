@@ -64,23 +64,44 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
         _log.error("fetch_league_transactions: failed for league %s", league_key, exc_info=True)
         return []
 
-    # Navigate Yahoo's deeply nested JSON structure
+    # Navigate Yahoo's deeply nested JSON structure.
+    # Yahoo returns league as a 2-element list: [league_info, {sub-resources}]
     try:
-        transactions_raw = (
-            data.get("fantasy_content", {})
-            .get("league", [{}])[-1]
-            .get("transactions", {})
-        )
+        league_list = data.get("fantasy_content", {}).get("league", [])
+        last_elem = league_list[-1] if league_list else {}
+        transactions_raw = last_elem.get("transactions", {})
     except (IndexError, AttributeError, TypeError):
         _log.warning("fetch_league_transactions: unexpected response shape for %s", league_key)
         return []
 
-    if not transactions_raw or not isinstance(transactions_raw, dict):
-        _log.warning(
-            "fetch_league_transactions: no transactions block in response for %s — raw keys: %s",
+    # Yahoo returns transactions as a dict {"count": N, "0": {...}, ...} when
+    # transactions exist, but may return a list, empty string, or empty dict
+    # when there are none (varies by season / league state).
+    if isinstance(transactions_raw, list):
+        # List format: [{"count": N}, {transaction_data...}] — extract count
+        count_in_list = transactions_raw[0].get("count", 0) if transactions_raw else 0
+        _log.info(
+            "fetch_league_transactions: Yahoo returned list format with count=%s for %s",
+            count_in_list, league_key,
+        )
+        if count_in_list == 0:
+            return []
+        # Non-zero count in list format is unexpected — fall through to warning
+        transactions_raw = {}  # will hit the warning below
+
+    if not transactions_raw:
+        # Empty dict/string — no transactions yet (normal at start of season)
+        _log.info(
+            "fetch_league_transactions: Yahoo returned 0 transactions for %s "
+            "(empty response — normal if season just started or no moves yet)",
             league_key,
-            list(data.get("fantasy_content", {}).get("league", [{}])[-1].keys())[:10]
-            if isinstance(data.get("fantasy_content", {}).get("league"), list) else "N/A",
+        )
+        return []
+
+    if not isinstance(transactions_raw, dict):
+        _log.warning(
+            "fetch_league_transactions: unexpected transactions type %s for %s",
+            type(transactions_raw).__name__, league_key,
         )
         return []
 
