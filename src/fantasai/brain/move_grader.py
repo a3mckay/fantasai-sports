@@ -157,6 +157,59 @@ def _compute_drop_score(
     return 4.0       # A — good to drop deep roster filler
 
 
+def _compute_swap_score(
+    add_ids: list[Optional[int]],
+    drop_ids: list[Optional[int]],
+    db: "Session",
+    league_categories: list[str],
+) -> float:
+    """Score an add+drop swap based on net rank improvement.
+
+    Unlike a blind average of independent add/drop scores, this measures how
+    much better the acquired player is vs what was given up.  The result:
+      - Large rank improvement (added player much better) → high grade
+      - Neutral swap → C range
+      - Downgrade (dropped player much better) → D/F range
+
+    This is analogous to trade scoring — the manager is exchanging one asset
+    for another and we want to know if the deal was worth it.
+    """
+    add_ranks = [_get_player_rank(db, pid, league_categories) for pid in add_ids]
+    drop_ranks = [_get_player_rank(db, pid, league_categories) for pid in drop_ids]
+
+    # Average ranks (lower = better player)
+    add_avg = sum(r for r in add_ranks if r is not None) / max(len([r for r in add_ranks if r is not None]), 1)
+    drop_avg = sum(r for r in drop_ranks if r is not None) / max(len([r for r in drop_ranks if r is not None]), 1)
+
+    # Handle unknowns: treat unranked added player conservatively (rank 400),
+    # unranked dropped player as fringe (rank 350) — we don't penalize dropping unknown.
+    if not any(r is not None for r in add_ranks):
+        add_avg = 400.0
+    if not any(r is not None for r in drop_ranks):
+        drop_avg = 350.0
+
+    # delta = how many rank spots better the added player is vs dropped
+    # positive delta = upgrade (added player has lower/better rank number)
+    delta = drop_avg - add_avg
+
+    # Also hard-cap: if drop is top-50 that's catastrophic regardless of what was added
+    drop_top50 = any(r is not None and r <= 50 for r in drop_ranks)
+    if drop_top50:
+        return 0.0  # F
+
+    if delta >= 150:  return 4.3  # A+ — massive upgrade
+    if delta >= 100:  return 4.0  # A
+    if delta >= 60:   return 3.7  # A-
+    if delta >= 30:   return 3.3  # B+
+    if delta >= 10:   return 3.0  # B  — meaningful upgrade
+    if delta >= -10:  return 2.3  # C+ — roughly neutral swap
+    if delta >= -30:  return 2.0  # C
+    if delta >= -60:  return 1.7  # C-
+    if delta >= -100: return 1.3  # D+ — downgrade
+    if delta >= -150: return 1.0  # D
+    return 0.7                    # D- — significant downgrade
+
+
 def _compute_trade_score(
     participants: list[dict],
     db: "Session",
@@ -427,19 +480,55 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
         drops = [p for p in participants if p.get("action") == "drop"]
         manager = adds[0].get("manager_name", "A manager") if adds else "A manager"
         added_names = ", ".join(p.get("player_name", "?") for p in adds)
-        drop_line = ""
-        if drops:
-            drop_line = f"\nDropped: {', '.join(p.get('player_name', '?') for p in drops)}"
 
-        prompt = (
-            f"{data_block}{early_season_note}\n\n"
-            f"TRANSACTION: {manager} adds {added_names}{drop_line}\n"
-            f"GRADE: {txn.grade_letter}\n\n"
-            f"{stat_instructions}\n\n"
-            f"Write a 2-sentence verdict on this add. "
-            f"Use ONLY the player data above — never cite team, stats, or injuries "
-            f"not listed there. Direct, specific, no hedging."
-        )
+        if drops:
+            # Add+drop: frame as a roster swap with net-value context
+            drop_names = ", ".join(p.get("player_name", "?") for p in drops)
+
+            # Build position context — detect same-position upgrade vs rebalancing
+            def _positions_for(pid: Optional[int], pname: str) -> list[str]:
+                if not pid:
+                    return []
+                from fantasai.models.player import Player as _Player
+                row = db.query(_Player.positions).filter(_Player.player_id == pid).first()
+                return row[0] if row and row[0] else []
+
+            add_positions = [pos for p in adds for pos in _positions_for(p.get("player_id"), p.get("player_name", ""))]
+            drop_positions = [pos for p in drops for pos in _positions_for(p.get("player_id"), p.get("player_name", ""))]
+            shared_pos = set(add_positions) & set(drop_positions)
+
+            if shared_pos:
+                swap_context = f"SWAP CONTEXT: Same-position upgrade — both players share eligibility at {'/'.join(sorted(shared_pos))}."
+            else:
+                add_pos_str = "/".join(sorted(set(add_positions))) or "unknown"
+                drop_pos_str = "/".join(sorted(set(drop_positions))) or "unknown"
+                swap_context = (
+                    f"SWAP CONTEXT: Roster rebalancing — adding {add_pos_str} depth, "
+                    f"dropping {drop_pos_str} depth. Consider whether this addresses a team need."
+                )
+
+            prompt = (
+                f"{data_block}{early_season_note}\n\n"
+                f"TRANSACTION: {manager} drops {drop_names} to add {added_names}\n"
+                f"GRADE: {txn.grade_letter}\n\n"
+                f"{swap_context}\n\n"
+                f"{stat_instructions}\n\n"
+                f"Write a 2-sentence verdict on this roster swap. "
+                f"Judge whether {added_names} is worth more than {drop_names} for the rest of the season, "
+                f"and whether the positional trade-off makes sense for this team. "
+                f"Use ONLY the player data above — never cite team, stats, or injuries "
+                f"not listed there. Direct, specific, no hedging."
+            )
+        else:
+            prompt = (
+                f"{data_block}{early_season_note}\n\n"
+                f"TRANSACTION: {manager} adds {added_names}\n"
+                f"GRADE: {txn.grade_letter}\n\n"
+                f"{stat_instructions}\n\n"
+                f"Write a 2-sentence verdict on this add. "
+                f"Use ONLY the player data above — never cite team, stats, or injuries "
+                f"not listed there. Direct, specific, no hedging."
+            )
 
     elif txn_type == "drop":
         manager = participants[0].get("manager_name", "A manager") if participants else "A manager"
@@ -501,10 +590,17 @@ def grade_transaction(
     if txn_type == "add":
         adds = [p for p in participants if p.get("action") == "add"]
         drops = [p for p in participants if p.get("action") == "drop"]
-        add_scores = [_compute_add_score(p.get("player_id"), db, categories) for p in adds]
-        drop_scores = [_compute_drop_score(p.get("player_id"), db, categories) for p in drops]
-        all_scores = add_scores + drop_scores
-        grade_score = sum(all_scores) / len(all_scores) if all_scores else 2.0
+        if drops:
+            # Add+drop swap: score as net upgrade, not a blind average
+            grade_score = _compute_swap_score(
+                [p.get("player_id") for p in adds],
+                [p.get("player_id") for p in drops],
+                db, categories,
+            )
+        else:
+            # Simple add (no drop): score on the added player's rank alone
+            add_scores = [_compute_add_score(p.get("player_id"), db, categories) for p in adds]
+            grade_score = sum(add_scores) / len(add_scores) if add_scores else 2.0
 
     elif txn_type == "drop":
         all_scores = [_compute_drop_score(p.get("player_id"), db, categories) for p in participants]
