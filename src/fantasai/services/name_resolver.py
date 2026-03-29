@@ -71,17 +71,21 @@ def resolve_player_names(
     # Load all players once
     all_players: list[Player] = db.query(Player.player_id, Player.name).all()
 
-    # Player IDs that have any stats — used to break ties when the same player
-    # name maps to multiple player_ids (e.g. two-way players whose batting and
-    # pitching pipeline rows received different IDfg values).  We prefer the ID
-    # that actually has stat rows over a stale/orphan player record.
-    stat_player_ids: set[int] = {
-        r.player_id
-        for r in db.query(PlayerStats.player_id).distinct().all()
-    }
+    # Player IDs ranked by data quality — used to break ties when the same player
+    # name maps to multiple player_ids (duplicate records).  Priority order:
+    #   1. Has the most recent season of stats (highest max season)
+    #   2. Has the most stat rows
+    #   3. Has any stats at all
+    # This prevents stale sequential-ID records (pid=1, 2, 10) from winning over
+    # the real FanGraphs IDfg records which have current-season data.
+    stat_quality: dict[int, tuple[int, int]] = {}  # pid → (max_season, row_count)
+    for r in (db.query(PlayerStats.player_id, PlayerStats.season)
+              .all()):
+        pid, season = r.player_id, r.season or 0
+        prev_season, prev_count = stat_quality.get(pid, (0, 0))
+        stat_quality[pid] = (max(prev_season, season), prev_count + 1)
 
-    # Group candidates by normalized name, then pick the best:
-    # prefer a candidate that has stats over one that doesn't.
+    # Group candidates by normalized name, then pick the best.
     name_to_candidates: dict[str, list[int]] = {}
     for row in all_players:
         norm = _normalize(row.name)
@@ -92,8 +96,11 @@ def resolve_player_names(
     normalized_list: list[tuple[str, int]] = []  # (normalized_name, player_id)
 
     for norm, candidates in name_to_candidates.items():
-        with_stats = [pid for pid in candidates if pid in stat_player_ids]
-        chosen = (with_stats or candidates)[0]
+        # Sort: highest max_season first, then most rows, then largest pid as tiebreak
+        def _quality(pid: int) -> tuple:
+            max_s, cnt = stat_quality.get(pid, (0, 0))
+            return (max_s, cnt, pid)
+        chosen = sorted(candidates, key=_quality, reverse=True)[0]
         exact[norm] = chosen
         normalized_list.append((norm, chosen))
 

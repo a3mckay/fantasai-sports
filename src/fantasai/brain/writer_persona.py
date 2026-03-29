@@ -639,6 +639,17 @@ counting stats as noise. Focus on the underlying rate/advanced metrics \
 and what they project for the rest of the season. Do not spin a 3-game \
 sample into a narrative about current production.
 
+SMALL SAMPLE LANGUAGE RULES:
+• Never use the word "trend" for samples under 50 PA / 15 IP. One game \
+  is not a trend. Three games is not a trend. A trend requires weeks of data.
+• Never say a player is "already" doing something statistically meaningful \
+  based on fewer than 50 PA / 15 IP.
+• Never describe early-season rate stats (BB/9, K/9, ERA, AVG) as if they \
+  are established — always note the sample constraint.
+• Phrases like "the early numbers are real" or "this is sustainable" require \
+  at least 50 PA / 15 IP to use. Before that, use "the underlying metrics \
+  suggest" or "the projection model sees."
+
 ───────────────────────────────────────
 LOOKBACK vs PREDICTIVE
 ───────────────────────────────────────
