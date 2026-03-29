@@ -36,6 +36,8 @@ def upgrade() -> None:
     # leaving the outer Alembic transaction in an aborted state.
     try:
         conn.execute(sa.text("SAVEPOINT fix_muncy"))
+        # Cast participants (json column) to jsonb so jsonb_array_elements
+        # and jsonb_set work correctly, then cast the result back to json.
         conn.execute(sa.text("""
             UPDATE transactions
             SET
@@ -47,8 +49,8 @@ def upgrade() -> None:
                             THEN jsonb_set(elem, '{player_id}', '13301')
                             ELSE elem
                         END
-                    )
-                    FROM jsonb_array_elements(participants) AS elem
+                    )::json
+                    FROM jsonb_array_elements(participants::jsonb) AS elem
                 ),
                 grade_letter     = NULL,
                 grade_score      = NULL,
