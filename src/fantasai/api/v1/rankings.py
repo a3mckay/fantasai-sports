@@ -188,25 +188,31 @@ def list_rankings(
         blurb_period = _BLURB_PERIOD_MAP.get("current", CURRENT_PERIOD)
 
     player_ids = [r.player_id for r in rankings]
-    blurb_rows = (
-        db.query(Ranking)
-        .filter(
-            Ranking.player_id.in_(player_ids),
-            Ranking.ranking_type.in_([ranking_type, "pav"]),
-            Ranking.period == blurb_period,
-            Ranking.league_id.is_(None),
-        )
-        .all()
-    )
-    # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players
     blurb_map: dict[int, str] = {}
     share_token_map: dict[int, str] = {}
-    for row in blurb_rows:
-        if row.blurb:
-            if row.ranking_type == "pav" or row.player_id not in blurb_map:
-                blurb_map[row.player_id] = row.blurb
-                if row.share_token:
-                    share_token_map[row.player_id] = row.share_token
+    try:
+        blurb_rows = (
+            db.query(Ranking)
+            .filter(
+                Ranking.player_id.in_(player_ids),
+                Ranking.ranking_type.in_([ranking_type, "pav"]),
+                Ranking.period == blurb_period,
+                Ranking.league_id.is_(None),
+            )
+            .all()
+        )
+        # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players
+        for row in blurb_rows:
+            if row.blurb:
+                if row.ranking_type == "pav" or row.player_id not in blurb_map:
+                    blurb_map[row.player_id] = row.blurb
+                    if getattr(row, "share_token", None):
+                        share_token_map[row.player_id] = row.share_token
+    except Exception:
+        # Blurb/share_token fetch is non-critical — rankings still work without it.
+        # This can happen if the share_token migration hasn't run yet.
+        logger.warning("list_rankings: blurb fetch failed (non-fatal)", exc_info=True)
+        db.rollback()
 
     # Apply filters
     if stat_type:
