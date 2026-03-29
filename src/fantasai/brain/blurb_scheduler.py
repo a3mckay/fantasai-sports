@@ -167,6 +167,15 @@ def generate_rankings_blurbs(
             )
             .all()
         )
+        # Track two-way players: anyone with both batting and pitching stat rows
+        _stat_types_seen: dict[int, set[str]] = {}
+        for row in all_stat_rows:
+            _stat_types_seen.setdefault(row.player_id, set()).add(row.stat_type or "batting")
+        two_way_player_ids: set[int] = {
+            pid for pid, types in _stat_types_seen.items()
+            if "batting" in types and "pitching" in types
+        }
+
         # Build per player: prefer actual over projection
         for row in all_stat_rows:
             pid = row.player_id
@@ -321,11 +330,44 @@ def generate_rankings_blurbs(
         positions = getattr(player, "positions", []) or []
         contributions: dict = getattr(player, "category_contributions", {}) or {}
 
-        # Top 4 category contributions by absolute z-score
+        # Top 4 category contributions by absolute z-score.
+        # Convert z-scores to plain English — never expose σ notation to the model
+        # as it bleeds straight into the blurb text.
+        def _z_to_tier(z: float) -> str:
+            if z >= 2.0:  return "elite contributor"
+            if z >= 1.0:  return "strong contributor"
+            if z >= 0.3:  return "above-average contributor"
+            if z >= -0.3: return "average contributor"
+            if z >= -1.0: return "below-average contributor"
+            return "weak contributor"
+
         top_cats = sorted(contributions.items(), key=lambda x: abs(x[1]), reverse=True)[:4]
         cat_summary = ", ".join(
-            f"{c} ({'+' if v > 0 else ''}{v:.1f}σ)" for c, v in top_cats
+            f"{c} ({_z_to_tier(v)})" for c, v in top_cats
         )
+
+        # Build actual YTD counting stats block — grounded numbers the model MAY cite.
+        def _build_ytd_counting(pid: int, stype: str) -> str:
+            raw = raw_stats_map.get(pid)
+            if not raw:
+                return "(no YTD counting stats yet)"
+            cnt = raw.get("counting", {})
+            if not cnt:
+                return "(no YTD counting stats yet)"
+            if stype == "pitching":
+                keys = ["IP", "W", "SV", "HLD", "SO", "K", "ER"]
+            else:
+                keys = ["PA", "AB", "H", "HR", "R", "RBI", "SB", "BB", "SO"]
+            parts = []
+            for k in keys:
+                v = cnt.get(k)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        parts.append(f"{k}: {int(fv) if fv == int(fv) else fv}")
+                    except (TypeError, ValueError):
+                        pass
+            return ", ".join(parts) if parts else "(no YTD counting stats yet)"
 
         stat_type = getattr(player, "stat_type", "batting") or "batting"
         full_team = _MLB_TEAM_NAMES.get(player.team, player.team)
@@ -413,8 +455,13 @@ def generate_rankings_blurbs(
                 _role_note = "Starting pitcher — lead with STUFF (velocity, Stuff+, spin), not outcomes."
             elif is_rp:
                 _role_note = "Reliever/closer — lead with SAVE OPPORTUNITY and role security, then stuff."
+            elif stat_type == "batting" and player.player_id in two_way_player_ids:
+                _role_note = ("BATTING PROFILE ONLY — this is a hitter ranking. "
+                              "Do NOT mention pitching, mound duties, or dual eligibility. "
+                              "Focus entirely on hitting stats, plate discipline, and power.")
 
             _outperformer_block = f"\n{outperformer_note}" if outperformer_note else ""
+            _ytd_counting = _build_ytd_counting(player.player_id, stat_type)
 
             prompt = (
                 f"RANK #{player.overall_rank} — {player.name} "
@@ -425,9 +472,16 @@ def generate_rankings_blurbs(
                 + f"LENGTH: {length_target}\n\n"
                 + _outperformer_block
                 + ("\n\n" if outperformer_note else "")
-                + f"KEY METRICS (with percentile context where shown):\n{key_stats}\n\n"
-                f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
+                + f"KEY METRICS (rate/advanced stats with percentile context where shown):\n{key_stats}\n\n"
+                f"PROJECTED CATEGORY STRENGTH (z-scores vs rest-of-pool — NOT actual counts, do not cite these as real numbers):\n{cat_summary}\n\n"
                 f"REQUIREMENTS:\n"
+                f"- NEVER cite a specific counting stat (HR, RBI, R, SB, K, W, SV, hits, etc.) "
+                f"unless the exact number appears in ACTUAL YTD COUNTING STATS above.\n"
+                f"- NEVER make claims about current-season rankings or league leaders "
+                f"(e.g. 'leading the NL in HRs', 'tops in RBIs') — you do not have that data.\n"
+                f"- If the sample size is small (< 50 PA / < 15 IP), do NOT discuss early-season "
+                f"results as if they are meaningful. Focus on projected profile and underlying metrics.\n"
                 f"- End with a forward-looking sentence (what to watch for)\n"
                 f"- Call out specific categories this player helps or hurts\n"
                 f"- If percentile data is shown, use the provided label (Elite/Above average/etc.) — "
@@ -447,6 +501,58 @@ def generate_rankings_blurbs(
                 messages=[{"role": "user", "content": prompt}],
             )
             blurb_text = response.content[0].text.strip()
+
+            # ── Stat-check verification pass ─────────────────────────────────
+            # Ask a second call to verify no counting stats were hallucinated.
+            # Only check non-week modes where we have a full YTD counting block.
+            if mode != "week":
+                _ytd_counting_check = _build_ytd_counting(player.player_id, stat_type)
+                _verify_prompt = (
+                    f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n\n"
+                    f"BLURB TO CHECK:\n{blurb_text}\n\n"
+                    f"Check the blurb for two types of errors:\n"
+                    f"1. Specific counting numbers (home runs, RBIs, runs, steals, wins, saves, "
+                    f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS.\n"
+                    f"2. Current-season ranking claims with no data support "
+                    f"(e.g. 'leading the NL in HRs', 'tops in RBIs', 'league leader in X').\n"
+                    f"3. Sigma (σ) notation used directly in the text.\n"
+                    f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
+                )
+                try:
+                    _verify_resp = client.messages.create(
+                        model="claude-haiku-4-5",
+                        max_tokens=60,
+                        messages=[{"role": "user", "content": _verify_prompt}],
+                    )
+                    _verdict = _verify_resp.content[0].text.strip()
+                    if _verdict.upper().startswith("ISSUE"):
+                        _log.warning(
+                            "blurb_scheduler: stat hallucination detected for %s — %s. Regenerating.",
+                            player.name, _verdict,
+                        )
+                        # Regenerate with an explicit correction instruction
+                        _strict_prompt = (
+                            prompt
+                            + f"\n\nPREVIOUS DRAFT WAS REJECTED because it cited a counting stat "
+                            f"not in ACTUAL YTD COUNTING STATS: {_verdict}. "
+                            f"Write a new blurb that does NOT mention any specific counts "
+                            f"(no home run numbers, hit totals, stolen base counts, etc.) "
+                            f"unless they are in ACTUAL YTD COUNTING STATS. "
+                            f"Focus on the rate/advanced metrics and projected category strengths instead."
+                        )
+                        _regen = client.messages.create(
+                            model="claude-haiku-4-5",
+                            max_tokens=_max_tokens,
+                            system=SYSTEM_PROMPT,
+                            messages=[{"role": "user", "content": _strict_prompt}],
+                        )
+                        blurb_text = _regen.content[0].text.strip()
+                except Exception:
+                    _log.warning(
+                        "blurb_scheduler: stat-check pass failed for %s, using original blurb",
+                        player.name, exc_info=True,
+                    )
+
         except Exception:
             _log.error(
                 "blurb_scheduler: API call failed for player_id=%d (%s)",

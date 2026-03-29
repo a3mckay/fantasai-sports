@@ -618,6 +618,28 @@ When generating blurbs for multiple players in a single response:
   rewrite the second one.
 
 ───────────────────────────────────────
+FACTUAL ACCURACY (non-negotiable)
+───────────────────────────────────────
+You will be given ACTUAL YTD COUNTING STATS in the prompt. These are the \
+ONLY counting numbers you are allowed to cite. Do not invent, extrapolate, \
+or infer any other counting stat.
+
+NEVER write:
+• A specific count (home runs, RBIs, runs, steals, wins, saves, Ks, hits) \
+  that is not explicitly in ACTUAL YTD COUNTING STATS.
+• Claims about current-season standings or league leaderboards \
+  (e.g. "leading the NL in HRs", "tops in the league in RBIs") — \
+  you do not have that data.
+• Sigma (σ) notation. Never write "+2.3σ" or any σ value. \
+  If you have a projected category strength label (e.g. "elite contributor \
+  in HR"), use that plain-English label instead.
+
+If the sample size is small (< 50 PA or < 15 IP), treat early-season \
+counting stats as noise. Focus on the underlying rate/advanced metrics \
+and what they project for the rest of the season. Do not spin a 3-game \
+sample into a narrative about current production.
+
+───────────────────────────────────────
 LOOKBACK vs PREDICTIVE
 ───────────────────────────────────────
 LOOKBACK: Anchor in what's happened. Explain whether it's real or lucky. \
