@@ -42,3 +42,5 @@ class PlayerRankingRead(BaseModel):
     # Movement tracking: positive = moved up, negative = moved down, None = new entry.
     # Computed from RankingSnapshot: 7 days ago for projected modes, 1 day ago for current.
     rank_delta: Optional[int] = None
+    # Public share token — used to serve the blurb card PNG without auth.
+    share_token: Optional[str] = None

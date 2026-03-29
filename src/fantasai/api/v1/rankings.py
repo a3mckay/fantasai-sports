@@ -200,10 +200,13 @@ def list_rankings(
     )
     # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players
     blurb_map: dict[int, str] = {}
+    share_token_map: dict[int, str] = {}
     for row in blurb_rows:
         if row.blurb:
             if row.ranking_type == "pav" or row.player_id not in blurb_map:
                 blurb_map[row.player_id] = row.blurb
+                if row.share_token:
+                    share_token_map[row.player_id] = row.share_token
 
     # Apply filters
     if stat_type:
@@ -266,6 +269,7 @@ def list_rankings(
             is_prospect=getattr(r, "is_prospect", False),
             pav_score=getattr(r, "pav_score", None),
             rank_delta=rank_delta_map.get(r.player_id),
+            share_token=share_token_map.get(r.player_id),
         )
         for r in rankings
     ]
@@ -777,4 +781,63 @@ def sync_projections(
 
     upserted = sync_steamer_projections(db, season=season)
     return {"season": season, "rows_upserted": upserted, "status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Public share endpoint — no auth required
+# ---------------------------------------------------------------------------
+
+
+@router.get("/share/{share_token}", include_in_schema=False)
+def share_blurb_card(share_token: str, db: Session = Depends(get_db)):
+    """Public endpoint — returns the blurb card PNG for the given share token.
+
+    No authentication required so the image can be embedded in social media
+    previews and shared directly between users.
+    """
+    import os
+    from fastapi.responses import FileResponse, Response
+    from fantasai.models.ranking import Ranking
+    from fantasai.models.player import Player
+    from fantasai.brain.grade_card import render_blurb_card
+
+    row = (
+        db.query(Ranking)
+        .filter(Ranking.share_token == share_token)
+        .first()
+    )
+    if not row or not row.blurb:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    player = db.get(Player, row.player_id)
+    if not player:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    # render_blurb_card caches in /tmp — serve from cache if already rendered
+    card_path = f"/tmp/grade_cards/blurb_{row.player_id}_{share_token[:8]}.png"
+    if not os.path.exists(card_path):
+        card_path = render_blurb_card(
+            player_id=row.player_id,
+            player_name=player.name,
+            team=player.team or "",
+            positions=player.positions or [],
+            overall_rank=row.overall_rank,
+            score=row.score,
+            blurb=row.blurb,
+            share_token=share_token,
+            mlbam_id=getattr(player, "mlbam_id", None),
+        )
+
+    if not card_path or not os.path.exists(card_path):
+        raise HTTPException(status_code=500, detail="Card generation failed")
+
+    safe_name = player.name.replace(" ", "_").replace("/", "_")
+    return FileResponse(
+        card_path,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_name}_blurb.png"',
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
 

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw,
-  Search, X, ChevronDown, ChevronUp, ArrowUp, Calendar,
+  Search, X, ChevronDown, ChevronUp, ArrowUp, Calendar, Share2,
 } from 'lucide-react'
 import { getRankings, getWeekMode } from '../lib/api'
+import { API_BASE_URL } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PercentileBar from '../components/PercentileBar'
@@ -97,6 +98,45 @@ function Blurb({ text }) {
         </button>
       )}
     </div>
+  )
+}
+
+/**
+ * Share button for a player blurb.
+ * Uses the Web Share API when available (mobile), falls back to clipboard copy.
+ */
+function ShareBlurbButton({ player }) {
+  const [copied, setCopied] = useState(false)
+  if (!player.blurb || !player.share_token) return null
+
+  const cardUrl = `${API_BASE_URL}/api/v1/rankings/share/${player.share_token}`
+  const shareText = `${player.name} (#${player.overall_rank}) — ${player.blurb}\n\nGet your fantasy analysis at fantasaisports.com`
+
+  async function handleShare(e) {
+    e.stopPropagation()
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: `${player.name} Fantasy Analysis`, text: shareText, url: cardUrl })
+      } catch {}
+      return
+    }
+    // Fallback: copy text + card URL to clipboard
+    try {
+      await navigator.clipboard.writeText(`${shareText}\n\nBlurb card: ${cardUrl}`)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {}
+  }
+
+  return (
+    <button
+      onClick={handleShare}
+      title="Share blurb"
+      className="inline-flex items-center gap-1 text-[10px] text-slate-500 hover:text-field-400 transition-colors ml-1.5"
+    >
+      <Share2 size={11} />
+      {copied && <span className="text-field-400">Copied!</span>}
+    </button>
   )
 }
 
@@ -582,7 +622,12 @@ export default function Rankings() {
                           </span>
                         )}
                       </div>
-                      <Blurb text={player.blurb} />
+                      <div className="flex items-start gap-1">
+                        <div className="flex-1 min-w-0">
+                          <Blurb text={player.blurb} />
+                        </div>
+                        <ShareBlurbButton player={player} />
+                      </div>
                       {isExpanded && player.is_prospect && player.pav_score != null && (
                         <div className="mt-2 text-xs text-emerald-400/80">
                           PAV Score: <span className="font-semibold">{player.pav_score.toFixed(1)}</span>/100

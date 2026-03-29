@@ -593,6 +593,10 @@ def generate_rankings_blurbs(
                 existing.accum_score    = _accum_score
                 existing.outperformer_flag = _outperformer
                 existing.percentile_data   = _pct_data or None
+                # Back-fill share_token on rows that pre-date the migration
+                if not existing.share_token:
+                    import secrets as _secrets
+                    existing.share_token = _secrets.token_urlsafe(32)
             else:
                 db.add(
                     Ranking(
