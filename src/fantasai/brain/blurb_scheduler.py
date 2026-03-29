@@ -176,17 +176,52 @@ def generate_rankings_blurbs(
             if "batting" in types and "pitching" in types
         }
 
-        # Build per player: prefer actual over projection
+        # Build per player: track both actual and projection rows separately.
+        # For tiny samples (< 5 IP / < 20 PA), use projection rate/advanced stats
+        # so we don't feed distorted small-sample rates (45.00 BB/9 from 0.2 IP)
+        # into the blurb prompt. Actual counting stats are always used.
+        actual_map: dict[int, dict] = {}
+        proj_map:   dict[int, dict] = {}
         for row in all_stat_rows:
             pid = row.player_id
-            existing = raw_stats_map.get(pid)
-            if existing is None or row.data_source == "actual":
+            data = {
+                "counting": row.counting_stats or {},
+                "rate":     row.rate_stats or {},
+                "advanced": row.advanced_stats or {},
+                "stat_type": row.stat_type or "batting",
+            }
+            if row.data_source == "actual":
+                actual_map[pid] = data
+            else:
+                if pid not in proj_map:
+                    proj_map[pid] = data
+
+        for pid in set(list(actual_map.keys()) + list(proj_map.keys())):
+            actual = actual_map.get(pid, {})
+            proj   = proj_map.get(pid, {})
+            stype  = actual.get("stat_type") or proj.get("stat_type", "batting")
+            cnt    = actual.get("counting", {})
+
+            # Detect tiny sample to decide whether rate stats are trustworthy
+            if stype == "pitching":
+                _sample = float(cnt.get("IP") or cnt.get("ip") or 0)
+                _tiny   = _sample < 5.0
+            else:
+                _sample = int(float(cnt.get("PA") or cnt.get("pa") or 0))
+                _tiny   = _sample < 20
+
+            if _tiny and proj:
+                # Use projection rate/advanced; actual counting (for citation guard)
                 raw_stats_map[pid] = {
-                    "counting": row.counting_stats or {},
-                    "rate": row.rate_stats or {},
-                    "advanced": row.advanced_stats or {},
-                    "stat_type": row.stat_type or "batting",
+                    "counting": cnt,
+                    "rate":     proj.get("rate", {}),
+                    "advanced": proj.get("advanced", {}),
+                    "stat_type": stype,
                 }
+            elif actual:
+                raw_stats_map[pid] = actual
+            elif proj:
+                raw_stats_map[pid] = proj
     except Exception:
         _log.warning("blurb_scheduler: could not bulk-fetch raw stats", exc_info=True)
 
@@ -463,21 +498,58 @@ def generate_rankings_blurbs(
             _outperformer_block = f"\n{outperformer_note}" if outperformer_note else ""
             _ytd_counting = _build_ytd_counting(player.player_id, stat_type)
 
+            # Detect zero-appearance players (injured / not yet played)
+            _cnt_check = (raw_stats_map.get(player.player_id) or {}).get("counting", {})
+            if stat_type == "pitching":
+                _appearances = float(_cnt_check.get("IP") or _cnt_check.get("ip") or 0)
+            else:
+                _appearances = int(float(_cnt_check.get("PA") or _cnt_check.get("pa") or 0))
+            _zero_pa_note = ""
+            if _appearances == 0:
+                _zero_pa_note = (
+                    "⚠ ZERO APPEARANCES THIS SEASON: This player has NOT played a single game "
+                    "yet (0 PA / 0 IP). They may be injured or on a wait list. "
+                    "Do NOT describe them as 'cooking early', 'off to a hot start', "
+                    "'already showing', or ANY language implying current-season performance. "
+                    "Write ONLY about their projected profile, underlying skills, and role context. "
+                    "If they are injured, you may acknowledge they are yet to appear.\n\n"
+                )
+
+            # Build closer role note when save category strength is strong/elite
+            _closer_role_note = ""
+            if not is_sp and is_rp:
+                _sv_tier = contributions.get("SV")
+                if _sv_tier is not None and _sv_tier >= 0.3:  # above-average or better
+                    _tier_label = _z_to_tier(_sv_tier)
+                    if "elite" in _tier_label or "strong" in _tier_label or "above-average" in _tier_label:
+                        _closer_role_note = (
+                            f"CLOSER ROLE CONFIRMED: Save category signal is '{_tier_label}'. "
+                            f"Treat this player's closer role as secured. Do NOT speculate about "
+                            f"committee risk, whether they 'have the job yet', or role uncertainty "
+                            f"based on training knowledge. The projection data confirms the role.\n\n"
+                        )
+
             prompt = (
                 f"RANK #{player.overall_rank} — {player.name} "
                 f"({full_team}, {'/'.join(positions)})\n\n"
                 f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                 f"Do not reference any other team.\n\n"
+                + _zero_pa_note
+                + _closer_role_note
                 + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
                 + f"LENGTH: {length_target}\n\n"
                 + _outperformer_block
                 + ("\n\n" if outperformer_note else "")
                 + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
-                + f"KEY METRICS (rate/advanced stats with percentile context where shown):\n{key_stats}\n\n"
+                + f"STEAMER PROJECTIONS + EXPECTED METRICS (projected values — NOT current-season observations):\n{key_stats}\n\n"
                 f"PROJECTED CATEGORY STRENGTH (z-scores vs rest-of-pool — NOT actual counts, do not cite these as real numbers):\n{cat_summary}\n\n"
                 f"REQUIREMENTS:\n"
                 f"- NEVER cite a specific counting stat (HR, RBI, R, SB, K, W, SV, hits, etc.) "
                 f"unless the exact number appears in ACTUAL YTD COUNTING STATS above.\n"
+                f"- Metrics in STEAMER PROJECTIONS are projected values (Steamer/Statcast models), "
+                f"NOT current season observations. Frame them as projections: "
+                f"'Steamer projects a 128 wRC+', 'the projection calls for...', 'projects for...' — "
+                f"NEVER say 'his 128 wRC+' as if it is an observed current stat.\n"
                 f"- NEVER make claims about current-season rankings or league leaders "
                 f"(e.g. 'leading the NL in HRs', 'tops in RBIs') — you do not have that data.\n"
                 f"- If the sample size is small (< 50 PA / < 15 IP), do NOT discuss early-season "
@@ -507,15 +579,21 @@ def generate_rankings_blurbs(
             # Only check non-week modes where we have a full YTD counting block.
             if mode != "week":
                 _ytd_counting_check = _build_ytd_counting(player.player_id, stat_type)
+                _zero_check = "0" if _appearances == 0 else str(_appearances)
                 _verify_prompt = (
-                    f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n\n"
+                    f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
+                    f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
                     f"BLURB TO CHECK:\n{blurb_text}\n\n"
-                    f"Check the blurb for two types of errors:\n"
+                    f"Check the blurb for these errors:\n"
                     f"1. Specific counting numbers (home runs, RBIs, runs, steals, wins, saves, "
                     f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS.\n"
                     f"2. Current-season ranking claims with no data support "
                     f"(e.g. 'leading the NL in HRs', 'tops in RBIs', 'league leader in X').\n"
                     f"3. Sigma (σ) notation used directly in the text.\n"
+                    f"4. If SAMPLE SIZE is 0: ANY language suggesting current-season performance "
+                    f"('cooking early', 'off to a hot start', 'has posted', 'already showing', etc.).\n"
+                    f"5. Rate stats (wRC+, AVG, K/9, BB/9, ERA, WHIP, etc.) cited as current-season "
+                    f"observations (e.g. 'his 128 wRC+') rather than as projections.\n"
                     f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
                 )
                 try:

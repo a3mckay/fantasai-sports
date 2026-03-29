@@ -1141,6 +1141,12 @@ def _score_steamer_component(
         steamer = steamer_lookup.get(p.player_id)
         if is_pitcher:
             player_is_sp = "SP" in (p.positions or [])
+            # Dual SP/RP with no Steamer data: default to RP volume.
+            # Without Steamer constraining the IP budget, projecting a swingman
+            # at full SP volume (170 IP) inflates their K/W counts and
+            # can rank them above elite closers who correctly project at 62 IP.
+            if player_is_sp and "RP" in (p.positions or []) and steamer is None:
+                player_is_sp = False
             projected.append(project_pitcher_stats(p, steamer_config, is_sp=player_is_sp, steamer_data=steamer))
         else:
             projected.append(project_hitter_stats(p, steamer_config, steamer_data=steamer))

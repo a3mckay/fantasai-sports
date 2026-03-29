@@ -433,6 +433,15 @@ def project_pitcher_stats(
     # rate stats (ERA, WHIP, K/9) unaffected while docking counting stats.
     ip = (config.sp_ip if is_sp else config.rp_ip) * _availability_multiplier(player, config)
 
+    # When Steamer data is available, use Steamer's projected IP as the ceiling.
+    # Prevents SP/RP swingmen and depth arms from being projected at full-starter
+    # volume (170 IP) when Steamer correctly limits them to 80–120 IP.
+    # A player Steamer projects for < 75% of the SP budget is not a full-time SP.
+    if steamer_data and is_sp:
+        steamer_full_ip = _safe(steamer_data.counting_stats, "IP", 0.0)
+        if steamer_full_ip > 0 and steamer_full_ip < config.sp_ip * 0.75:
+            ip = steamer_full_ip * _availability_multiplier(player, config)
+
     season_ip = max(_safe(cnt, "IP", 0.1), 0.1)
 
     # Dynamic actual-weight scaling by IP sample size — mirrors the hitter logic.

@@ -499,19 +499,33 @@ HARD RULES
 10. EARLY-SEASON SMALL SAMPLES (critical): If the data block shows a SAMPLE \
     SIZE of fewer than 30 PA or fewer than 10 IP, the current-season rate \
     stats (.AVG, .OBP, ERA, WHIP, K/9, etc.) are noise — do NOT treat them \
-    as predictive or cite them as evidence of sustained skill. Instead: \
-    • Overperforming player (hot start): use language like "has started the \
-      season on a tear", "off to a scorching start", "cooking early", \
-      "hot out of the gate" — then anchor your actual assessment to \
-      underlying metrics (xwOBA, Barrel%, SwStr%, xFIP, etc.), NOT the \
+    as predictive or cite them as evidence of sustained skill. \
+    • If SAMPLE SIZE is 0 PA or 0 IP: The player has NOT played yet. \
+      NEVER use hot-start language ("cooking early", "off to a hot start", \
+      "already posting", "has started the season on a tear", etc.). \
+      Write exclusively about their projected profile and role context. \
+    • Overperforming player with actual PA/IP (hot start): use language like \
+      "has started the season on a tear", "off to a scorching start", \
+      "hot out of the gate" — then anchor to underlying metrics, NOT the \
       surface stat line. \
     • Underperforming player (slow start): use "scuffling early", \
-      "slow start", "needs to get it going", "the underlying metrics say \
-      the results will come", "should bounce back as the sample grows". \
+      "slow start", "the underlying metrics say the results will come". \
     NEVER write "his .800 OBP is genuinely elite" or "that .750 average \
     isn't going anywhere" about a 5-game sample. It is factually wrong \
     and embarrassing. The SAMPLE SIZE line tells you exactly how many PA \
     or IP they have. Use it. Small sample ≠ talent signal.
+11. PROJECTED METRICS ARE NOT CURRENT OBSERVATIONS: The prompt section \
+    labeled "STEAMER PROJECTIONS + EXPECTED METRICS" contains projected \
+    values from Steamer and Statcast models — they are NOT observed \
+    current-season stats. When citing them, you MUST frame them as \
+    projections: "Steamer projects a 128 wRC+", "the projection calls \
+    for...", "projects for a 3.20 ERA". NEVER write "his 128 wRC+" or \
+    "posting a 3.20 ERA" as if they are observed facts.
+12. CLOSER ROLE SECURITY: If the prompt includes a "CLOSER ROLE CONFIRMED" \
+    line, the player's save role is definitively secured. Do NOT speculate \
+    about committee risk, role uncertainty, or whether they "have the job \
+    yet" — they have it. Do not contradict this with training knowledge \
+    about past role uncertainty.
 
 ───────────────────────────────────────
 LENGTH TARGETS (use the rank number in the prompt header)
