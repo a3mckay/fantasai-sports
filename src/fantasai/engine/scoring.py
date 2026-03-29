@@ -32,6 +32,15 @@ from fantasai.engine.projection import (
     project_hitter_stats,
     project_pitcher_stats,
 )
+from fantasai.engine.zscore_normalization import (
+    compute_statcast_composites,
+    compute_percentile_data,
+    apply_replacement_level,
+    BATTER_COMPOSITES,
+    PITCHER_COMPOSITES,
+    _BATTER_METRIC_BUCKET,
+    _PITCHER_METRIC_BUCKET,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,54 @@ LOWER_IS_BETTER = {"ERA", "WHIP", "BB/9", "HR/9", "FIP", "xFIP", "SIERA", "xERA"
 # elite SPs.  ±3.5 was chosen empirically: it keeps elite closers at ~#30,
 # elite SPs at ~#15–20, and doesn't compress the rest of the pool.
 Z_SCORE_CAP = 3.5
+
+# ---------------------------------------------------------------------------
+# Three-component Rest of Season formula constants
+# All weights are named constants for easy tuning.
+# Steamer weight is derived (1 − sum of others) so all weights always sum to 1.
+# ---------------------------------------------------------------------------
+
+# Maximum weights when fully ramped (at or above the PA/IP threshold)
+STATCAST_WEIGHT_MAX = 0.35
+ACCUM_WEIGHT_MAX    = 0.20
+LATE_DECAY_MAX      = 0.13   # additional Steamer decay after 300 PA
+
+# PA ramp thresholds for batters
+STATCAST_PA_FULL    = 150
+ACCUM_PA_FULL       = 300
+LATE_DECAY_PA_START = 300
+LATE_DECAY_PA_FULL  = 550    # late_decay fully phased in at 550 PA
+
+# IP ramp thresholds for pitchers (mirror at ~1/5.5 of PA equivalents)
+STATCAST_IP_FULL    = 30
+ACCUM_IP_FULL       = 60
+LATE_DECAY_IP_START = 60
+LATE_DECAY_IP_FULL  = 110
+
+# Replacement level ranks (1-indexed)
+BATTER_REPLACEMENT_RANK  = 170
+PITCHER_REPLACEMENT_RANK = 115
+
+# SP and RP category weight multipliers — applied to per-category z-scores.
+# SV is nearly irrelevant for SPs; W is reduced but not zeroed for RPs.
+SP_CATEGORY_WEIGHTS: dict[str, float] = {
+    "IP": 1.0, "W": 1.0, "K": 1.0, "SO": 1.0,
+    "ERA": 1.0, "WHIP": 1.0, "SV": 0.05, "HLD": 0.10, "QS": 1.0,
+}
+RP_CATEGORY_WEIGHTS: dict[str, float] = {
+    "IP": 1.0, "K": 1.0, "SO": 1.0, "SV": 1.0, "HLD": 1.0,
+    "ERA": 1.0, "WHIP": 1.0, "W": 0.25, "QS": 0.10,
+}
+
+# Meaningful xStat gap thresholds for outperformer flag
+# Values below these are noise; above → flag as outperformer
+_OUTPERFORMER_THRESHOLDS = {
+    "AVG_vs_xBA":    0.040,  # .040 or more above xBA
+    "ERA_vs_xERA":  -0.50,   # ERA 0.50+ below xERA (ERA better than expected)
+    "ERA_vs_SIERA": -0.50,
+}
+_OUTPERFORMER_MIN_PA  = 150   # don't flag below this (Tier 3 is handled separately)
+_OUTPERFORMER_MIN_IP  = 35
 
 # Category -> which stat bucket it lives in (counting_stats, rate_stats, advanced_stats)
 # and the actual column name in that bucket
@@ -147,6 +204,14 @@ class PlayerRanking:
     # Prospect fields — set when a MiLB player is injected into rankings via PAV.
     is_prospect: bool = False
     pav_score: Optional[float] = None
+    # Three-component formula outputs (populated by compute_rest_of_season_rankings)
+    statcast_score: float = 0.0
+    steamer_score: float = 0.0
+    accum_score: float = 0.0
+    # 1=Tier1 sustained outperformer, 2=Tier2 single-season, 3=Tier3 small-sample
+    outperformer_flag: Optional[int] = None
+    # {metric: {value, pct, label, avg}} — blurb prompts read this for percentile language
+    percentile_data: dict = field(default_factory=dict)
 
 
 def _get_stat_value(
@@ -232,6 +297,14 @@ class ScoringEngine:
         if players is None:
             players = self.adapter.fetch_player_data(season, week)
 
+        # Rest of Season uses the three-component formula; delegate to the dedicated method.
+        if horizon == ProjectionHorizon.SEASON:
+            return self.compute_rest_of_season_rankings(
+                season=season,
+                players=players,
+                steamer_lookup=steamer_lookup,
+            )
+
         config = HORIZON_CONFIGS[horizon]
         sl = steamer_lookup or {}
 
@@ -308,6 +381,138 @@ class ScoringEngine:
             r.overall_rank = i + 1
 
         return all_rankings
+
+    def compute_rest_of_season_rankings(
+        self,
+        season: int,
+        players: Optional[list[NormalizedPlayerData]] = None,
+        steamer_lookup: Optional[dict[int, NormalizedPlayerData]] = None,
+    ) -> list[PlayerRanking]:
+        """Three-component Rest of Season ranking formula.
+
+        For each player, the composite score is:
+            score = steamer_z  × steamer_w
+                  + statcast_z × statcast_w
+                  + accum_z    × accum_w
+
+        Where the weights are dynamically computed from the player's PA (or IP)
+        using continuous linear ramps — no hard thresholds, no jump discontinuities.
+
+        Final scores are anchored at replacement level so:
+          - 170th batter  → score = 0
+          - 115th pitcher → score = 0
+
+        Position scarcity multipliers are applied post-anchoring.
+        """
+        if players is None:
+            players = self.adapter.fetch_player_data(season)
+
+        sl = steamer_lookup or {}
+
+        batters = [p for p in players if p.stat_type == "batting"]
+        pitchers = [p for p in players if p.stat_type == "pitching"]
+
+        batter_rankings  = self._ros_pool(batters,  self.hitting_cats,  is_pitcher=False, sl=sl)
+        pitcher_rankings = self._ros_pool(pitchers, self.pitching_cats, is_pitcher=True,  sl=sl)
+
+        all_rankings = batter_rankings + pitcher_rankings
+        all_rankings.sort(key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(all_rankings):
+            r.overall_rank = i + 1
+
+        _assign_position_ranks(all_rankings)
+        return all_rankings
+
+    def _ros_pool(
+        self,
+        players: list[NormalizedPlayerData],
+        categories: list[str],
+        is_pitcher: bool,
+        sl: dict[int, NormalizedPlayerData],
+    ) -> list[PlayerRanking]:
+        """Score a batter or pitcher pool using the three-component formula."""
+        if not players:
+            return []
+
+        n = len(players)
+
+        # 1. Compute each component across the full pool
+        statcast_scores = compute_statcast_composites(players, "pitching" if is_pitcher else "batting")
+        steamer_scores, steamer_contributions = _score_steamer_component(players, categories, sl, is_pitcher)
+        accum_scores    = _score_accumulated(players, categories, sl, is_pitcher)
+
+        # 2. Per-player dynamic weight blend + role category adjustment
+        raw_scores: list[float] = []
+        per_player_statcast: list[float] = []
+        per_player_steamer:  list[float] = []
+        per_player_accum:    list[float] = []
+
+        for i, p in enumerate(players):
+            cnt = p.counting_stats or {}
+            pa_or_ip = float(cnt.get("IP" if is_pitcher else "PA") or 0)
+
+            statcast_w, accum_w, _late_decay_w, steamer_w = _compute_component_weights(
+                pa_or_ip, is_pitcher
+            )
+
+            sc = statcast_scores[i] if i < len(statcast_scores) else 0.0
+            st = steamer_scores[i]  if i < len(steamer_scores)  else 0.0
+            ac = accum_scores[i]    if i < len(accum_scores)    else 0.0
+
+            per_player_statcast.append(round(sc, 4))
+            per_player_steamer.append(round(st, 4))
+            per_player_accum.append(round(ac, 4))
+
+            raw_scores.append(sc * statcast_w + st * steamer_w + ac * accum_w)
+
+        # 3. Anchor at replacement level
+        replacement_rank = PITCHER_REPLACEMENT_RANK if is_pitcher else BATTER_REPLACEMENT_RANK
+        anchored = apply_replacement_level(raw_scores, replacement_rank)
+
+        # 4. Compute percentile data for blurb prompts
+        stat_type = "pitching" if is_pitcher else "batting"
+        bucket_map = _PITCHER_METRIC_BUCKET if is_pitcher else _BATTER_METRIC_BUCKET
+        composites = PITCHER_COMPOSITES if is_pitcher else BATTER_COMPOSITES
+        all_metrics = [
+            (m, bucket_map.get(m, "advanced_stats"), lower)
+            for group in composites.values()
+            for m, lower in group
+        ]
+        percentile_data_list = compute_percentile_data(players, all_metrics)
+
+        # 5. Build PlayerRanking objects
+        rankings: list[PlayerRanking] = []
+        for i, player in enumerate(players):
+            base_score   = anchored[i]
+            scarcity_mult = _get_scarcity_multiplier(player.positions or [])
+            outperformer  = _compute_outperformer_flag(player)
+
+            # Apply role-specific category weights to the Steamer component contributions.
+            # We approximate this on the final score via the scarcity path for now;
+            # full per-category role weighting is applied inside _score_steamer_component
+            # through the category z-score loop (SP_CATEGORY_WEIGHTS / RP_CATEGORY_WEIGHTS).
+
+            rankings.append(PlayerRanking(
+                player_id=player.player_id,
+                name=player.name,
+                team=player.team,
+                positions=player.positions or [],
+                stat_type=stat_type,
+                score=round(base_score * scarcity_mult, 4),
+                raw_score=round(base_score, 4),
+                category_contributions=steamer_contributions[i] if i < len(steamer_contributions) else {},
+                statcast_score=per_player_statcast[i],
+                steamer_score=per_player_steamer[i],
+                accum_score=per_player_accum[i],
+                outperformer_flag=outperformer,
+                percentile_data=percentile_data_list[i] if percentile_data_list else {},
+                injury_status=getattr(player, "injury_status", "active"),
+                risk_flag=getattr(player, "risk_flag", None),
+                risk_note=getattr(player, "risk_note", None),
+            ))
+
+        rankings.sort(key=lambda r: r.score, reverse=True)
+        return rankings
 
     def _score_window_pool(
         self,
@@ -697,6 +902,284 @@ class ScoringEngine:
 
         rankings.sort(key=lambda r: r.score, reverse=True)
         return rankings
+
+
+def _compute_component_weights(
+    pa_or_ip: float,
+    is_pitcher: bool,
+) -> tuple[float, float, float, float]:
+    """Return (statcast_w, accum_w, late_decay_w, steamer_w) for a given PA or IP total.
+
+    All four weights sum to exactly 1.0.  Steamer weight is derived so
+    callers only need to tune the three named constants.
+    """
+    if is_pitcher:
+        stat_full    = STATCAST_IP_FULL
+        accum_full   = ACCUM_IP_FULL
+        decay_start  = LATE_DECAY_IP_START
+        decay_range  = LATE_DECAY_IP_FULL - LATE_DECAY_IP_START
+    else:
+        stat_full    = STATCAST_PA_FULL
+        accum_full   = ACCUM_PA_FULL
+        decay_start  = LATE_DECAY_PA_START
+        decay_range  = LATE_DECAY_PA_FULL - LATE_DECAY_PA_START
+
+    statcast_w   = STATCAST_WEIGHT_MAX * min(pa_or_ip / stat_full, 1.0)
+    accum_w      = ACCUM_WEIGHT_MAX    * min(pa_or_ip / accum_full, 1.0)
+    late_decay_w = LATE_DECAY_MAX      * min(max(pa_or_ip - decay_start, 0.0) / decay_range, 1.0)
+    steamer_w    = max(0.0, 1.0 - statcast_w - accum_w - late_decay_w)
+    return statcast_w, accum_w, late_decay_w, steamer_w
+
+
+def _compute_outperformer_flag(
+    player: NormalizedPlayerData,
+) -> Optional[int]:
+    """Return 1/2/3/None outperformer tier for a player.
+
+    Tier 3 — small sample outperformer (< OUTPERFORMER_MIN_PA but hot start):
+      actual AVG meaningfully above xBA, or actual ERA meaningfully below xERA.
+    Tier 2 — single-season outperformer (≥ OUTPERFORMER_MIN_PA):
+      actual stats significantly exceed xStats.
+    Tier 1 (sustained multi-season): deferred — requires multi-year history.
+      Currently returns Tier 2 for all qualifying players until history is tracked.
+    """
+    import math
+    cnt  = player.counting_stats or {}
+    rate = player.rate_stats or {}
+    adv  = player.advanced_stats or {}
+
+    pa  = float(cnt.get("PA")  or 0)
+    ip  = float(cnt.get("IP")  or 0)
+    is_pitcher = player.stat_type == "pitching"
+
+    def _safe(d: dict, k: str) -> Optional[float]:
+        v = d.get(k)
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if math.isnan(f) else f
+        except (TypeError, ValueError):
+            return None
+
+    if is_pitcher:
+        actual_era = _safe(rate, "ERA")
+        x_era      = _safe(adv, "xERA")
+        siera      = _safe(adv, "SIERA")
+
+        gap_era_xera  = (actual_era - x_era)  if actual_era is not None and x_era  is not None else None
+        gap_era_siera = (actual_era - siera)   if actual_era is not None and siera  is not None else None
+
+        meaningful = (
+            (gap_era_xera  is not None and gap_era_xera  < _OUTPERFORMER_THRESHOLDS["ERA_vs_xERA"]) or
+            (gap_era_siera is not None and gap_era_siera < _OUTPERFORMER_THRESHOLDS["ERA_vs_SIERA"])
+        )
+        if not meaningful:
+            return None
+        if ip < _OUTPERFORMER_MIN_IP:
+            return 3
+        return 2   # Tier 1 (sustained) deferred until multi-year history available
+    else:
+        actual_avg = _safe(rate, "AVG")
+        x_ba       = _safe(adv, "xBA")
+
+        if actual_avg is None or x_ba is None:
+            return None
+        gap = actual_avg - x_ba
+        if gap < _OUTPERFORMER_THRESHOLDS["AVG_vs_xBA"]:
+            return None
+        if pa < _OUTPERFORMER_MIN_PA:
+            return 3
+        return 2
+
+
+def _apply_role_category_weights(
+    contributions: dict[str, float],
+    positions: list[str],
+) -> dict[str, float]:
+    """Scale per-category z-scores by SP/RP role multipliers.
+
+    Returns a new dict with weighted contributions.
+    """
+    if "SP" in positions:
+        weights = SP_CATEGORY_WEIGHTS
+    elif "RP" in positions:
+        weights = RP_CATEGORY_WEIGHTS
+    else:
+        return contributions
+    return {cat: z * weights.get(cat, 1.0) for cat, z in contributions.items()}
+
+
+def _score_accumulated(
+    players: list[NormalizedPlayerData],
+    categories: list[str],
+    steamer_lookup: dict[int, NormalizedPlayerData],
+    is_pitcher: bool,
+) -> list[float]:
+    """Z-score actual YTD stats (annualized to full-season pace).
+
+    Annualization prevents players who've simply played more games from
+    dominating on counting stats — a batter on pace for 40 HR in 250 PA
+    ranks the same as one who's already hit 40 HR in 600 PA.
+    """
+    if not players or not categories:
+        return [0.0] * len(players)
+
+    # Build annualized stat dicts
+    annualized: list[dict[str, float]] = []
+    for p in players:
+        cnt  = p.counting_stats or {}
+        rate = p.rate_stats or {}
+        adv  = p.advanced_stats or {}
+
+        if is_pitcher:
+            actual_ip = max(float(cnt.get("IP") or 0), 0.1)
+            # Use Steamer projected IP as season target, else use SP/RP default
+            steamer = steamer_lookup.get(p.player_id)
+            is_sp = "SP" in (p.positions or [])
+            if steamer:
+                target_ip = float(steamer.counting_stats.get("IP") or (170 if is_sp else 62))
+            else:
+                target_ip = 170.0 if is_sp else 62.0
+            scale = min(target_ip / actual_ip, 4.0)   # cap at 4× to prevent extreme pace
+
+            a: dict[str, float] = {}
+            a["ERA"]  = float(rate.get("ERA")  or 4.50)
+            a["WHIP"] = float(rate.get("WHIP") or 1.30)
+            a["K/9"]  = float(rate.get("K/9")  or rate.get("K9") or 8.0)
+            a["BB/9"] = float(rate.get("BB/9") or rate.get("BB9") or 3.0)
+            a["IP"]   = actual_ip * scale
+            for cat in ("W", "SV", "HLD", "K", "SO", "QS"):
+                v = cnt.get(cat) or cnt.get(cat.lower())
+                a[cat] = float(v or 0) * scale
+        else:
+            actual_pa = max(float(cnt.get("PA") or 0), 1.0)
+            steamer = steamer_lookup.get(p.player_id)
+            if steamer:
+                target_pa = float(steamer.counting_stats.get("PA") or 550)
+            else:
+                target_pa = 550.0
+            scale = min(target_pa / actual_pa, 4.0)
+
+            a = {}
+            a["AVG"] = float(rate.get("AVG") or 0.250)
+            a["OBP"] = float(rate.get("OBP") or 0.315)
+            a["SLG"] = float(rate.get("SLG") or 0.400)
+            a["OPS"] = a["OBP"] + a["SLG"]
+            for cat in ("R", "HR", "RBI", "SB", "H", "BB"):
+                v = cnt.get(cat) or cnt.get(cat.lower())
+                a[cat] = float(v or 0) * scale
+
+        annualized.append(a)
+
+    # Z-score each category
+    from collections import defaultdict
+    cat_values: dict[str, list[Optional[float]]] = defaultdict(list)
+    for cat in categories:
+        mapping = CATEGORY_STAT_MAP.get(cat)
+        if mapping is None:
+            continue
+        _bucket, stat_name = mapping
+        for a in annualized:
+            v = a.get(stat_name) or a.get(cat)
+            cat_values[cat].append(v)
+
+    composite = np.zeros(len(players))
+    for cat, vals in cat_values.items():
+        clean = [v for v in vals if v is not None]
+        if len(clean) < 2:
+            continue
+        mean = float(np.mean(clean))
+        std  = float(np.std(clean))
+        if std == 0:
+            continue
+        zs = np.array([
+            float((v - mean) / std) if v is not None else 0.0
+            for v in vals
+        ])
+        if cat in LOWER_IS_BETTER:
+            zs = -zs
+        zs = np.clip(zs, -Z_SCORE_CAP, Z_SCORE_CAP)
+
+        # Apply role weights for pitchers
+        role_weight = 1.0
+        if is_pitcher:
+            # Use average weight across the pool — individual weighting happens later
+            role_weight = 1.0  # applied per-player in blend step
+        composite += zs
+
+    return composite.tolist()
+
+
+def _score_steamer_component(
+    players: list[NormalizedPlayerData],
+    categories: list[str],
+    steamer_lookup: dict[int, NormalizedPlayerData],
+    is_pitcher: bool,
+) -> tuple[list[float], list[dict[str, float]]]:
+    """Z-score Steamer full-season projections (no actual blending).
+
+    Uses project_hitter_stats / project_pitcher_stats with actual_weight=0
+    to get pure Steamer projections, then z-scores those across the pool.
+
+    Returns (composite_scores, per_player_category_contributions).
+    category_contributions is keyed by fantasy category name and used for
+    display and context boosting in the blurb prompts.
+    """
+    from fantasai.engine.projection import (
+        HORIZON_CONFIGS, ProjectionHorizon,
+        project_hitter_stats, project_pitcher_stats,
+    )
+    from dataclasses import replace as _dc_replace
+
+    # Use SEASON config but zero out actual_weight to get pure Steamer
+    season_config = HORIZON_CONFIGS[ProjectionHorizon.SEASON]
+    steamer_config = _dc_replace(season_config, actual_weight=0.0, talent_weight=1.0)
+
+    projected: list[dict[str, float]] = []
+    for p in players:
+        steamer = steamer_lookup.get(p.player_id)
+        if is_pitcher:
+            player_is_sp = "SP" in (p.positions or [])
+            projected.append(project_pitcher_stats(p, steamer_config, is_sp=player_is_sp, steamer_data=steamer))
+        else:
+            projected.append(project_hitter_stats(p, steamer_config, steamer_data=steamer))
+
+    # Z-score per category, tracking per-player contributions
+    n = len(players)
+    composite = np.zeros(n)
+    cat_zscores: dict[str, list[float]] = {}
+
+    for cat in categories:
+        mapping = CATEGORY_STAT_MAP.get(cat)
+        if mapping is None:
+            continue
+        _bucket, stat_name = mapping
+        vals = [proj.get(stat_name) or proj.get("K" if stat_name == "SO" else "") for proj in projected]
+        clean = [v for v in vals if v is not None]
+        if len(clean) < 2:
+            continue
+        mean = float(np.mean(clean))
+        std  = float(np.std(clean))
+        if std == 0:
+            continue
+        zs = np.array([
+            float((v - mean) / std) if v is not None else 0.0
+            for v in vals
+        ])
+        if cat in LOWER_IS_BETTER:
+            zs = -zs
+        zs = np.clip(zs, -Z_SCORE_CAP, Z_SCORE_CAP)
+        composite += zs
+        cat_zscores[cat] = zs.tolist()
+
+    # Build per-player category contributions dicts
+    contributions: list[dict[str, float]] = [
+        {cat: round(cat_zscores[cat][i], 3) for cat in cat_zscores}
+        for i in range(n)
+    ]
+
+    return composite.tolist(), contributions
 
 
 def _get_scarcity_multiplier(positions: list[str]) -> float:

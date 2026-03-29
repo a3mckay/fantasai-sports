@@ -97,6 +97,9 @@ BATTING_ADVANCED = [
     "GB%", "FB%", "LD%",
     "SwStr%", "O-Swing%", "Z-Contact%",
     "CSW%", "Spd", "WAR",
+    # Statcast composite metrics for the three-component ranking formula
+    "Sweet-Spot%",   # batted ball in 8-32° launch angle window (FanGraphs column)
+    "Sprint Speed",  # populated separately via statcast_sprint_speed() merge
 ]
 
 PITCHING_COUNTING = ["IP", "W", "L", "SV", "HLD", "SO", "BB", "ER", "H", "HR", "G", "GS"]
@@ -121,6 +124,13 @@ PITCHING_ADVANCED = [
     "GB%", "FB%", "LD%",
     "SwStr%", "O-Swing%", "Z-Contact%",
     "CSW%", "K-BB%", "Stuff+", "WAR",
+    # Statcast stuff composite metrics (FanGraphs pitching column names)
+    # vFA (pi) = PITCHf/x fastball velocity; Ext = extension in feet
+    # Spin% = fastball spin rate (FanGraphs "Spin%" or "FB-Spin" depending on export)
+    "vFA (pi)", "vFA (sc)", "FBv",   # velocity — try all three; _extract_stats skips missing
+    "Ext",                            # release extension
+    "Spin%", "FB-Spin",               # spin rate variants
+    "xBA",                            # xBA against (contact management composite)
 ]
 
 
@@ -330,6 +340,30 @@ class MLBAdapter(SportAdapter):
                 # No map supplied (e.g. tests) — fall back to Pos column
                 positions = _parse_positions(row.get("Pos", ""))
 
+            adv = _extract_stats(row, advanced_cols)
+
+            # Derived metric: Pulled Fly Ball% = Pull% × FB% / 100
+            # Approximates the % of batted balls that are both pulled AND fly balls.
+            # Used in the Speed/Power composite for batters.
+            if stat_type == "batting":
+                pull_pct = adv.get("Pull%")
+                fb_pct   = adv.get("FB%")
+                if pull_pct is not None and fb_pct is not None:
+                    adv["PulledFB%"] = pull_pct * fb_pct / 100.0
+
+            # Velocity normalization: store whichever fastball velocity column is present
+            # under the canonical name "vFA" so downstream composites use one key.
+            if stat_type == "pitching":
+                for _vfa_col in ("vFA (sc)", "vFA (pi)", "FBv"):
+                    if _vfa_col in adv:
+                        adv.setdefault("vFA", adv[_vfa_col])
+                        break
+                # Spin rate normalization
+                for _spin_col in ("FB-Spin", "Spin%"):
+                    if _spin_col in adv:
+                        adv.setdefault("SpinRate", adv[_spin_col])
+                        break
+
             players.append(
                 NormalizedPlayerData(
                     player_id=player_id,
@@ -339,7 +373,7 @@ class MLBAdapter(SportAdapter):
                     stat_type=stat_type,
                     counting_stats=_extract_stats(row, counting_cols),
                     rate_stats=_extract_stats(row, rate_cols),
-                    advanced_stats=_extract_stats(row, advanced_cols),
+                    advanced_stats=adv,
                 )
             )
 

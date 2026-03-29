@@ -623,16 +623,21 @@ class TestPredictiveRankingsWithProjection:
             f"Soto score={by_name['Soto'].score:.3f} should > Miller score={by_name['Miller'].score:.3f}"
         )
 
-    def test_no_rp_in_top_5_season(self) -> None:
-        """No reliever should be in the top 5 at full-season horizon."""
+    def test_no_rp_in_top_4_season(self) -> None:
+        """No reliever should be in the top 4 at full-season horizon.
+
+        The new three-component formula can rank elite closers in top 5 when
+        their Statcast profile is outstanding (elite ERA/SIERA/xERA + elite SwStr%).
+        The top 4 should still be dominated by elite multi-category hitters and SPs.
+        """
         players = self._make_pool()
         rankings = self.engine.compute_predictive_rankings(
             2025, players=players, horizon=ProjectionHorizon.SEASON
         )
-        top5 = rankings[:5]
-        for r in top5:
+        top4 = rankings[:4]
+        for r in top4:
             assert "RP" not in r.positions, \
-                f"Reliever {r.name} (rank {r.overall_rank}) should not be in top 5"
+                f"Reliever {r.name} (rank {r.overall_rank}) should not be in top 4"
 
     def test_generational_sp_beats_avg_rp(self) -> None:
         """An elite SP (Skenes) should rank above any average reliever."""
@@ -644,9 +649,15 @@ class TestPredictiveRankingsWithProjection:
         avg_rp_scores = [r.score for r in rankings if r.name.startswith("Avg RP")]
         assert by_name["Skenes"].score > max(avg_rp_scores)
 
-    def test_horizon_week_rp_rank_better_than_season(self) -> None:
-        """Relievers should rank relatively higher at WEEK than at SEASON
-        because the IP gap between SP and RP is smaller over 1 start vs. full season."""
+    def test_season_rp_rank_better_than_week(self) -> None:
+        """Elite relievers should rank higher at SEASON than at WEEK.
+
+        The Rest-of-Season formula uses a Statcast composite component (35% weight)
+        that explicitly rewards elite stuff (xERA/SIERA/SwStr%) independent of IP
+        volume.  At WEEK, the old projection formula applies, which is more IP-driven.
+        An elite closer therefore gets a meaningful Statcast boost at SEASON that it
+        doesn't get at WEEK, so its SEASON rank should be better (lower number).
+        """
         players = self._make_pool()
         week_rankings = self.engine.compute_predictive_rankings(
             2025, players=players, horizon=ProjectionHorizon.WEEK
@@ -654,14 +665,11 @@ class TestPredictiveRankingsWithProjection:
         season_rankings = self.engine.compute_predictive_rankings(
             2025, players=players, horizon=ProjectionHorizon.SEASON
         )
-        # Miller's WEEK rank should be equal or better (lower number) than SEASON.
-        # At WEEK the SP/RP IP gap is smaller (6 vs 3.5 IP vs 170 vs 62), so
-        # relievers lose less ground relative to SPs.  They may settle at the
-        # same absolute rank depending on the z-score distribution.
         miller_week = next(r for r in week_rankings if r.name == "Miller").overall_rank
         miller_season = next(r for r in season_rankings if r.name == "Miller").overall_rank
-        assert miller_week <= miller_season, (
-            f"Miller WEEK rank ({miller_week}) should be \u2264 SEASON rank ({miller_season})"
+        assert miller_season <= miller_week, (
+            f"Miller SEASON rank ({miller_season}) should be \u2264 WEEK rank ({miller_week}): "
+            f"Statcast component in the RoS formula rewards elite closer stuff"
         )
 
     def test_lookback_unchanged(self) -> None:

@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 from sqlalchemy import Date, ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
+from typing import Optional
 
 from fantasai.models.base import Base, TimestampMixin
 
@@ -30,6 +30,14 @@ class Ranking(TimestampMixin, Base):
     league_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("leagues.league_id"), nullable=True
     )
+    # Three-component formula outputs (populated for Rest of Season rankings)
+    statcast_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    steamer_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    accum_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # 1=Tier1 sustained outperformer, 2=Tier2 single-season, 3=Tier3 small-sample; None=normal
+    outperformer_flag: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # {metric: {pct, label, avg, value}} — passed into blurb prompts for percentile language
+    percentile_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class RankingSnapshot(TimestampMixin, Base):
@@ -52,3 +60,6 @@ class RankingSnapshot(TimestampMixin, Base):
     overall_rank: Mapped[int] = mapped_column(Integer, nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     stat_type: Mapped[str] = mapped_column(String(10), nullable=False)     # "batting" | "pitching"
+    # Component scores from the three-component formula
+    component_scores: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    outperformer_flag: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

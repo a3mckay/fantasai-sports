@@ -188,23 +188,86 @@ def generate_rankings_blurbs(
     errors = 0
 
     # Key predictive metrics to surface per stat type
-    _PITCHER_METRICS = ["SwStr%", "CSW%", "K/9", "K9", "BB/9", "BB9", "BB%", "xERA", "xFIP", "SIERA", "WHIP", "GB%"]
-    _BATTER_METRICS  = ["Barrel%", "HardHit%", "xwOBA", "xBA", "xSLG", "OBP", "AVG", "BB%", "K%"]
+    _PITCHER_METRICS = ["SwStr%", "CSW%", "K/9", "K9", "BB/9", "BB9", "BB%", "xERA", "xFIP", "SIERA", "WHIP", "GB%",
+                        "Stuff+", "vFA", "Ext", "SpinRate", "K-BB%"]
+    _BATTER_METRICS  = ["Barrel%", "HardHit%", "xwOBA", "xBA", "xSLG", "OBP", "AVG", "BB%", "K%",
+                        "Sweet-Spot%", "PulledFB%", "Sprint Speed", "wRC+"]
 
     def _fmt_metric(key: str, val: float) -> str:
         """Format a raw metric value for a prompt data block."""
-        pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "HardHit%", "Barrel%"}
+        pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "HardHit%", "Barrel%", "Sweet-Spot%", "PulledFB%", "K-BB%"}
         if key in pct_keys:
             return f"{key}: {val:.1f}%"
         if key in {"xwOBA", "xBA", "xSLG", "OBP", "AVG"}:
             return f"{key}: {val:.3f}"
+        if key == "Sprint Speed":
+            return f"{key}: {val:.1f} ft/s"
+        if key in {"vFA", "Ext"}:
+            return f"{key}: {val:.1f}"
+        if key == "wRC+":
+            return f"{key}: {int(val)}"
         return f"{key}: {val:.2f}"
+
+    def _fmt_metric_with_pct(key: str, val: float, pct_entry: dict) -> str:
+        """Format a metric value with its percentile label and population average."""
+        base = _fmt_metric(key, val)
+        label = pct_entry.get("label", "")
+        avg   = pct_entry.get("avg")
+        pct   = pct_entry.get("pct")
+        if label and avg is not None and pct is not None:
+            avg_fmt = _fmt_metric(key, float(avg)).split(": ", 1)[-1]
+            return f"{base} [{label} — {pct:.0f}th pct; avg: {avg_fmt}]"
+        return base
 
     # Days into the 2026 season — used to build small-sample context
     _SEASON_START_2026 = date(2026, 3, 26)
     _days_into_season = max(0, (date.today() - _SEASON_START_2026).days)
 
-    def _build_key_stats(player_id: int, stat_type: str) -> str:
+    def _rank_length_target(rank: int, outperformer_flag: int | None, prev_rank: int | None) -> str:
+        """Return length guidance string for the given rank tier."""
+        is_mover = prev_rank is not None and abs(rank - prev_rank) >= 20
+        is_outperformer = outperformer_flag is not None and outperformer_flag <= 2
+
+        if rank <= 50:
+            base = "5–7 sentences"
+        elif rank <= 150:
+            base = "3–5 sentences"
+        else:
+            base = "2–3 sentences"
+
+        if is_mover or is_outperformer:
+            # Expand one tier
+            if rank <= 50:
+                return "5–7 sentences (expand: notable situation)"
+            else:
+                return "4–5 sentences (expand: notable situation)"
+        return base
+
+    def _build_outperformer_note(outperformer_flag: int | None, stat_type: str) -> str | None:
+        """Return an outperformer context line for the prompt, if applicable."""
+        if outperformer_flag == 1:
+            if stat_type == "pitching":
+                return ("OUTPERFORMER FLAG: Tier 1 (sustained) — ERA has beaten xERA/SIERA "
+                        "for multiple seasons. xStats keep calling for regression; it hasn't arrived. "
+                        "Bemused tone warranted: 'We're not sure how they keep doing it, but they haven't stopped.'")
+            return ("OUTPERFORMER FLAG: Tier 1 (sustained) — actual AVG/OBP has beaten xBA/xOBP "
+                    "for multiple seasons. Bemused tone: 'Along for the ride.'")
+        if outperformer_flag == 2:
+            if stat_type == "pitching":
+                return ("OUTPERFORMER FLAG: Tier 2 (single season) — ERA meaningfully below xERA/SIERA. "
+                        "Flag regression risk clearly: 'xStats say the correction is coming.'")
+            return ("OUTPERFORMER FLAG: Tier 2 (single season) — actual AVG meaningfully above xBA. "
+                    "Flag regression risk: 'Sell high opportunity exists.'")
+        if outperformer_flag == 3:
+            return ("OUTPERFORMER FLAG: Tier 3 (small sample) — hot start, not enough PA/IP to know if real. "
+                    "Do NOT treat the surface stats as evidence of sustained skill. Use hot-start language.")
+        return None
+
+    def _build_key_stats(
+        player_id: int,
+        stat_type: str,
+        percentile_data: dict | None = None,
+    ) -> str:
         raw = raw_stats_map.get(player_id)
         if not raw:
             return "(stats not yet available this season)"
@@ -212,15 +275,23 @@ def generate_rankings_blurbs(
         rate = raw.get("rate", {})
         adv  = raw.get("advanced", {})
         keys = _PITCHER_METRICS if stat_type == "pitching" else _BATTER_METRICS
+        pct  = percentile_data or {}
         parts = []
         for k in keys:
             v = rate.get(k) if rate.get(k) is not None else adv.get(k)
-            if v is not None:
-                try:
-                    parts.append(_fmt_metric(k, float(v)))
-                except (TypeError, ValueError):
-                    pass
-        stats_line = " | ".join(parts[:6]) if parts else "(stats not yet available this season)"
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            pct_entry = pct.get(k)
+            if pct_entry:
+                parts.append(_fmt_metric_with_pct(k, fv, pct_entry))
+            else:
+                parts.append(_fmt_metric(k, fv))
+
+        stats_line = "\n  ".join(parts[:8]) if parts else "(stats not yet available this season)"
 
         # Prepend sample size so the blurb model knows how much to trust the stats.
         # Rule 10 in writer_persona.py uses this to apply appropriate language.
@@ -239,7 +310,7 @@ def generate_rankings_blurbs(
                 sample_val = 0
             sample_line = f"SAMPLE SIZE: {sample_val} PA / day {_days_into_season} of season"
 
-        return f"{sample_line}\n{stats_line}"
+        return f"{sample_line}\n  {stats_line}"
 
     for player in top_players:
         # Skip MiLB prospects — they have PAV blurbs
@@ -280,8 +351,16 @@ def generate_rankings_blurbs(
                 # RPs don't have probable-start entries; give neutral fallback
                 week_context_note = "standard relief appearances expected this week (no scheduled starts)"
 
-        # Key predictive metrics for the data block
-        key_stats = _build_key_stats(player.player_id, stat_type)
+        # Pull percentile data and outperformer flag from PlayerRanking if available
+        pct_data      = getattr(player, "percentile_data", None) or {}
+        outperformer  = getattr(player, "outperformer_flag", None)
+        prev_rank     = None  # TODO: populate from RankingSnapshot history
+
+        length_target     = _rank_length_target(player.overall_rank, outperformer, prev_rank)
+        outperformer_note = _build_outperformer_note(outperformer, stat_type)
+
+        # Key predictive metrics for the data block (with percentiles when available)
+        key_stats = _build_key_stats(player.player_id, stat_type, pct_data)
 
         # ── Prompt — week mode gets a schedule-first, metric-specific prompt ──
         if mode == "week":
@@ -329,22 +408,41 @@ def generate_rankings_blurbs(
                 )
         else:
             # ── Non-week modes: season/month/current — talent-focused ──────────
+            _role_note = ""
+            if is_sp:
+                _role_note = "Starting pitcher — lead with STUFF (velocity, Stuff+, spin), not outcomes."
+            elif is_rp:
+                _role_note = "Reliever/closer — lead with SAVE OPPORTUNITY and role security, then stuff."
+
+            _outperformer_block = f"\n{outperformer_note}" if outperformer_note else ""
+
             prompt = (
-                f"Write a 2-sentence fantasy baseball note for {player.name} "
-                f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank}).\n\n"
-                f"PLAYER FACTS — 2026 live roster data, non-negotiable: "
-                f"{player.name} currently plays for the {full_team}. "
-                f"Do not name any other team as his current employer.\n\n"
-                f"KEY METRICS:\n{key_stats}\n\n"
+                f"RANK #{player.overall_rank} — {player.name} "
+                f"({full_team}, {'/'.join(positions)})\n\n"
+                f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
+                f"Do not reference any other team.\n\n"
+                + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
+                + f"LENGTH: {length_target}\n\n"
+                + _outperformer_block
+                + ("\n\n" if outperformer_note else "")
+                + f"KEY METRICS (with percentile context where shown):\n{key_stats}\n\n"
                 f"CATEGORY SIGNALS: {cat_summary}\n\n"
-                f"Focus on fantasy value and category impact. Cite at least one specific metric value. "
-                f"Direct and specific. No hedging."
+                f"REQUIREMENTS:\n"
+                f"- End with a forward-looking sentence (what to watch for)\n"
+                f"- Call out specific categories this player helps or hurts\n"
+                f"- If percentile data is shown, use the provided label (Elite/Above average/etc.) — "
+                f"do not invent your own benchmark\n"
+                f"- No hedging. Direct and specific.\n"
+                f"- Note any meaningful xStat gap (regression warning or buying opportunity)"
             )
+
+        # Top-50 players get 5–7 sentences — allow more tokens
+        _max_tokens = 400 if player.overall_rank <= 50 else (280 if player.overall_rank <= 150 else 200)
 
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=200,
+                max_tokens=_max_tokens,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -373,11 +471,22 @@ def generate_rankings_blurbs(
                 .first()
             )
 
+            _statcast_score = getattr(player, "statcast_score", None)
+            _steamer_score  = getattr(player, "steamer_score",  None)
+            _accum_score    = getattr(player, "accum_score",    None)
+            _outperformer   = getattr(player, "outperformer_flag", None)
+            _pct_data       = getattr(player, "percentile_data", None) or {}
+
             if existing:
                 existing.blurb = blurb_text
                 existing.overall_rank = player.overall_rank
                 existing.score = player.score
                 existing.category_contributions = contributions
+                existing.statcast_score = _statcast_score
+                existing.steamer_score  = _steamer_score
+                existing.accum_score    = _accum_score
+                existing.outperformer_flag = _outperformer
+                existing.percentile_data   = _pct_data or None
             else:
                 db.add(
                     Ranking(
@@ -389,6 +498,11 @@ def generate_rankings_blurbs(
                         category_contributions=contributions,
                         blurb=blurb_text,
                         league_id=None,
+                        statcast_score=_statcast_score,
+                        steamer_score=_steamer_score,
+                        accum_score=_accum_score,
+                        outperformer_flag=_outperformer,
+                        percentile_data=_pct_data or None,
                     )
                 )
 
