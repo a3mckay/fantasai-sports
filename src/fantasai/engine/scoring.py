@@ -626,8 +626,18 @@ class ScoringEngine:
             if is_sp is None and not detect_pitcher_role:
                 projected.append(project_hitter_stats(p, player_config, steamer_data=steamer))
             elif detect_pitcher_role:
-                # Combined pitcher pool: each player uses their own role's IP volume
-                player_is_sp = "SP" in p.positions
+                # Combined pitcher pool: each player uses their own role's IP volume.
+                # For dual SP/RP players, use Steamer's projected IP to determine the
+                # actual role. A player Steamer projects for < 100 IP is a swingman or
+                # reliever, not a true starter — give them the RP ip budget to avoid
+                # over-ranking players with SP eligibility but RP workloads.
+                if "SP" in p.positions and "RP" in p.positions and steamer is not None:
+                    steamer_season_ip = float(
+                        steamer.counting_stats.get("IP") or 0
+                    )
+                    player_is_sp = steamer_season_ip >= 100.0
+                else:
+                    player_is_sp = "SP" in p.positions
                 projected.append(project_pitcher_stats(p, player_config, is_sp=player_is_sp, steamer_data=steamer))
             else:
                 projected.append(project_pitcher_stats(p, player_config, is_sp=is_sp, steamer_data=steamer))

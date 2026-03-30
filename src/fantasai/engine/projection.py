@@ -116,12 +116,19 @@ def _blend(
 
     Falls back gracefully: both available → weighted average;
     only one available → use it directly; neither → league-average default.
+
+    Important: when actual_w == 0 (e.g. tiny-sample protection set aw=0),
+    do NOT fall back to actual_val even when talent_val is None.  Doing so
+    would let a raw 4-PA batting average of .500 or a 1-IP xwOBA of 0.96
+    bypass the tiny-sample guard entirely and masquerade as a talent signal.
+    When talent is unavailable and actual is intentionally excluded, return
+    the league-average default so the player doesn't receive a phantom boost.
     """
     if talent_val is not None and actual_val is not None:
         return talent_w * talent_val + actual_w * actual_val
     if talent_val is not None:
         return talent_val
-    if actual_val is not None:
+    if actual_val is not None and actual_w > 0:
         return actual_val
     return default
 
@@ -267,6 +274,14 @@ def project_hitter_stats(
     if season_pa < _PA_FLOOR:
         aw = 0.0
         tw = 1.0
+        # When there's no Steamer projection AND the actual sample is tiny,
+        # also zero out the advanced stats dict.  Statcast xwOBA/xBA computed
+        # from 3–9 PA are pure noise (a lucky HR lifts xwOBA to 0.96+) and
+        # should not be used as the talent proxy via the xwOBA→OBP derivation.
+        # With Steamer data present this doesn't matter — Steamer provides the
+        # real talent signal and adv serves only as a secondary fallback.
+        if steamer_data is None:
+            adv = {}
     elif season_pa < _PA_FULL:
         aw = config.actual_weight * (season_pa - _PA_FLOOR) / (_PA_FULL - _PA_FLOOR)
         tw = 1.0 - aw
@@ -444,6 +459,10 @@ def project_pitcher_stats(
     if season_ip < _IP_FLOOR:
         aw = 0.0
         tw = 1.0
+        # Same guard as hitter side: don't let tiny-sample Statcast (xERA, SIERA
+        # from 0.2 IP) replace the real talent signal when no Steamer is present.
+        if steamer_data is None:
+            adv = {}
     elif season_ip < _IP_FULL:
         aw = config.actual_weight * (season_ip - _IP_FLOOR) / (_IP_FULL - _IP_FLOOR)
         tw = 1.0 - aw
