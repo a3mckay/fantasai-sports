@@ -156,6 +156,7 @@ def generate_rankings_blurbs(
     # metric values in prompts (SwStr%, xFIP, Barrel%, xwOBA, etc.)
     from fantasai.models.player import PlayerStats as _PlayerStats
     raw_stats_map: dict[int, dict] = {}
+    proj_map: dict[int, dict] = {}  # Steamer projection rows — declared here so accessible in player loop
     try:
         # Prefer actual stats, fall back to projection if actual is absent
         all_stat_rows = (
@@ -181,7 +182,7 @@ def generate_rankings_blurbs(
         # so we don't feed distorted small-sample rates (45.00 BB/9 from 0.2 IP)
         # into the blurb prompt. Actual counting stats are always used.
         actual_map: dict[int, dict] = {}
-        proj_map:   dict[int, dict] = {}
+        proj_map = {}  # reset (already declared above)
         for row in all_stat_rows:
             pid = row.player_id
             data = {
@@ -224,6 +225,29 @@ def generate_rankings_blurbs(
                 raw_stats_map[pid] = proj
     except Exception:
         _log.warning("blurb_scheduler: could not bulk-fetch raw stats", exc_info=True)
+
+    # Pre-fetch previous ranks for current mode (used to populate rank movement in blurbs).
+    # Compare against 7 days ago since current rankings refresh weekly.
+    current_prev_rank_map: dict[int, int] = {}
+    if mode == "current":
+        try:
+            from datetime import timedelta as _td
+            from fantasai.models.ranking import RankingSnapshot as _RankingSnapshot
+            _compare_date = date.today() - _td(days=7)
+            _prev_snaps = (
+                db.query(_RankingSnapshot)
+                .filter(
+                    _RankingSnapshot.player_id.in_(top_player_ids),
+                    _RankingSnapshot.ranking_type == "current",
+                    _RankingSnapshot.horizon == "current",
+                    _RankingSnapshot.snapshot_date == _compare_date,
+                )
+                .all()
+            )
+            for _s in _prev_snaps:
+                current_prev_rank_map[_s.player_id] = _s.overall_rank
+        except Exception:
+            _log.warning("blurb_scheduler: could not pre-fetch rank deltas for current mode", exc_info=True)
 
     client = _anthropic.Anthropic(api_key=api_key)
 
@@ -356,6 +380,37 @@ def generate_rankings_blurbs(
 
         return f"{sample_line}\n  {stats_line}"
 
+    def _build_steamer_comparison(player_id: int, stype: str) -> str:
+        """Build a Steamer projection comparison block for current-mode prompts.
+
+        Returns an empty string if no projection data is available.
+        """
+        steamer = proj_map.get(player_id)
+        if not steamer:
+            return ""
+        s_rate = steamer.get("rate", {})
+        s_adv  = steamer.get("advanced", {})
+        parts: list[str] = []
+        if stype == "pitching":
+            for k in ["ERA", "WHIP", "K/9", "K9", "BB/9", "xFIP", "SIERA"]:
+                v = s_rate.get(k) if s_rate.get(k) is not None else s_adv.get(k)
+                if v is not None:
+                    try:
+                        parts.append(_fmt_metric(k, float(v)))
+                    except (TypeError, ValueError):
+                        pass
+        else:
+            for k in ["AVG", "OBP", "OPS", "wRC+", "xwOBA", "xBA"]:
+                v = s_rate.get(k) if s_rate.get(k) is not None else s_adv.get(k)
+                if v is not None:
+                    try:
+                        parts.append(_fmt_metric(k, float(v)))
+                    except (TypeError, ValueError):
+                        pass
+        if not parts:
+            return ""
+        return "STEAMER PROJECTION (what was expected this season — compare to YTD actuals):\n  " + ", ".join(parts[:5])
+
     for player in top_players:
         # Skip MiLB prospects — they have PAV blurbs
         if getattr(player, "is_prospect", False):
@@ -431,7 +486,7 @@ def generate_rankings_blurbs(
         # Pull percentile data and outperformer flag from PlayerRanking if available
         pct_data      = getattr(player, "percentile_data", None) or {}
         outperformer  = getattr(player, "outperformer_flag", None)
-        prev_rank     = None  # TODO: populate from RankingSnapshot history
+        prev_rank     = current_prev_rank_map.get(player.player_id) if mode == "current" else None
 
         length_target     = _rank_length_target(player.overall_rank, outperformer, prev_rank)
         outperformer_note = _build_outperformer_note(outperformer, stat_type)
@@ -529,7 +584,117 @@ def generate_rankings_blurbs(
                             f"based on training knowledge. The projection data confirms the role.\n\n"
                         )
 
-            prompt = (
+            if mode == "current":
+                # ── Current Season mode: backward-looking, tone-tiered, rank-aware ──
+                # Rank movement note
+                _rank_mvmt_note = ""
+                if prev_rank is not None:
+                    _delta = prev_rank - player.overall_rank
+                    if _delta >= 15:
+                        _rank_mvmt_note = f"RANK MOVEMENT: Surging — up {_delta} spots since last week (from #{prev_rank})\n\n"
+                    elif _delta >= 5:
+                        _rank_mvmt_note = f"RANK MOVEMENT: Rising — up {_delta} spots since last week (from #{prev_rank})\n\n"
+                    elif _delta <= -15:
+                        _rank_mvmt_note = f"RANK MOVEMENT: Falling hard — down {abs(_delta)} spots since last week (from #{prev_rank})\n\n"
+                    elif _delta <= -5:
+                        _rank_mvmt_note = f"RANK MOVEMENT: Slipping — down {abs(_delta)} spots since last week (from #{prev_rank})\n\n"
+                    else:
+                        _rank_mvmt_note = f"RANK MOVEMENT: Steady — approximately same spot as last week (was #{prev_rank})\n\n"
+
+                # Small sample: treat as notable only if meaningfully below expectation
+                # Early season (days 1-14): nearly everyone is small-sample, don't flag
+                # After day 14: flag batters < 20 PA or pitchers < 5 IP as notably limited
+                _is_small_sample_notable = (
+                    _days_into_season > 14 and (
+                        (stat_type == "batting" and _appearances < 20) or
+                        (stat_type == "pitching" and _appearances < 5)
+                    )
+                )
+
+                # Tone tier — based on rank, with small-sample and Steamer-vs-actual modifiers
+                _has_steamer = player.player_id in proj_map
+                if _appearances == 0:
+                    _tone_note = (
+                        "TONE: Neutral. This player has not appeared yet this season — "
+                        "acknowledge their absence, do not speculate on current performance.\n\n"
+                    )
+                elif _is_small_sample_notable:
+                    _tone_note = (
+                        "TONE: Neutral. Very limited sample — briefly note the small data set. "
+                        "Do not over-interpret early results.\n\n"
+                    )
+                elif player.overall_rank <= 50:
+                    _tone_note = (
+                        "TONE: Celebratory. Elite current-season production — earn the praise with "
+                        "specifics from their actual stats. No empty superlatives.\n\n"
+                    )
+                elif player.overall_rank <= 100:
+                    _tone_note = (
+                        "TONE: Positive. Solid contributor delivering real value. "
+                        "Matter-of-fact about what they've actually done.\n\n"
+                    )
+                elif player.overall_rank <= 150:
+                    _tone_note = (
+                        "TONE: Measured. Modest production — acknowledge the contribution "
+                        "without overselling.\n\n"
+                    )
+                elif player.overall_rank <= 200:
+                    _tone_note = (
+                        "TONE: Honest. Limited production relative to the player pool. "
+                        "Straightforward, not harsh.\n\n"
+                    )
+                else:
+                    # 200+: critical, more so if underperforming Steamer with confirming xStats
+                    _tone_note = (
+                        "TONE: Critical but fair. Below-replacement production with a regular workload. "
+                        "Be direct about the underperformance. "
+                        + (
+                            "If the Steamer comparison shows meaningful underperformance AND advanced "
+                            "stats corroborate the struggles (e.g. poor xwOBA, ERA well above xFIP), "
+                            "be explicitly skeptical. "
+                            if _has_steamer else ""
+                        )
+                        + "\n\n"
+                    )
+
+                # Steamer comparison block (optional — only include if data exists)
+                _steamer_cmp = _build_steamer_comparison(player.player_id, stat_type)
+                _steamer_block = (_steamer_cmp + "\n\n") if _steamer_cmp else ""
+
+                # key_stats for current mode: use actual YTD rate/advanced stats
+                # (raw_stats_map already has actual data when sample is sufficient)
+
+                prompt = (
+                    f"CURRENT SEASON RANKING #{player.overall_rank} — {player.name} "
+                    f"({full_team}, {'/'.join(positions)})\n\n"
+                    f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
+                    f"Do not reference any other team.\n\n"
+                    + _rank_mvmt_note
+                    + _tone_note
+                    + _zero_pa_note
+                    + _closer_role_note
+                    + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
+                    + f"LENGTH: 2–3 sentences. Consistent length regardless of rank. Reactive and direct.\n\n"
+                    + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
+                    + f"YTD RATE & ADVANCED STATS (actual current-season observations — frame as 'is posting', 'has put up', etc.):\n{key_stats}\n\n"
+                    + _steamer_block
+                    + f"CATEGORY STRENGTH vs. REST OF POOL:\n{cat_summary}\n\n"
+                    + f"REQUIREMENTS:\n"
+                    + f"- CURRENT SEASON ranking based on 2026 YTD actuals only. Fully backward-looking.\n"
+                    + f"- DO NOT end with forward-looking language. No 'watch for', 'keep an eye on', 'should', 'will', 'expected to'.\n"
+                    + f"- Reference the player's rank (#{player.overall_rank}) naturally in the blurb.\n"
+                    + (f"- Briefly acknowledge whether they're trending up, down, or steady.\n" if prev_rank is not None else "")
+                    + f"- NEVER cite a counting stat not listed in ACTUAL YTD COUNTING STATS above.\n"
+                    + f"- Rate/advanced stats shown ARE actual current-season observations — frame them as such.\n"
+                    + (f"- Steamer projection is optional context — reference only if the comparison adds meaningful insight.\n" if _steamer_cmp else "")
+                    + (f"- If sample is notably small, mention it briefly without making it the entire blurb.\n" if _is_small_sample_notable else "")
+                    + f"- No percentile language (no 'top X%', 'Xth percentile').\n"
+                    + f"- No sigma (σ) notation.\n"
+                    + f"- No hedging. Direct and specific."
+                )
+            else:
+                # ── Projected modes (season/month) — talent-focused ─────────────
+                prompt = (
                 f"RANK #{player.overall_rank} — {player.name} "
                 f"({full_team}, {'/'.join(positions)})\n\n"
                 f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
@@ -562,8 +727,12 @@ def generate_rankings_blurbs(
                 f"- Note any meaningful xStat gap (regression warning or buying opportunity)"
             )
 
-        # Top-50 players get 5–7 sentences — allow more tokens
-        _max_tokens = 400 if player.overall_rank <= 50 else (280 if player.overall_rank <= 150 else 200)
+        # Current mode: flat 2–3 sentence budget for all players.
+        # Projected modes: top-50 get more space for 5–7 sentences.
+        if mode == "current":
+            _max_tokens = 220
+        else:
+            _max_tokens = 400 if player.overall_rank <= 50 else (280 if player.overall_rank <= 150 else 200)
 
         try:
             response = client.messages.create(
@@ -580,7 +749,28 @@ def generate_rankings_blurbs(
             if mode != "week":
                 _ytd_counting_check = _build_ytd_counting(player.player_id, stat_type)
                 _zero_check = "0" if _appearances == 0 else str(_appearances)
-                _verify_prompt = (
+                if mode == "current":
+                    # Current mode: rate stats ARE actual observations (not projections).
+                    # Check for forward-looking language and percentile language instead.
+                    _verify_prompt = (
+                        f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
+                        f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
+                        f"BLURB TO CHECK:\n{blurb_text}\n\n"
+                        f"Check the blurb for these errors:\n"
+                        f"1. Specific counting numbers (home runs, RBIs, runs, steals, wins, saves, "
+                        f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS.\n"
+                        f"2. Current-season ranking claims with no data support "
+                        f"(e.g. 'leading the NL in HRs', 'tops in RBIs', 'league leader in X').\n"
+                        f"3. Sigma (σ) notation used directly in the text.\n"
+                        f"4. If SAMPLE SIZE is 0: ANY language suggesting current-season performance "
+                        f"('cooking early', 'off to a hot start', 'has posted', 'already showing', etc.).\n"
+                        f"5. Forward-looking language: 'watch for', 'keep an eye on', 'should', "
+                        f"'will be', 'expected to', 'projects', 'going forward', 'rest of season'.\n"
+                        f"6. Percentile language: 'top X%', 'Xth percentile', 'percentile'.\n"
+                        f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
+                    )
+                else:
+                    _verify_prompt = (
                     f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
                     f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
                     f"BLURB TO CHECK:\n{blurb_text}\n\n"
@@ -595,7 +785,7 @@ def generate_rankings_blurbs(
                     f"5. Rate stats (wRC+, AVG, K/9, BB/9, ERA, WHIP, etc.) cited as current-season "
                     f"observations (e.g. 'his 128 wRC+') rather than as projections.\n"
                     f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
-                )
+                    )
                 try:
                     _verify_resp = client.messages.create(
                         model="claude-haiku-4-5",
