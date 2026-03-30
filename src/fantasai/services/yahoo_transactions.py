@@ -245,7 +245,26 @@ def build_participants(
         for p in players:
             # Each player entry carries its own per-player action ("add" or "drop"),
             # which matters for waiver claims stored as "add" that also drop a player.
-            action = p.get("type") or txn_type
+            #
+            # Yahoo's transaction_data.type field is not always populated for the
+            # dropped player in a combined add/drop.  Fall back to inferring from
+            # destination/source team keys when the explicit type is absent:
+            #   - destination_team_key present  → player was added to a roster
+            #   - destination_team_key absent + source_team_key present → dropped
+            raw_type = p.get("type") or ""
+            if raw_type in ("add", "drop"):
+                action = raw_type
+            elif p.get("destination_team_key"):
+                action = "add"
+            elif p.get("source_team_key"):
+                # drop inferred from source_team_key — Yahoo omitted explicit type
+                _log.debug(
+                    "build_participants: inferred action=drop for %r from source_team_key "
+                    "(raw type=%r)", p.get("name", "?"), raw_type
+                )
+                action = "drop"
+            else:
+                action = txn_type  # last resort fallback
             team_key = p.get("destination_team_key") or p.get("source_team_key", "")
             team = teams_by_key.get(team_key, {})
             parts.append({
@@ -297,7 +316,7 @@ def build_participants(
     return []
 
 
-def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
+def poll_all_leagues(count: int = 50, is_backfill: bool = False, force_reimport: bool = False) -> int:
     """Poll Yahoo transaction logs for all connected leagues.
 
     Fetches new transactions, stores them in the DB, and kicks off grading.
@@ -409,7 +428,12 @@ def poll_all_leagues(count: int = 50, is_backfill: bool = False) -> int:
                     Transaction.yahoo_transaction_id == yahoo_id
                 ).first()
                 if existing:
-                    continue  # already seen
+                    if force_reimport:
+                        # Delete and re-import so updated parsing logic is applied
+                        db.delete(existing)
+                        db.flush()
+                    else:
+                        continue  # already seen
 
                 participants = build_participants(txn, teams_by_key, players_by_name, players_by_name_team)
 

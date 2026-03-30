@@ -318,6 +318,7 @@ def poll_transactions(
 def backfill_transactions(
     background_tasks: BackgroundTasks,
     count: int = Query(default=200, ge=1, le=500, description="Number of historical transactions to import"),
+    force_reimport: bool = Query(default=False, description="Delete and re-import existing transactions (use to fix previously mis-parsed add+drops)"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
@@ -326,7 +327,15 @@ def backfill_transactions(
     Fetches up to `count` recent transactions from Yahoo, stores them with
     is_backfill=True so they appear in the Move Grades feed but never trigger
     the site-wide ticker notification bar.
+
+    Set force_reimport=true to delete and re-import existing transactions — useful
+    when the parsing logic has been updated (e.g. combined add+drop detection).
     """
     from fantasai.services.yahoo_transactions import poll_all_leagues
-    background_tasks.add_task(poll_all_leagues, count, True)
-    return {"status": "backfilling", "message": f"Importing up to {count} historical transactions in background"}
+    background_tasks.add_task(poll_all_leagues, count, True, force_reimport)
+    msg = (
+        f"Re-importing up to {count} historical transactions (deleting existing records first)"
+        if force_reimport
+        else f"Importing up to {count} historical transactions in background"
+    )
+    return {"status": "backfilling", "message": msg}
