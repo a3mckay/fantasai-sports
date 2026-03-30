@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import secrets
+
 from sqlalchemy import Date, ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import Optional
@@ -38,6 +40,11 @@ class Ranking(TimestampMixin, Base):
     outperformer_flag: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # {metric: {pct, label, avg, value}} — passed into blurb prompts for percentile language
     percentile_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Public share token — used to serve the blurb card PNG without auth
+    share_token: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True,
+        default=lambda: secrets.token_urlsafe(32),
+    )
 
 
 class RankingSnapshot(TimestampMixin, Base):

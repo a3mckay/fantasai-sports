@@ -201,13 +201,13 @@ def list_rankings(
             )
             .all()
         )
-        # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players
+        # PAV blurbs take priority for prospects; ranking-type blurbs for MLB players.
+        # share_token travels with the blurb — always update both from the same row.
         for row in blurb_rows:
             if row.blurb:
                 if row.ranking_type == "pav" or row.player_id not in blurb_map:
                     blurb_map[row.player_id] = row.blurb
-                    if getattr(row, "share_token", None):
-                        share_token_map[row.player_id] = row.share_token
+                    share_token_map[row.player_id] = row.share_token
     except Exception:
         # Blurb/share_token fetch is non-critical — rankings still work without it.
         # This can happen if the share_token migration hasn't run yet.

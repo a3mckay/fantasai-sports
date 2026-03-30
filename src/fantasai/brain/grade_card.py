@@ -115,6 +115,115 @@ def _draw_rounded_rect(draw, xy, radius: int, fill):
     draw.ellipse([x2 - radius * 2, y2 - radius * 2, x2, y2], fill=fill)
 
 
+def render_blurb_card(
+    player_id: int,
+    player_name: str,
+    team: str,
+    positions: list[str],
+    overall_rank: int,
+    score: float,
+    blurb: str,
+    share_token: str,
+    mlbam_id: Optional[int] = None,
+) -> Optional[str]:
+    """Render a shareable blurb card PNG for a ranked player.
+
+    Returns the file path or None on failure.
+    Card is 800×480, dark theme, with headshot, rank, score, blurb, and branding.
+    """
+    try:
+        from PIL import Image, ImageDraw
+        _CARD_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = _CARD_DIR / f"blurb_{player_id}_{share_token[:8]}.png"
+
+        img = Image.new("RGB", (_W, _H), _BG)
+        draw = ImageDraw.Draw(img)
+
+        # ── Card background ───────────────────────────────────────────────────
+        _draw_rounded_rect(draw, (20, 20, _W - 20, _H - 60), 12, _CARD_BG)
+        draw.rectangle([20, 20, _W - 20, _H - 60], outline=_BORDER, width=1)
+
+        # ── Headshot (left column) ────────────────────────────────────────────
+        headshot_size = 100
+        headshot = _fetch_headshot(mlbam_id, size=headshot_size)
+        hs_x, hs_y = 40, 36
+        if headshot:
+            mask = _make_circle_mask(headshot_size)
+            hs_rgba = headshot.convert("RGBA")
+            img.paste(hs_rgba, (hs_x, hs_y), mask)
+        else:
+            draw.ellipse([hs_x, hs_y, hs_x + headshot_size, hs_y + headshot_size],
+                         fill=_DARK_MUTED)
+            font_hs = _load_font(28, bold=True)
+            initials = "".join(w[0] for w in player_name.split()[:2]).upper()
+            iw = draw.textlength(initials, font=font_hs)
+            draw.text((hs_x + headshot_size // 2 - iw // 2, hs_y + 32),
+                      initials, font=font_hs, fill=_MUTED)
+
+        # ── Rank badge (top-right of headshot) ───────────────────────────────
+        badge_x, badge_y = hs_x + headshot_size - 22, hs_y + headshot_size - 22
+        draw.ellipse([badge_x, badge_y, badge_x + 36, badge_y + 36], fill=_GREEN)
+        font_badge = _load_font(11, bold=True)
+        rank_str = f"#{overall_rank}"
+        rw = draw.textlength(rank_str, font=font_badge)
+        draw.text((badge_x + 18 - rw // 2, badge_y + 10), rank_str,
+                  font=font_badge, fill=_WHITE)
+
+        # ── Player info (right of headshot) ───────────────────────────────────
+        info_x = hs_x + headshot_size + 20
+        font_name  = _load_font(26, bold=True)
+        font_meta  = _load_font(14)
+        font_score = _load_font(13)
+
+        draw.text((info_x, 40), player_name, font=font_name, fill=_WHITE)
+
+        pos_str = "/".join(positions[:3]) if positions else "—"
+        meta_str = f"{team}  ·  {pos_str}"
+        draw.text((info_x, 74), meta_str, font=font_meta, fill=_MUTED)
+
+        score_label = f"FantasAI Score: {score:.2f}"
+        draw.text((info_x, 96), score_label, font=font_score, fill=_GREEN)
+
+        # ── Blurb text (main body) ────────────────────────────────────────────
+        font_blurb = _load_font(15)
+        blurb_x, blurb_y = 40, hs_y + headshot_size + 18
+        max_width = _W - 60
+        max_chars_per_line = max(40, int(max_width / 8.5))
+        words = blurb.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            test = f"{current} {word}".strip()
+            if draw.textlength(test, font=font_blurb) > max_width:
+                if current:
+                    lines.append(current)
+                current = word
+            else:
+                current = test
+        if current:
+            lines.append(current)
+
+        max_lines = 7
+        line_h = 22
+        for i, line in enumerate(lines[:max_lines]):
+            if i == max_lines - 1 and len(lines) > max_lines:
+                # Truncate last line with ellipsis
+                while draw.textlength(line + "…", font=font_blurb) > max_width and line:
+                    line = line.rsplit(" ", 1)[0]
+                line += "…"
+            draw.text((blurb_x, blurb_y + i * line_h), line, font=font_blurb, fill=_WHITE)
+
+        # ── Branding footer ───────────────────────────────────────────────────
+        _draw_branding(draw, img)
+
+        img.save(str(out_path), "PNG", optimize=True)
+        return str(out_path)
+
+    except Exception:
+        _log.error("render_blurb_card: failed for player_id=%s", player_id, exc_info=True)
+        return None
+
+
 def render_grade_card(txn: "Transaction", db: "Session") -> Optional[str]:
     """Render a grade card PNG for a transaction. Returns the file path or None on failure."""
     try:
