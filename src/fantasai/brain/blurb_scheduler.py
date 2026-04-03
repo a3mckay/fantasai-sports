@@ -647,20 +647,19 @@ def generate_rankings_blurbs(
                         "If there genuinely isn't, be matter-of-fact about the limitations.\n\n"
                     )
                 else:
-                    # 200+: critical if the stats and advanced metrics confirm struggles,
-                    # but actively look for a sleeper signal before writing them off
+                    # 200+: check for hidden upside before defaulting to critical
                     _tone_note = (
-                        "TONE: Honest sleeper-hunter. This player ranks outside the top 200 — "
-                        "but is there something here worth flagging? Check for: advanced stats "
-                        "(xwOBA, xERA, xFIP) meaningfully better than surface stats; rank trending up; "
-                        "role change or promotion; small sample masking real skill. "
-                        "If a real sleeper angle exists, lead with it and explain why they're worth a look. "
-                        "If none exists"
+                        "TONE: Check the data before drawing a conclusion. This player ranks outside "
+                        "the top 200 — look at whether advanced stats (xwOBA, xERA, xFIP) are "
+                        "meaningfully better than their surface results, whether they're trending up, "
+                        "or whether a role change creates new value. "
+                        "If a real upside signal exists, call it out — don't bury it. "
+                        "If the advanced stats"
                         + (
-                            " and Steamer + advanced stats both confirm the struggles, "
-                            "be direct about the underperformance. "
+                            " and Steamer projection both confirm the struggles, "
+                            "be direct: this player isn't a sleeper and owners should know why. "
                             if _has_steamer else
-                            ", be direct about the limited production. "
+                            " also reflect limited production, be direct about it. "
                         )
                         + "\n\n"
                     )
@@ -708,15 +707,17 @@ def generate_rankings_blurbs(
                 _sleeper_note = ""
                 if player.overall_rank > 150:
                     _sleeper_note = (
-                        "SLEEPER ANGLE REQUIRED: This player is ranked outside the top 150. "
-                        "Your job is to find the best case for owning them. Look for: "
-                        "Steamer projections above what the rank implies; Statcast metrics "
-                        "(xwOBA, xFIP, Barrel%) that suggest the surface stats are misleading; "
-                        "role or lineup upside; injury recovery trajectory; category scarcity value "
-                        "(e.g. rare SB source, reliable saves). "
-                        "If a real sleeper angle exists, lead with it — make the case for why this "
-                        "player is worth picking up. "
-                        "If there genuinely is no angle, be honest but specific about why not.\n\n"
+                        "BREAKOUT CHECK: This player is ranked outside the top 150. "
+                        "Before writing the blurb, check the data for hidden upside: "
+                        "Statcast metrics (xwOBA, xFIP, Barrel%) that outpace surface results; "
+                        "Steamer projecting meaningfully more than the rank implies; "
+                        "role or lineup change creating new opportunity; "
+                        "injury recovery that hasn't yet shown in counting stats; "
+                        "category scarcity value (rare SB source, saves role). "
+                        "If a real upside signal exists in the data, call it out clearly — "
+                        "these blurbs are read by owners hunting for waiver pickups. "
+                        "If the data shows no meaningful upside, don't invent one — "
+                        "be direct about why the rank reflects the player's actual value.\n\n"
                     )
 
                 prompt = (
