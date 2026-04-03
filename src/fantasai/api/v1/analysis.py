@@ -139,11 +139,15 @@ def _generate_compare_blurb(
     categories: list[str],
     context: Optional[str],
     raw_stats_map: Optional[dict[int, dict]] = None,  # player_id → {stat: value}
+    player_context_blocks: Optional[dict[int, dict]] = None,  # player_id → {stats, injury, workload}
 ) -> str:
     """Generate a comparison blurb via Anthropic API.
 
     Uses the shared writer persona. The data block exposes real stats and
     overall rank percentile — no internal z-scores or "adjusted score" jargon.
+
+    player_context_blocks: enriched context from brain.player_context — includes
+    rate stats (K/9, xFIP, xwOBA), injury notes, and pitcher workload framing.
 
     Returns empty string on failure — never raises.
     """
@@ -173,15 +177,31 @@ def _generate_compare_blurb(
             )
             lines.append(header)
 
-            # Real stats block
-            raw = (raw_stats_map or {}).get(p.player_id, {})
-            if raw:
-                stat_line = "  Stats: " + "  |  ".join(
-                    f"{_CAT_LABELS.get(k, k)} {v}"
-                    for k, v in raw.items()
-                    if v is not None
-                )
-                lines.append(stat_line)
+            # Enriched stats block (rate stats + advanced metrics + data source label)
+            pctx = (player_context_blocks or {}).get(p.player_id, {})
+            stats_block = pctx.get("stats", "")
+            if stats_block:
+                lines.append(f"  Stats:\n{stats_block}")
+            else:
+                # Fallback: category-level stats from raw_stats_map
+                raw = (raw_stats_map or {}).get(p.player_id, {})
+                if raw:
+                    stat_line = "  Stats: " + "  |  ".join(
+                        f"{_CAT_LABELS.get(k, k)} {v}"
+                        for k, v in raw.items()
+                        if v is not None
+                    )
+                    lines.append(stat_line)
+
+            # Injury context
+            injury_note = pctx.get("injury", "")
+            if injury_note:
+                lines.append(f"  Injury/risk: {injury_note}")
+
+            # Pitcher workload note
+            workload_note = pctx.get("workload", "")
+            if workload_note:
+                lines.append(f"  {workload_note}")
 
             # Tier signals — readable words, NOT z-scores
             _TIERS = [(2.0, "elite"), (1.0, "strong"), (0.3, "average"),
@@ -207,9 +227,11 @@ def _generate_compare_blurb(
         lines.append(
             "This is a head-to-head fantasy baseball player comparison. "
             "Write 3–4 sentences in your voice. "
-            "State clearly who wins and why, using actual stats from the DATA BLOCK — "
-            "not internal scores, z-scores, or any numeric rating you invented. "
-            "Reference real numbers (HR totals, AVG, ERA, etc.) and category tiers. "
+            "State clearly who wins and why, citing actual stats and advanced metrics from the DATA BLOCK. "
+            "Use the data source labels — say 'projects for' when citing Steamer projections, "
+            "'has posted' or 'is hitting' when citing 2026 actuals. "
+            "If a player is injured or has a workload limit, factor that into your verdict. "
+            "Reference real numbers (AVG, ERA, xwOBA, K/9, etc.) not internal scores. "
             "If the result is close, say so honestly."
             + (f" Address the user's context: {context}" if context else "")
         )
@@ -242,6 +264,7 @@ def _generate_trade_blurb_and_pros_cons(
     categories: list[str],
     has_keepers: bool,
     context: Optional[str],
+    player_context_blocks: Optional[dict[int, dict]] = None,  # player_id → {stats, injury, workload}
 ) -> tuple[str, list[str], list[str]]:
     """Generate a trade verdict blurb with [PROS]/[CONS] via Anthropic API.
 
@@ -253,6 +276,8 @@ def _generate_trade_blurb_and_pros_cons(
         return "", evaluation.pros, evaluation.cons
 
     try:
+        pctx = player_context_blocks or {}
+
         def _side_summary(players: list[PlayerRanking], picks: list[str]) -> str:
             parts = []
             for p in players:
@@ -260,7 +285,15 @@ def _generate_trade_blurb_and_pros_cons(
                     f"{cat}: {p.category_contributions.get(cat, 0):+.1f}"
                     for cat in sorted(categories, key=lambda c: -abs(p.category_contributions.get(c, 0)))[:4]
                 )
-                parts.append(f"  {p.name} ({'/'.join(p.positions)}, score {p.score:.1f}) | {top_cats}")
+                parts.append(f"  {p.name} ({'/'.join(p.positions)}, rank #{getattr(p, 'overall_rank', '?')}) | {top_cats}")
+                # Append enriched context for this player
+                ctx_block = pctx.get(p.player_id, {})
+                if ctx_block.get("stats"):
+                    parts.append(f"    Stats:\n    {ctx_block['stats']}")
+                if ctx_block.get("injury"):
+                    parts.append(f"    Injury/risk: {ctx_block['injury']}")
+                if ctx_block.get("workload"):
+                    parts.append(f"    {ctx_block['workload']}")
             for pick in picks:
                 parts.append(f"  {pick} (draft pick)")
             return "\n".join(parts) if parts else "  (none)"
@@ -294,6 +327,10 @@ def _generate_trade_blurb_and_pros_cons(
             "━━━ END DATA BLOCK ━━━",
             "",
             "Write a verdict blurb (3–5 sentences) followed by structured pros and cons.",
+            "Use data source labels — 'projects for' when citing Steamer projections, "
+            "'has posted' or 'is hitting' when citing 2026 actuals. "
+            "If a player is injured or has a workload limit, factor that into the verdict. "
+            "Cite specific rate stats (xFIP, xwOBA, K/9, AVG) from the DATA BLOCK — not internal scores.",
             "Format exactly as:",
             "",
             "BLURB: <your 3–5 sentence verdict here>",
@@ -308,7 +345,7 @@ def _generate_trade_blurb_and_pros_cons(
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=400,
+            max_tokens=500,
             system=[
                 {
                     "type": "text",
@@ -444,30 +481,21 @@ def compare_players_endpoint(
     for r in results:
         r.total_players = total_ranked
 
-    # Fetch real stats for the compared players so the blurb can cite them
-    from fantasai.models.player import PlayerStats
-    stats_rows = (
-        db.query(PlayerStats)
-        .filter(
-            PlayerStats.player_id.in_(body.player_ids),
-            PlayerStats.season == 2026,
-        )
-        .all()
+    # Build enriched player context blocks (rate stats, injury, workload)
+    from fantasai.brain.player_context import (
+        build_player_stats_block,
+        build_player_injury_note,
+        build_pitcher_workload_note,
     )
-    # Build {player_id: flat_stats_dict} — prefer the matching stat_type per player
     result_stat_type = {r.player_id: r.stat_type for r in results}
-    raw_stats_map: dict[int, dict] = {}
-    for row in stats_rows:
-        pid = row.player_id
-        expected_type = result_stat_type.get(pid, row.stat_type)
-        if row.stat_type != expected_type:
-            continue
-        flat: dict = {}
-        flat.update(row.counting_stats or {})
-        flat.update(row.rate_stats or {})
-        # Keep only the categories used in scoring + a few useful extras
-        _KEEP = {*categories, "AVG", "OPS", "OBP", "ERA", "WHIP", "IP"}
-        raw_stats_map[pid] = {k: v for k, v in flat.items() if k in _KEEP and v is not None}
+    player_context_blocks: dict[int, dict] = {}
+    for pid in body.player_ids:
+        stype = result_stat_type.get(pid)
+        player_context_blocks[pid] = {
+            "stats":    build_player_stats_block(pid, db, stat_type=stype),
+            "injury":   build_player_injury_note(pid, db),
+            "workload": build_pitcher_workload_note(pid, db),
+        }
 
     # Determine which categories were boosted by context (for transparency)
     context_applied: Optional[str] = None
@@ -477,8 +505,11 @@ def compare_players_endpoint(
         if boosted:
             context_applied = f"Boosted categories: {', '.join(sorted(boosted))}"
 
-    # Generate LLM blurb with real stats
-    blurb = _generate_compare_blurb(results, categories, body.context, raw_stats_map)
+    # Generate LLM blurb with enriched context
+    blurb = _generate_compare_blurb(
+        results, categories, body.context,
+        player_context_blocks=player_context_blocks,
+    )
 
     return CompareResponse(
         ranked_players=[
@@ -596,6 +627,21 @@ def evaluate_trade_endpoint(
     evaluation = evaluate_trade(ctx)
 
     # Generate LLM blurb and refine pros/cons
+    # Build enriched player context blocks for all trade participants
+    from fantasai.brain.player_context import (
+        build_player_stats_block,
+        build_player_injury_note,
+        build_pitcher_workload_note,
+    )
+    all_trade_player_ids = body.giving.player_ids + body.receiving.player_ids
+    trade_context_blocks: dict[int, dict] = {}
+    for r in giving_rankings + receiving_rankings:
+        trade_context_blocks[r.player_id] = {
+            "stats":    build_player_stats_block(r.player_id, db, stat_type=r.stat_type),
+            "injury":   build_player_injury_note(r.player_id, db),
+            "workload": build_pitcher_workload_note(r.player_id, db, overall_rank=r.overall_rank),
+        }
+
     blurb, pros, cons = _generate_trade_blurb_and_pros_cons(
         evaluation=evaluation,
         giving_rankings=giving_rankings,
@@ -605,6 +651,7 @@ def evaluate_trade_endpoint(
         categories=categories,
         has_keepers=has_keepers,
         context=body.context,
+        player_context_blocks=trade_context_blocks,
     )
 
     return TradeResponse(

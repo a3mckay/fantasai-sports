@@ -502,6 +502,16 @@ def generate_rankings_blurbs(
         length_target     = _rank_length_target(player.overall_rank, outperformer, prev_rank)
         outperformer_note = _build_outperformer_note(outperformer, stat_type)
 
+        # Injury context — pulled from InjuryRecord + Player.risk_flag
+        _injury_note = ""
+        try:
+            from fantasai.brain.player_context import build_player_injury_note as _bin
+            _inote = _bin(player.player_id, db)
+            if _inote:
+                _injury_note = f"INJURY/RISK CONTEXT (authoritative — factor into your blurb):\n  {_inote}\n\n"
+        except Exception:
+            pass
+
         # Key predictive metrics for the data block (with percentiles when available)
         key_stats = _build_key_stats(player.player_id, stat_type, pct_data)
 
@@ -690,6 +700,7 @@ def generate_rankings_blurbs(
                     + _rank_mvmt_note
                     + _tone_note
                     + _zero_pa_note
+                    + _injury_note
                     + _closer_role_note
                     + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
                     + f"LENGTH: 2–3 sentences. Consistent length regardless of rank. Reactive and direct.\n\n"
@@ -737,6 +748,7 @@ def generate_rankings_blurbs(
                 f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                 f"Do not reference any other team.\n\n"
                 + _zero_pa_note
+                + _injury_note
                 + _closer_role_note
                 + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
                 + _sleeper_note
