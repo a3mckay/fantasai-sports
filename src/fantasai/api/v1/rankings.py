@@ -385,6 +385,54 @@ def generate_blurbs(
     return {"status": "accepted", "mode": mode, "top_n": top_n}
 
 
+@router.post("/submit-blurb-batch", status_code=202, tags=["admin"])
+def submit_blurb_batch(
+    background_tasks: BackgroundTasks,
+    mode: str = Query(default="season", pattern="^(week|month|season|current)$"),
+    top_n: int = Query(default=300, ge=10, le=500),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Submit blurb generation for a ranking mode to the Anthropic Batches API.
+
+    ~50% cheaper than synchronous generation but async — results available
+    within minutes to ~1 hour.  Call POST /rankings/collect-blurb-batches
+    to write results to the DB once the batch completes.
+    """
+    from fantasai.brain.blurb_scheduler import submit_rankings_blurbs_batch
+    from fantasai.database import SessionLocal
+
+    api_key = settings.anthropic_api_key
+
+    def _run() -> None:
+        bg_db = SessionLocal()
+        try:
+            result = submit_rankings_blurbs_batch(bg_db, api_key, mode=mode, top_n=top_n)
+            logger.info("submit-blurb-batch background task complete: %s", result)
+        finally:
+            bg_db.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "mode": mode, "top_n": top_n}
+
+
+@router.post("/collect-blurb-batches", tags=["admin"])
+def collect_blurb_batches(db: Session = Depends(get_db)) -> dict:
+    """Check all pending blurb batches and write any completed results to the DB.
+
+    Safe to call repeatedly — batches not yet complete are silently skipped.
+    Returns counts of batches checked, collected, blurbs written, and errors.
+    """
+    from fantasai.brain.blurb_scheduler import collect_rankings_blurb_batches
+
+    result = collect_rankings_blurb_batches(db, settings.anthropic_api_key)
+
+    # Bust cache so updated blurbs appear immediately
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+    _RANKINGS_CACHE.clear()
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Admin: prospect sync
 # ---------------------------------------------------------------------------

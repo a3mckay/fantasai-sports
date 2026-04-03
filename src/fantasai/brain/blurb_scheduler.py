@@ -71,27 +71,36 @@ def generate_rankings_blurbs(
     api_key: str | None,
     mode: str = "season",
     top_n: int = 300,
+    _batch_requests_out: list | None = None,
 ) -> dict:
     """Generate AI blurbs for the top N players in the given ranking mode.
 
     Args:
         db: SQLAlchemy session.
-        api_key: Anthropic API key. If None or empty, returns immediately.
+        api_key: Anthropic API key. If None or empty, returns immediately
+            (unless _batch_requests_out is set — prompt-building needs no key).
         mode: One of "season", "week", "month", "current".
         top_n: Number of top players to generate blurbs for.
+        _batch_requests_out: Internal — when set to a list, the function runs
+            only the prompt-building loop and appends
+            {custom_id, prompt, max_tokens, player_metadata} dicts instead of
+            making API calls. Used by submit_rankings_blurbs_batch().
 
     Returns:
         Dict with keys: generated, skipped, errors, mode.
+        When _batch_requests_out is set: {collected, mode}.
     """
-    if not api_key:
+    if not api_key and _batch_requests_out is None:
         _log.warning("blurb_scheduler: no API key set, skipping blurb generation")
         return {"generated": 0, "skipped": 0, "errors": 0, "mode": mode}
 
     try:
         import anthropic as _anthropic
     except ImportError:
-        _log.warning("blurb_scheduler: anthropic package not installed, skipping")
-        return {"generated": 0, "skipped": 0, "errors": 0, "mode": mode}
+        if _batch_requests_out is None:
+            _log.warning("blurb_scheduler: anthropic package not installed, skipping")
+            return {"generated": 0, "skipped": 0, "errors": 0, "mode": mode}
+        _anthropic = None  # type: ignore[assignment]
 
     from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES
 
@@ -249,7 +258,9 @@ def generate_rankings_blurbs(
         except Exception:
             _log.warning("blurb_scheduler: could not pre-fetch rank deltas for current mode", exc_info=True)
 
-    client = _anthropic.Anthropic(api_key=api_key)
+    # Only create the API client when we'll actually make calls.
+    # In collect-only mode (_batch_requests_out set) no calls are made.
+    client = _anthropic.Anthropic(api_key=api_key) if _batch_requests_out is None else None
 
     generated = 0
     skipped = 0
@@ -766,6 +777,31 @@ def generate_rankings_blurbs(
         # players in the same mode run (ephemeral TTL: 5 min; run takes ~30s → safe).
         _cached_system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
+        # ── Collect-only mode (used by submit_rankings_blurbs_batch) ─────────
+        # When _batch_requests_out is set, skip all API calls and just store
+        # the prompt + player metadata for later batch submission.
+        if _batch_requests_out is not None:
+            _batch_requests_out.append({
+                "custom_id": str(player.player_id),
+                "prompt": prompt,
+                "max_tokens": _max_tokens,
+                "player_metadata": {
+                    "ranking_type": ranking_type,
+                    "period": CURRENT_PERIOD,
+                    "overall_rank": player.overall_rank,
+                    "score": player.score,
+                    "stat_type": stat_type,
+                    "category_contributions": contributions,
+                    "statcast_score": getattr(player, "statcast_score", None),
+                    "steamer_score":  getattr(player, "steamer_score",  None),
+                    "accum_score":    getattr(player, "accum_score",    None),
+                    "outperformer_flag": getattr(player, "outperformer_flag", None),
+                    "percentile_data":   (getattr(player, "percentile_data", None) or None),
+                },
+            })
+            generated += 1
+            continue
+
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5",
@@ -931,6 +967,10 @@ def generate_rankings_blurbs(
 
         time.sleep(0.1)
 
+    if _batch_requests_out is not None:
+        _log.info("blurb_scheduler: mode=%s collected %d prompts for batch submission", mode, generated)
+        return {"collected": generated, "mode": mode}
+
     _log.info(
         "blurb_scheduler: mode=%s generated=%d skipped=%d errors=%d",
         mode,
@@ -939,3 +979,245 @@ def generate_rankings_blurbs(
         errors,
     )
     return {"generated": generated, "skipped": skipped, "errors": errors, "mode": mode}
+
+
+# ---------------------------------------------------------------------------
+# Batch API — submit + collect (for scheduled runs; ~50% cost reduction)
+# ---------------------------------------------------------------------------
+
+
+def submit_rankings_blurbs_batch(
+    db: Session,
+    api_key: str | None,
+    mode: str = "season",
+    top_n: int = 300,
+) -> dict:
+    """Submit blurb generation for a ranking mode to the Anthropic Batches API.
+
+    Builds all prompts using generate_rankings_blurbs() collect-only mode,
+    submits them as a single batch, and stores a BlurbBatch row for later
+    collection via collect_rankings_blurb_batches().
+
+    50% cheaper than synchronous generation but async — results available
+    within minutes to ~1 hour.  Use collect_rankings_blurb_batches() (or
+    POST /rankings/collect-blurb-batches) to write results to the DB.
+
+    Returns:
+        Dict with batch_id, player_count, mode, status.
+    """
+    if not api_key:
+        _log.warning("submit_rankings_blurbs_batch: no API key set")
+        return {"error": "no API key", "mode": mode}
+
+    try:
+        import anthropic as _anthropic
+        from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+        from anthropic.types.messages.batch_create_params import Request as _BatchRequest
+    except ImportError:
+        _log.warning("submit_rankings_blurbs_batch: anthropic package not installed")
+        return {"error": "anthropic not installed", "mode": mode}
+
+    from fantasai.models.ranking import BlurbBatch
+
+    _PERIOD_MAP: dict[str, str] = {
+        "season":  "2026-season",
+        "week":    "2026-week",
+        "month":   "2026-month",
+        "current": "2026-current",
+    }
+    period = _PERIOD_MAP.get(mode, "2026-season")
+
+    # Build all prompts using the existing generate function's prompt-building
+    # logic, without making any API calls.
+    collected: list[dict] = []
+    generate_rankings_blurbs(db, api_key=None, mode=mode, top_n=top_n, _batch_requests_out=collected)
+
+    if not collected:
+        _log.warning("submit_rankings_blurbs_batch: no players found for mode=%r", mode)
+        return {"error": "no players found", "mode": mode}
+
+    _cached_system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
+    batch_requests = [
+        _BatchRequest(
+            custom_id=item["custom_id"],
+            params=MessageCreateParamsNonStreaming(
+                model="claude-haiku-4-5",
+                max_tokens=item["max_tokens"],
+                system=_cached_system,
+                messages=[{"role": "user", "content": item["prompt"]}],
+            ),
+        )
+        for item in collected
+    ]
+
+    player_data_map = {item["custom_id"]: item["player_metadata"] for item in collected}
+
+    client = _anthropic.Anthropic(api_key=api_key)
+    batch = client.messages.batches.create(requests=batch_requests)
+
+    db.add(BlurbBatch(
+        mode=mode,
+        period=period,
+        batch_id=batch.id,
+        player_count=len(batch_requests),
+        player_data=player_data_map,
+    ))
+    db.commit()
+
+    _log.info(
+        "submit_rankings_blurbs_batch: submitted %d requests mode=%s batch_id=%s",
+        len(batch_requests), mode, batch.id,
+    )
+    return {
+        "batch_id": batch.id,
+        "player_count": len(batch_requests),
+        "mode": mode,
+        "status": "submitted",
+    }
+
+
+def collect_rankings_blurb_batches(db: Session, api_key: str | None) -> dict:
+    """Collect results from all pending blurb batches and write to the Ranking table.
+
+    Checks every BlurbBatch with status="pending".  Batches that haven't
+    completed yet are silently skipped — call again later.
+
+    Returns:
+        Dict with batches_checked, batches_collected, blurbs_written, errors.
+    """
+    if not api_key:
+        return {"error": "no API key"}
+
+    try:
+        import anthropic as _anthropic
+    except ImportError:
+        return {"error": "anthropic not installed"}
+
+    from datetime import datetime, timezone
+    from fantasai.models.ranking import BlurbBatch, Ranking
+
+    pending = db.query(BlurbBatch).filter(BlurbBatch.status == "pending").all()
+    if not pending:
+        return {"batches_checked": 0, "batches_collected": 0, "blurbs_written": 0, "errors": 0}
+
+    client = _anthropic.Anthropic(api_key=api_key)
+
+    batches_collected = 0
+    blurbs_written = 0
+    errors = 0
+
+    for batch_record in pending:
+        try:
+            batch_status = client.messages.batches.retrieve(batch_record.batch_id)
+            if batch_status.processing_status != "ended":
+                _log.info(
+                    "collect_rankings_blurb_batches: batch %s not ready yet (%s)",
+                    batch_record.batch_id, batch_status.processing_status,
+                )
+                continue
+
+            player_data_map: dict = batch_record.player_data or {}
+
+            for result in client.messages.batches.results(batch_record.batch_id):
+                if result.result.type != "succeeded":
+                    _log.warning(
+                        "collect_rankings_blurb_batches: request %s failed: %s",
+                        result.custom_id, result.result.type,
+                    )
+                    errors += 1
+                    continue
+
+                try:
+                    player_id = int(result.custom_id)
+                except ValueError:
+                    _log.warning("collect_rankings_blurb_batches: bad custom_id %r", result.custom_id)
+                    errors += 1
+                    continue
+
+                text_blocks = [b for b in result.result.message.content if b.type == "text"]
+                if not text_blocks:
+                    errors += 1
+                    continue
+                blurb_text = text_blocks[0].text.strip()
+
+                meta = player_data_map.get(str(player_id), {})
+                ranking_type = meta.get("ranking_type", "predictive")
+                period       = meta.get("period", batch_record.period)
+
+                try:
+                    existing = (
+                        db.query(Ranking)
+                        .filter(
+                            Ranking.player_id == player_id,
+                            Ranking.ranking_type == ranking_type,
+                            Ranking.period == period,
+                            Ranking.league_id.is_(None),
+                        )
+                        .first()
+                    )
+
+                    if existing:
+                        existing.blurb             = blurb_text
+                        existing.overall_rank       = meta.get("overall_rank", existing.overall_rank)
+                        existing.score              = meta.get("score", existing.score)
+                        existing.category_contributions = meta.get("category_contributions", existing.category_contributions)
+                        existing.statcast_score     = meta.get("statcast_score", existing.statcast_score)
+                        existing.steamer_score      = meta.get("steamer_score",  existing.steamer_score)
+                        existing.accum_score        = meta.get("accum_score",    existing.accum_score)
+                        existing.outperformer_flag  = meta.get("outperformer_flag", existing.outperformer_flag)
+                        existing.percentile_data    = meta.get("percentile_data",   existing.percentile_data)
+                        if not existing.share_token:
+                            import secrets as _secrets
+                            existing.share_token = _secrets.token_urlsafe(32)
+                    else:
+                        import secrets as _secrets
+                        db.add(Ranking(
+                            player_id=player_id,
+                            ranking_type=ranking_type,
+                            period=period,
+                            overall_rank=meta.get("overall_rank", 9999),
+                            score=meta.get("score", 0.0),
+                            category_contributions=meta.get("category_contributions", {}),
+                            blurb=blurb_text,
+                            league_id=None,
+                            statcast_score=meta.get("statcast_score"),
+                            steamer_score=meta.get("steamer_score"),
+                            accum_score=meta.get("accum_score"),
+                            outperformer_flag=meta.get("outperformer_flag"),
+                            percentile_data=meta.get("percentile_data"),
+                        ))
+
+                    db.commit()
+                    blurbs_written += 1
+                except Exception:
+                    db.rollback()
+                    _log.error(
+                        "collect_rankings_blurb_batches: DB upsert failed player_id=%d", player_id,
+                        exc_info=True,
+                    )
+                    errors += 1
+
+            batch_record.status = "collected"
+            batch_record.collected_at = datetime.now(timezone.utc)
+            db.commit()
+            batches_collected += 1
+
+        except Exception:
+            _log.error(
+                "collect_rankings_blurb_batches: failed for batch_id=%s", batch_record.batch_id,
+                exc_info=True,
+            )
+            db.rollback()
+            errors += 1
+
+    _log.info(
+        "collect_rankings_blurb_batches: checked=%d collected=%d blurbs=%d errors=%d",
+        len(pending), batches_collected, blurbs_written, errors,
+    )
+    return {
+        "batches_checked": len(pending),
+        "batches_collected": batches_collected,
+        "blurbs_written": blurbs_written,
+        "errors": errors,
+    }

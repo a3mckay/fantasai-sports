@@ -1,11 +1,11 @@
 """Ranking storage models: persisted blurb rankings and daily snapshots for movement tracking."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import secrets
 
-from sqlalchemy import Date, ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, JSON, String, Integer, Float, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import Optional
 
@@ -45,6 +45,31 @@ class Ranking(TimestampMixin, Base):
         String(64), nullable=True, unique=True,
         default=lambda: secrets.token_urlsafe(32),
     )
+
+
+class BlurbBatch(Base):
+    """Tracks Anthropic batch submissions for async blurb generation.
+
+    One row per batch submission (one per mode per scheduled run).
+    player_data stores the per-player ranking metadata needed to upsert
+    Ranking rows when the batch completes.
+    """
+    __tablename__ = "blurb_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mode: Mapped[str] = mapped_column(String(20))        # "season" | "current" | "week" | "month"
+    period: Mapped[str] = mapped_column(String(30))      # "2026-season" | "2026-current" etc.
+    batch_id: Mapped[str] = mapped_column(String(128), unique=True)  # Anthropic batch_id
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | collected | failed
+    player_count: Mapped[int] = mapped_column(Integer, default=0)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    collected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {player_id_str: {ranking_type, overall_rank, score, stat_type, ...}}
+    # stored so collect can upsert Ranking rows without re-running rankings
+    player_data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class RankingSnapshot(TimestampMixin, Base):
