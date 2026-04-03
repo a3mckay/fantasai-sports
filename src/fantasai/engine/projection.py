@@ -285,6 +285,15 @@ def project_hitter_stats(
     elif season_pa < _PA_FULL:
         aw = config.actual_weight * (season_pa - _PA_FLOOR) / (_PA_FULL - _PA_FLOOR)
         tw = 1.0 - aw
+        # Extend the guard into the ramp zone: without Steamer data, both Statcast
+        # metrics AND actual-weight blending are unreliable at 20–99 PA.
+        # A debut player hitting .600 with xwOBA .600 in 25 PA would otherwise
+        # drive a projected OBP of .460 and dominate the pool at 93% Steamer weight.
+        # With Steamer absent, force league-average defaults for all derived stats.
+        if steamer_data is None:
+            adv = {}
+            aw = 0.0
+            tw = 1.0
     # else: season_pa >= 100 — use config values unchanged
 
     # Effective PA for counting stat scaling.
@@ -342,9 +351,10 @@ def project_hitter_stats(
     # Explicit None check prevents Steamer's legitimate 0-HR projection from
     # being silently replaced by the Barrel% fallback (0.0 is falsy in Python).
     _steamer_hr = _steamer_count_per(steamer_data, "HR", "PA")
-    talent_hr_rate: float = (
+    _barrel_pct = adv.get("Barrel%")  # None when adv cleared — preserves league-avg default
+    talent_hr_rate: Optional[float] = (
         _steamer_hr if _steamer_hr is not None
-        else (_safe(adv, "Barrel%") / 100.0 * 0.35)
+        else (float(_barrel_pct) / 100.0 * 0.35 if _barrel_pct is not None else None)
     )
     actual_hr_rate = _safe(cnt, "HR") / season_pa
     proj_hr_rate = max(0.0, _blend(talent_hr_rate, actual_hr_rate, tw, aw, default=0.033))
@@ -466,6 +476,11 @@ def project_pitcher_stats(
     elif season_ip < _IP_FULL:
         aw = config.actual_weight * (season_ip - _IP_FLOOR) / (_IP_FULL - _IP_FLOOR)
         tw = 1.0 - aw
+        # Extend guard into ramp zone — same reasoning as hitter side.
+        if steamer_data is None:
+            adv = {}
+            aw = 0.0
+            tw = 1.0
     # else: season_ip >= 30 — use config values unchanged
 
     # ── ERA ───────────────────────────────────────────────────────────────────
