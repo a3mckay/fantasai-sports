@@ -640,19 +640,27 @@ def generate_rankings_blurbs(
                     )
                 elif player.overall_rank <= 200:
                     _tone_note = (
-                        "TONE: Honest. Limited production relative to the player pool. "
-                        "Straightforward, not harsh.\n\n"
+                        "TONE: Sleeper-aware. Production is limited but look for an angle: "
+                        "are advanced stats better than the rank suggests? Is there a role change, "
+                        "a hot streak, or a Steamer projection that implies more upside? "
+                        "If there's a real sleeper case, lead with it. "
+                        "If there genuinely isn't, be matter-of-fact about the limitations.\n\n"
                     )
                 else:
-                    # 200+: critical, more so if underperforming Steamer with confirming xStats
+                    # 200+: critical if the stats and advanced metrics confirm struggles,
+                    # but actively look for a sleeper signal before writing them off
                     _tone_note = (
-                        "TONE: Critical but fair. Below-replacement production with a regular workload. "
-                        "Be direct about the underperformance. "
+                        "TONE: Honest sleeper-hunter. This player ranks outside the top 200 — "
+                        "but is there something here worth flagging? Check for: advanced stats "
+                        "(xwOBA, xERA, xFIP) meaningfully better than surface stats; rank trending up; "
+                        "role change or promotion; small sample masking real skill. "
+                        "If a real sleeper angle exists, lead with it and explain why they're worth a look. "
+                        "If none exists"
                         + (
-                            "If the Steamer comparison shows meaningful underperformance AND advanced "
-                            "stats corroborate the struggles (e.g. poor xwOBA, ERA well above xFIP), "
-                            "be explicitly skeptical. "
-                            if _has_steamer else ""
+                            " and Steamer + advanced stats both confirm the struggles, "
+                            "be direct about the underperformance. "
+                            if _has_steamer else
+                            ", be direct about the limited production. "
                         )
                         + "\n\n"
                     )
@@ -694,6 +702,23 @@ def generate_rankings_blurbs(
                 )
             else:
                 # ── Projected modes (season/month) — talent-focused ─────────────
+                # For ranks 151–300: sleeper framing — lead with the best angle
+                # (undervalued metrics, role upside, injury recovery, etc.) rather
+                # than treating low rank as a verdict on the player's value.
+                _sleeper_note = ""
+                if player.overall_rank > 150:
+                    _sleeper_note = (
+                        "SLEEPER ANGLE REQUIRED: This player is ranked outside the top 150. "
+                        "Your job is to find the best case for owning them. Look for: "
+                        "Steamer projections above what the rank implies; Statcast metrics "
+                        "(xwOBA, xFIP, Barrel%) that suggest the surface stats are misleading; "
+                        "role or lineup upside; injury recovery trajectory; category scarcity value "
+                        "(e.g. rare SB source, reliable saves). "
+                        "If a real sleeper angle exists, lead with it — make the case for why this "
+                        "player is worth picking up. "
+                        "If there genuinely is no angle, be honest but specific about why not.\n\n"
+                    )
+
                 prompt = (
                 f"RANK #{player.overall_rank} — {player.name} "
                 f"({full_team}, {'/'.join(positions)})\n\n"
@@ -702,6 +727,7 @@ def generate_rankings_blurbs(
                 + _zero_pa_note
                 + _closer_role_note
                 + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
+                + _sleeper_note
                 + f"LENGTH: {length_target}\n\n"
                 + _outperformer_block
                 + ("\n\n" if outperformer_note else "")
@@ -750,8 +776,9 @@ def generate_rankings_blurbs(
 
             # ── Stat-check verification pass ─────────────────────────────────
             # Ask a second call to verify no counting stats were hallucinated.
-            # Only check non-week modes where we have a full YTD counting block.
-            if mode != "week":
+            # Only runs for ranks 1–150 in non-week modes — lower-ranked blurbs
+            # have simpler prompts with less stat data to hallucinate from.
+            if mode != "week" and player.overall_rank <= 150:
                 _ytd_counting_check = _build_ytd_counting(player.player_id, stat_type)
                 _zero_check = "0" if _appearances == 0 else str(_appearances)
                 if mode == "current":
