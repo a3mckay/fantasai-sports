@@ -355,6 +355,60 @@ def sync_current_stats(
     return {"season": season, "rows_upserted": rows, "status": "ok"}
 
 
+@router.post("/force-full-refresh", status_code=202, tags=["admin"])
+def force_full_refresh(
+    background_tasks: BackgroundTasks,
+    season: int = Query(default=2026, ge=2020, le=2030),
+) -> dict:
+    """Run the full nightly stats refresh immediately in the background.
+
+    Runs all three syncs in order:
+      1. Steamer/consensus projections (picks up new callups)
+      2. MLB Stats API actuals
+      3. FanGraphs actuals (authoritative advanced stats)
+
+    Clears rankings cache after completion. Returns 202 immediately — check
+    server logs for progress. Typically takes 2–5 minutes.
+    """
+    from fantasai.database import SessionLocal
+    from fantasai.engine.pipeline import (
+        sync_current_season_stats,
+        sync_mlb_api_current_season,
+        sync_steamer_projections,
+    )
+
+    def _run() -> None:
+        db = SessionLocal()
+        try:
+            try:
+                proj_count = sync_steamer_projections(db, season=season)
+                logger.info("force-full-refresh: Steamer upserted %d rows", proj_count)
+            except Exception:
+                logger.warning("force-full-refresh: Steamer sync failed", exc_info=True)
+
+            mlb_count = sync_mlb_api_current_season(db, season=season)
+            logger.info("force-full-refresh: MLB API upserted %d rows", mlb_count)
+
+            try:
+                fg_count = sync_current_season_stats(db, season=season)
+                logger.info("force-full-refresh: FanGraphs upserted %d rows", fg_count)
+            except Exception:
+                logger.warning("force-full-refresh: FanGraphs sync failed", exc_info=True)
+
+            from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+            _RANKINGS_CACHE.clear()
+            _RANKINGS_RAW_CACHE.clear()
+            logger.info("force-full-refresh: rankings cache cleared")
+        except Exception:
+            logger.error("force-full-refresh failed", exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
+    background_tasks.add_task(_run)
+    return {"status": "accepted", "season": season, "message": "Full refresh running in background — check logs for progress"}
+
+
 @router.post("/generate-blurbs", status_code=202, tags=["admin"])
 def generate_blurbs(
     background_tasks: BackgroundTasks,

@@ -52,27 +52,40 @@ _log = logging.getLogger(__name__)
 
 
 def _nightly_stats_refresh() -> None:
-    """Nightly 4am EST: fetch current-season stats, recompute rankings.
+    """Nightly 4am EST: fetch current-season stats + update projections, recompute rankings.
 
-    Runs two syncs in order:
-      1. FanGraphs via pybaseball — canonical source for advanced stats and
-         the data source users verify against (xwOBA, Barrel%, etc.)
-      2. MLB Stats API — real-time counting stats; patches any players that
+    Runs three syncs in order:
+      1. Steamer/consensus projections — picks up new callups who weren't in the
+         pre-season run (Baldwin, Rodríguez, etc.). Runs first so actuals can
+         properly blend with projections in the ranking formula.
+      2. FanGraphs actuals via pybaseball — canonical source for advanced stats
+         the user verifies against (xwOBA, Barrel%, etc.).
+      3. MLB Stats API — real-time counting stats; patches any players that
          FanGraphs doesn't have yet (very new call-ups, etc.)
-    FanGraphs writes first so MLB API only updates what's missing.
     """
     from fantasai.database import SessionLocal
-    from fantasai.engine.pipeline import sync_current_season_stats, sync_mlb_api_current_season
+    from fantasai.engine.pipeline import (
+        sync_current_season_stats,
+        sync_mlb_api_current_season,
+        sync_steamer_projections,
+    )
 
     _log.info("Nightly stats refresh starting")
 
     db = SessionLocal()
     try:
-        # 1. MLB Stats API first — real-time counting stats for all players
+        # 1. Steamer projections — run every night to pick up new callups
+        try:
+            proj_count = sync_steamer_projections(db, season=2026)
+            _log.info("Nightly refresh: Steamer projections upserted %d rows", proj_count)
+        except Exception:
+            _log.warning("Nightly refresh: Steamer sync failed, existing projections retained", exc_info=True)
+
+        # 2. MLB Stats API — real-time counting stats for all players
         count = sync_mlb_api_current_season(db, season=2026)
         _log.info("Nightly refresh: MLB API upserted %d stat rows", count)
 
-        # 2. FanGraphs second — overwrites with authoritative advanced stats
+        # 3. FanGraphs actuals — overwrites with authoritative advanced stats
         # (xwOBA, Barrel%, etc.) and corrected counting stats. FanGraphs is
         # the source users verify against, so it takes final precedence.
         try:
