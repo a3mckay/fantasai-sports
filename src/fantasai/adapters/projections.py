@@ -108,6 +108,19 @@ def _extract(row: dict, keys: list[str]) -> dict[str, float]:
 # Raw system fetchers  (return dicts keyed by player_id)
 # ---------------------------------------------------------------------------
 
+_FG_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.fangraphs.com/projections.aspx",
+    "Origin": "https://www.fangraphs.com",
+}
+
+
 def _fetch_raw(system: str, stats: str) -> dict[int, dict]:
     """Fetch one system/stats combo and return {player_id: row} dict."""
     try:
@@ -115,6 +128,7 @@ def _fetch_raw(system: str, stats: str) -> dict[int, dict]:
             _FG_PROJECTIONS_URL,
             params={"type": system, "stats": stats, "pos": "all",
                     "team": 0, "lg": "all", "players": 0},
+            headers=_FG_HEADERS,
             timeout=_TIMEOUT,
         )
         resp.raise_for_status()
