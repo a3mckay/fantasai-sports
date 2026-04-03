@@ -314,6 +314,21 @@ def poll_transactions(
     return {"status": "polling", "message": "Transaction poll started in background"}
 
 
+@router.post("/force-reimport", status_code=202, tags=["admin"])
+def force_reimport(
+    background_tasks: BackgroundTasks,
+    count: int = Query(default=200, ge=1, le=500),
+) -> dict:
+    """Admin: delete and re-import all transactions for all connected leagues.
+
+    Runs the same logic as /backfill?force_reimport=true but requires no user auth,
+    so it can be triggered from the command line after a parsing fix is deployed.
+    """
+    from fantasai.services.yahoo_transactions import poll_all_leagues
+    background_tasks.add_task(poll_all_leagues, count, True, True)
+    return {"status": "accepted", "message": f"Re-importing up to {count} transactions per league in background"}
+
+
 @router.post("/backfill", status_code=202)
 def backfill_transactions(
     background_tasks: BackgroundTasks,
