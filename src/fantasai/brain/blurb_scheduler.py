@@ -734,11 +734,16 @@ def generate_rankings_blurbs(
         else:
             _max_tokens = 400 if player.overall_rank <= 50 else (280 if player.overall_rank <= 150 else 200)
 
+        # Shared cached system prompt block — defined once per player loop iteration
+        # but the cache is warmed on the first API call and reused for all subsequent
+        # players in the same mode run (ephemeral TTL: 5 min; run takes ~30s → safe).
+        _cached_system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=_max_tokens,
-                system=SYSTEM_PROMPT,
+                system=_cached_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             blurb_text = response.content[0].text.strip()
@@ -811,7 +816,7 @@ def generate_rankings_blurbs(
                         _regen = client.messages.create(
                             model="claude-haiku-4-5",
                             max_tokens=_max_tokens,
-                            system=SYSTEM_PROMPT,
+                            system=_cached_system,
                             messages=[{"role": "user", "content": _strict_prompt}],
                         )
                         blurb_text = _regen.content[0].text.strip()
