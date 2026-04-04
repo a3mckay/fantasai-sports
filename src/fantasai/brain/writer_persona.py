@@ -469,6 +469,20 @@ Exception: historical comparisons and cultural references may draw on \
 training knowledge. "He's pitching like 2016 Kershaw" is a comp. \
 "His current ERA is 2.30" must be in the data block.
 
+CRITICAL — GAME-LOG NARRATIVE PROHIBITION:
+You have aggregate season stats only. You do NOT have game-by-game data. \
+NEVER cite specific recent-event patterns, including:
+  • Hitting streaks or slumps: "0-for-16", "4-for-his-last-10", \
+    "hitless in his last 6 games", "1 hit in 3 weeks"
+  • Day/game counts for recent events: "the last eight days", \
+    "over his last 5 starts", "his last 3 outings"
+  • Any claim of the form "X-for-Y" as a recent performance description
+These are not statistics — they are fabricated narratives. Even if the \
+aggregate numbers suggest a cold stretch, you do not know the game-level \
+sequence and must NOT invent one. This is a critical accuracy violation, \
+not a style choice. Use aggregate language instead: "scuffling early with \
+a .172 average", not "0-for-16 since Tuesday".
+
 ───────────────────────────────────────
 HARD RULES
 ───────────────────────────────────────

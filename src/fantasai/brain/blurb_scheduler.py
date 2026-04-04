@@ -833,6 +833,13 @@ def generate_rankings_blurbs(
                 if mode == "current":
                     # Current mode: rate stats ARE actual observations (not projections).
                     # Check for forward-looking language and percentile language instead.
+                    _streak_rule = (
+                        f"7. Game-log narrative claims with no data support: any 'X-for-Y' pattern "
+                        f"(e.g. '0-for-16', '3-for-his-last-10'), hitless/scoreless streaks citing "
+                        f"a specific game or day count (e.g. 'last 8 days', 'last 5 starts', "
+                        f"'hitless in 6 games'). We have aggregate stats only — game-level sequences "
+                        f"are NEVER in the data and must never be fabricated.\n"
+                    )
                     _verify_prompt = (
                         f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
                         f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
@@ -848,9 +855,17 @@ def generate_rankings_blurbs(
                         f"5. Forward-looking language: 'watch for', 'keep an eye on', 'should', "
                         f"'will be', 'expected to', 'projects', 'going forward', 'rest of season'.\n"
                         f"6. Percentile language: 'top X%', 'Xth percentile', 'percentile'.\n"
+                        f"{_streak_rule}"
                         f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
                     )
                 else:
+                    _streak_rule = (
+                        f"6. Game-log narrative claims with no data support: any 'X-for-Y' pattern "
+                        f"(e.g. '0-for-16', '3-for-his-last-10'), hitless/scoreless streaks citing "
+                        f"a specific game or day count (e.g. 'last 8 days', 'last 5 starts', "
+                        f"'hitless in 6 games'). We have aggregate stats only — game-level sequences "
+                        f"are NEVER in the data and must never be fabricated.\n"
+                    )
                     _verify_prompt = (
                     f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
                     f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
@@ -865,6 +880,7 @@ def generate_rankings_blurbs(
                     f"('cooking early', 'off to a hot start', 'has posted', 'already showing', etc.).\n"
                     f"5. Rate stats (wRC+, AVG, K/9, BB/9, ERA, WHIP, etc.) cited as current-season "
                     f"observations (e.g. 'his 128 wRC+') rather than as projections.\n"
+                    f"{_streak_rule}"
                     f"Reply with only 'OK' if clean, or 'ISSUE: <brief description>' if any problem found."
                     )
                 try:
