@@ -82,6 +82,30 @@ def list_rankings(
             rankings = [r for r in rankings if pos in r.positions]
 
         rankings = rankings[offset: offset + limit]
+
+        # Fetch pre-generated blurbs for current mode
+        _current_blurb_map: dict[int, str] = {}
+        _current_share_map: dict[int, str] = {}
+        try:
+            _current_pids = [r.player_id for r in rankings]
+            _current_blurb_rows = (
+                db.query(Ranking)
+                .filter(
+                    Ranking.player_id.in_(_current_pids),
+                    Ranking.ranking_type == "current",
+                    Ranking.period == "2026-current",
+                    Ranking.league_id.is_(None),
+                )
+                .all()
+            )
+            for _row in _current_blurb_rows:
+                if _row.blurb:
+                    _current_blurb_map[_row.player_id] = _row.blurb
+                    _current_share_map[_row.player_id] = _row.share_token
+        except Exception:
+            logger.warning("list_rankings: current blurb fetch failed (non-fatal)", exc_info=True)
+            db.rollback()
+
         return [
             PlayerRankingRead(
                 player_id=r.player_id,
@@ -93,7 +117,7 @@ def list_rankings(
                 score=r.score,
                 raw_score=r.raw_score,
                 category_contributions=r.category_contributions,
-                blurb=None,
+                blurb=_current_blurb_map.get(r.player_id),
                 injury_status=r.injury_status,
                 risk_flag=r.risk_flag,
                 risk_note=r.risk_note,
