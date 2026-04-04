@@ -258,6 +258,102 @@ def generate_rankings_blurbs(
         except Exception:
             _log.warning("blurb_scheduler: could not pre-fetch rank deltas for current mode", exc_info=True)
 
+    # ── Recent form (last 14 days) ────────────────────────────────────────────
+    # Bulk-fetch last-14-day batting and pitching stats from Baseball Reference
+    # via pybaseball.  Matched to our player_ids via mlbam_id (the mlbID column
+    # BRef returns).  Injected into prompts so the model cites real recent-form
+    # data instead of fabricating streak narratives from training memory.
+    recent_form_map: dict[int, str] = {}  # player_id → formatted prompt block
+    try:
+        from datetime import timedelta as _td14
+        from pybaseball import batting_stats_range as _bat_range, pitching_stats_range as _pit_range
+        from fantasai.models.player import Player as _Player
+
+        _rf_end   = date.today()
+        _rf_start = _rf_end - _td14(days=14)
+        _rf_s = _rf_start.strftime("%Y-%m-%d")
+        _rf_e = _rf_end.strftime("%Y-%m-%d")
+
+        # Build mlbam_id → player_id lookup for top players only
+        _mlbam_to_pid: dict[int, int] = {}
+        for _p in db.query(_Player).filter(_Player.player_id.in_(top_player_ids)).all():
+            if _p.mlbam_id:
+                _mlbam_to_pid[int(_p.mlbam_id)] = _p.player_id
+
+        # Fetch batting range stats
+        try:
+            _bat_df = _bat_range(_rf_s, _rf_e)
+            if _bat_df is not None and not _bat_df.empty and "mlbID" in _bat_df.columns:
+                for _, _row in _bat_df.iterrows():
+                    _mid = _row.get("mlbID")
+                    if not _mid or _mid != _mid:  # NaN check
+                        continue
+                    _pid = _mlbam_to_pid.get(int(_mid))
+                    if _pid is None:
+                        continue
+                    _pa = int(_row.get("PA") or 0)
+                    if _pa < 5:
+                        continue  # too small to be meaningful
+                    _ba  = _row.get("BA")
+                    _obp = _row.get("OBP")
+                    _slg = _row.get("SLG")
+                    _hr  = int(_row.get("HR") or 0)
+                    _bb  = int(_row.get("BB") or 0)
+                    _so  = int(_row.get("SO") or 0)
+                    _sb  = int(_row.get("SB") or 0)
+                    parts = [f"{_pa} PA"]
+                    if _ba  == _ba:  parts.append(f".{int(round(_ba  * 1000)):03d} AVG")
+                    if _obp == _obp: parts.append(f".{int(round(_obp * 1000)):03d} OBP")
+                    if _slg == _slg: parts.append(f".{int(round(_slg * 1000)):03d} SLG")
+                    if _hr:  parts.append(f"{_hr} HR")
+                    if _bb:  parts.append(f"{_bb} BB")
+                    if _so:  parts.append(f"{_so} SO")
+                    if _sb:  parts.append(f"{_sb} SB")
+                    recent_form_map[_pid] = (
+                        f"RECENT FORM — last 14 days (ACTUAL game data — safe to cite):\n"
+                        f"  {', '.join(parts)}\n\n"
+                    )
+        except Exception:
+            _log.debug("blurb_scheduler: batting_stats_range failed", exc_info=True)
+
+        # Fetch pitching range stats
+        try:
+            _pit_df = _pit_range(_rf_s, _rf_e)
+            if _pit_df is not None and not _pit_df.empty and "mlbID" in _pit_df.columns:
+                for _, _row in _pit_df.iterrows():
+                    _mid = _row.get("mlbID")
+                    if not _mid or _mid != _mid:
+                        continue
+                    _pid = _mlbam_to_pid.get(int(_mid))
+                    if _pid is None:
+                        continue
+                    _ip = float(_row.get("IP") or 0)
+                    if _ip < 1.0:
+                        continue
+                    _era  = _row.get("ERA")
+                    _whip = _row.get("WHIP")
+                    _k    = int(_row.get("SO") or 0)
+                    _bb   = int(_row.get("BB") or 0)
+                    _gs   = int(_row.get("GS") or 0)
+                    parts = [f"{_ip:.1f} IP"]
+                    if _gs:  parts.append(f"{_gs} GS")
+                    if _era  == _era:  parts.append(f"{_era:.2f} ERA")
+                    if _whip == _whip: parts.append(f"{_whip:.2f} WHIP")
+                    if _k:   parts.append(f"{_k} K")
+                    if _bb:  parts.append(f"{_bb} BB")
+                    # Only add to map if not already set by batting (two-way players)
+                    if _pid not in recent_form_map:
+                        recent_form_map[_pid] = (
+                            f"RECENT FORM — last 14 days (ACTUAL game data — safe to cite):\n"
+                            f"  {', '.join(parts)}\n\n"
+                        )
+        except Exception:
+            _log.debug("blurb_scheduler: pitching_stats_range failed", exc_info=True)
+
+        _log.info("blurb_scheduler: recent form loaded for %d players", len(recent_form_map))
+    except Exception:
+        _log.warning("blurb_scheduler: recent form fetch failed (non-fatal)", exc_info=True)
+
     # Only create the API client when we'll actually make calls.
     # In collect-only mode (_batch_requests_out set) no calls are made.
     client = _anthropic.Anthropic(api_key=api_key) if _batch_requests_out is None else None
@@ -512,6 +608,9 @@ def generate_rankings_blurbs(
         except Exception:
             pass
 
+        # Recent form block (last 14 days) — only injected in non-week modes
+        _recent_form_block = recent_form_map.get(player.player_id, "")
+
         # Key predictive metrics for the data block (with percentiles when available)
         key_stats = _build_key_stats(player.player_id, stat_type, pct_data)
 
@@ -704,6 +803,7 @@ def generate_rankings_blurbs(
                     + _closer_role_note
                     + (f"ROLE NOTE: {_role_note}\n\n" if _role_note else "")
                     + f"LENGTH: 2–3 sentences. Consistent length regardless of rank. Reactive and direct.\n\n"
+                    + _recent_form_block
                     + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
                     + f"YTD RATE & ADVANCED STATS (actual current-season observations — frame as 'is posting', 'has put up', etc.):\n{key_stats}\n\n"
                     + _steamer_block
@@ -714,6 +814,7 @@ def generate_rankings_blurbs(
                     + f"- Reference the player's rank (#{player.overall_rank}) naturally in the blurb.\n"
                     + (f"- Briefly acknowledge whether they're trending up, down, or steady.\n" if prev_rank is not None else "")
                     + f"- NEVER cite a counting stat not listed in ACTUAL YTD COUNTING STATS above.\n"
+                    + (f"- RECENT FORM numbers above are real and citable — you may reference them with 'over the last two weeks' language.\n" if _recent_form_block else "")
                     + f"- Rate/advanced stats shown ARE actual current-season observations — frame them as such.\n"
                     + (f"- Steamer projection is optional context — reference only if the comparison adds meaningful insight.\n" if _steamer_cmp else "")
                     + (f"- If sample is notably small, mention it briefly without making it the entire blurb.\n" if _is_small_sample_notable else "")
@@ -755,12 +856,14 @@ def generate_rankings_blurbs(
                 + f"LENGTH: {length_target}\n\n"
                 + _outperformer_block
                 + ("\n\n" if outperformer_note else "")
+                + _recent_form_block
                 + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
                 + f"STEAMER PROJECTIONS + EXPECTED METRICS (projected values — NOT current-season observations):\n{key_stats}\n\n"
                 f"PROJECTED CATEGORY STRENGTH (z-scores vs rest-of-pool — NOT actual counts, do not cite these as real numbers):\n{cat_summary}\n\n"
                 f"REQUIREMENTS:\n"
                 f"- NEVER cite a specific counting stat (HR, RBI, R, SB, K, W, SV, hits, etc.) "
                 f"unless the exact number appears in ACTUAL YTD COUNTING STATS above.\n"
+                + (f"- RECENT FORM numbers above are real and citable — use 'over the last two weeks' language when referencing them.\n" if _recent_form_block else "")
                 f"- Metrics in STEAMER PROJECTIONS are projected values (Steamer/Statcast models), "
                 f"NOT current season observations. Frame them as projections: "
                 f"'Steamer projects a 128 wRC+', 'the projection calls for...', 'projects for...' — "
@@ -830,6 +933,10 @@ def generate_rankings_blurbs(
             if mode != "week" and player.overall_rank <= 150:
                 _ytd_counting_check = _build_ytd_counting(player.player_id, stat_type)
                 _zero_check = "0" if _appearances == 0 else str(_appearances)
+                _recent_form_note = (
+                    f"RECENT FORM DATA (last 14 days — numbers from this block ARE valid to cite): "
+                    f"{_recent_form_block.strip()}\n"
+                ) if _recent_form_block else ""
                 if mode == "current":
                     # Current mode: rate stats ARE actual observations (not projections).
                     # Check for forward-looking language and percentile language instead.
@@ -837,16 +944,18 @@ def generate_rankings_blurbs(
                         f"7. Game-log narrative claims with no data support: any 'X-for-Y' pattern "
                         f"(e.g. '0-for-16', '3-for-his-last-10'), hitless/scoreless streaks citing "
                         f"a specific game or day count (e.g. 'last 8 days', 'last 5 starts', "
-                        f"'hitless in 6 games'). We have aggregate stats only — game-level sequences "
-                        f"are NEVER in the data and must never be fabricated.\n"
+                        f"'hitless in 6 games'). EXCEPTION: numbers that appear in RECENT FORM DATA "
+                        f"above are real and valid. Fabricated game sequences are the violation.\n"
                     )
                     _verify_prompt = (
                         f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
-                        f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
-                        f"BLURB TO CHECK:\n{blurb_text}\n\n"
+                        f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n"
+                        + (_recent_form_note)
+                        + f"\nBLURB TO CHECK:\n{blurb_text}\n\n"
                         f"Check the blurb for these errors:\n"
                         f"1. Specific counting numbers (home runs, RBIs, runs, steals, wins, saves, "
-                        f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS.\n"
+                        f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS "
+                        f"or RECENT FORM DATA.\n"
                         f"2. Current-season ranking claims with no data support "
                         f"(e.g. 'leading the NL in HRs', 'tops in RBIs', 'league leader in X').\n"
                         f"3. Sigma (σ) notation used directly in the text.\n"
@@ -863,16 +972,18 @@ def generate_rankings_blurbs(
                         f"6. Game-log narrative claims with no data support: any 'X-for-Y' pattern "
                         f"(e.g. '0-for-16', '3-for-his-last-10'), hitless/scoreless streaks citing "
                         f"a specific game or day count (e.g. 'last 8 days', 'last 5 starts', "
-                        f"'hitless in 6 games'). We have aggregate stats only — game-level sequences "
-                        f"are NEVER in the data and must never be fabricated.\n"
+                        f"'hitless in 6 games'). EXCEPTION: numbers that appear in RECENT FORM DATA "
+                        f"above are real and valid. Fabricated game sequences are the violation.\n"
                     )
                     _verify_prompt = (
                     f"ACTUAL YTD COUNTING STATS: {_ytd_counting_check}\n"
-                    f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n\n"
-                    f"BLURB TO CHECK:\n{blurb_text}\n\n"
+                    f"SAMPLE SIZE: {_zero_check} {'IP' if stat_type == 'pitching' else 'PA'}\n"
+                    + _recent_form_note
+                    + f"\nBLURB TO CHECK:\n{blurb_text}\n\n"
                     f"Check the blurb for these errors:\n"
                     f"1. Specific counting numbers (home runs, RBIs, runs, steals, wins, saves, "
-                    f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS.\n"
+                    f"strikeouts, hits, walks, etc.) that do NOT appear in ACTUAL YTD COUNTING STATS "
+                    f"or RECENT FORM DATA.\n"
                     f"2. Current-season ranking claims with no data support "
                     f"(e.g. 'leading the NL in HRs', 'tops in RBIs', 'league leader in X').\n"
                     f"3. Sigma (σ) notation used directly in the text.\n"
