@@ -864,7 +864,7 @@ def generate_rankings_blurbs(
                 f"- NEVER cite a specific counting stat (HR, RBI, R, SB, K, W, SV, hits, etc.) "
                 f"unless the exact number appears in ACTUAL YTD COUNTING STATS above.\n"
                 + (f"- RECENT FORM numbers above are real and citable — use 'over the last two weeks' language when referencing them.\n" if _recent_form_block else "")
-                f"- Metrics in STEAMER PROJECTIONS are projected values (Steamer/Statcast models), "
+                + f"- Metrics in STEAMER PROJECTIONS are projected values (Steamer/Statcast models), "
                 f"NOT current season observations. Frame them as projections: "
                 f"'Steamer projects a 128 wRC+', 'the projection calls for...', 'projects for...' — "
                 f"NEVER say 'his 128 wRC+' as if it is an observed current stat.\n"
