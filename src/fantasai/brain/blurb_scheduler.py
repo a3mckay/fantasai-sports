@@ -664,6 +664,32 @@ def generate_rankings_blurbs(
                 if _matchup_quality.tier in _notable_tiers or abs(_matchup_quality.z_score) >= 0.25:
                     _mq_block = f"MATCHUP QUALITY:\n{_matchup_quality.details}\n\n"
 
+            # Determine whether the key_stats block is actual 2026 data or Steamer projections.
+            # raw_stats_map uses actual if sample is sufficient (≥5 IP / ≥20 PA), else Steamer.
+            _week_raw          = raw_stats_map.get(player.player_id, {})
+            _week_cnt          = _week_raw.get("counting", {})
+            _week_ip_or_pa     = float(_week_cnt.get("IP") or _week_cnt.get("PA") or 0)
+            _week_is_actual    = _week_ip_or_pa >= (5.0 if stat_type == "pitching" else 20)
+            if _week_is_actual:
+                _key_stats_label = (
+                    f"2026 ACTUAL STATS (real current-season observations — frame as "
+                    f"'is posting', 'has put up', 'carries a', 'showing', etc.):"
+                )
+            else:
+                _key_stats_label = (
+                    f"STEAMER PROJECTIONS (full-season model predictions — "
+                    f"NOT current-season observations; frame as 'Steamer projects', "
+                    f"'the projection calls for', 'is projected for', etc.):"
+                )
+
+            # YTD counting stats preamble — make it crystal clear these are season totals
+            _ytd_counting = _build_ytd_counting(player.player_id, stat_type)
+            _ytd_label = (
+                f"ACTUAL YTD COUNTING STATS — 2026 SEASON TOTALS "
+                f"(these are cumulative numbers across ALL starts/games this season, "
+                f"NOT from any single game or matchup this week):"
+            )
+
             if is_sp:
                 _two_start_flag = "⭐ 2-START WEEK" if week_context_note and "2 starts" in week_context_note else ""
                 prompt = (
@@ -675,18 +701,23 @@ def generate_rankings_blurbs(
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'no probable start confirmed yet'}\n\n"
                     + _mq_block
                     + _recent_form_block
-                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
-                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    + f"{_ytd_label}\n{_ytd_counting}\n\n"
+                    + f"{_key_stats_label}\n{key_stats}\n\n"
+                    + f"CATEGORY SIGNALS: {cat_summary}\n\n"
                     f"REQUIREMENTS:\n"
                     + (f"- This pitcher has TWO STARTS this week — that MUST be the first thing you mention. "
                        f"It is the most important fantasy fact.\n" if _two_start_flag else
                        f"- Lead with the start count and opponent(s) from the WEEKLY SCHEDULE above.\n")
-                    + f"- If the schedule shows Vegas run environment, weather, or park factor, cite it specifically.\n"
-                    f"- Cite at least one predictive metric by value (e.g. '14.2% SwStr%', '3.1 xFIP').\n"
+                    + f"- If the schedule shows Vegas run environment, weather, or park factor, cite it.\n"
+                    + f"- Cite at least one metric by value — use the label above to frame it correctly "
+                    f"('is posting a 3.2 xFIP' if actual; 'Steamer projects a 3.2 xFIP' if projection).\n"
+                    + f"- NEVER cite a specific counting stat unless it appears in ACTUAL YTD COUNTING STATS above.\n"
+                    + f"- NEVER describe YTD counting totals as if they happened in one game "
+                    f"(e.g. do NOT say 'threw 7 innings with 10 Ks against HOU' — those are season totals).\n"
                     + (f"- If MATCHUP QUALITY shows a notable tier (Favorable through Elite, or Tough draw/"
                        f"Nightmare) — work it into the blurb naturally as a start/sit signal.\n"
                        if _mq_block else "")
-                    + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
+                    + (f"- Recent form numbers are real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
                     + f"- 2-3 sentences. Direct — no hedging."
                 )
             elif is_rp:
@@ -698,11 +729,14 @@ def generate_rankings_blurbs(
                     f"ROLE: Relief pitcher / closer — makes NO starts. "
                     f"Value comes from saves, strikeouts, ERA, and WHIP in high-leverage appearances.\n\n"
                     + _recent_form_block
-                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
-                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    + f"{_ytd_label}\n{_ytd_counting}\n\n"
+                    + f"{_key_stats_label}\n{key_stats}\n\n"
+                    + f"CATEGORY SIGNALS: {cat_summary}\n\n"
                     f"REQUIREMENTS:\n"
                     f"- Lead with save opportunity context and role security.\n"
-                    f"- Cite at least one specific metric value.\n"
+                    f"- Cite at least one specific metric — frame it correctly per the label above "
+                    f"(actual observation vs. Steamer projection).\n"
+                    f"- NEVER describe YTD counting totals as if they happened in one game or this week.\n"
                     f"- Never mention starts.\n"
                     + (f"- Recent form data is real and citable.\n" if _recent_form_block else "")
                     + f"- 2-3 sentences. Direct — no hedging."
@@ -716,16 +750,20 @@ def generate_rankings_blurbs(
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'standard 6-game week'}\n\n"
                     + _mq_block
                     + _recent_form_block
-                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
-                    f"CATEGORY SIGNALS: {cat_summary}\n\n"
+                    + f"{_ytd_label}\n{_ytd_counting}\n\n"
+                    + f"{_key_stats_label}\n{key_stats}\n\n"
+                    + f"CATEGORY SIGNALS: {cat_summary}\n\n"
                     f"REQUIREMENTS:\n"
                     f"- If the schedule shows a favorable/unfavorable matchup, park factor, Vegas run "
                     f"environment, or weather — mention it. These are actionable start/sit signals.\n"
                     + (f"- If MATCHUP QUALITY shows a notable tier (Favorable through Elite, or Tough draw/"
                        f"Nightmare) — mention it. Owners are looking for start/sit signals.\n"
                        if _mq_block else "")
-                    + f"- Cite at least one metric value (e.g. '12% Barrel%', '.384 xwOBA').\n"
-                    + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
+                    + f"- Cite at least one metric — frame it correctly per the label above "
+                    f"(actual observation vs. Steamer projection).\n"
+                    + f"- NEVER cite a counting stat not in ACTUAL YTD COUNTING STATS above.\n"
+                    + f"- NEVER describe YTD counting totals as if they happened in one game.\n"
+                    + (f"- Recent form numbers are real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
                     + f"- 2-3 sentences. Direct — no hedging."
                 )
         else:

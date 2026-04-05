@@ -38,6 +38,52 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Team abbreviation → full display name (for human-readable matchup details)
+# ---------------------------------------------------------------------------
+
+_TEAM_DISPLAY: dict[str, str] = {
+    "ARI": "Arizona Diamondbacks",
+    "ATL": "Atlanta Braves",
+    "BAL": "Baltimore Orioles",
+    "BOS": "Boston Red Sox",
+    "CHC": "Chicago Cubs",
+    "CHW": "Chicago White Sox",
+    "CIN": "Cincinnati Reds",
+    "CLE": "Cleveland Guardians",
+    "COL": "Colorado Rockies",
+    "DET": "Detroit Tigers",
+    "HOU": "Houston Astros",
+    "KCR": "Kansas City Royals",
+    "KC":  "Kansas City Royals",
+    "LAA": "Los Angeles Angels",
+    "LAD": "Los Angeles Dodgers",
+    "MIA": "Miami Marlins",
+    "MIL": "Milwaukee Brewers",
+    "MIN": "Minnesota Twins",
+    "NYM": "New York Mets",
+    "NYY": "New York Yankees",
+    "OAK": "Oakland Athletics",
+    "ATH": "Oakland Athletics",
+    "PHI": "Philadelphia Phillies",
+    "PIT": "Pittsburgh Pirates",
+    "SD":  "San Diego Padres",
+    "SDP": "San Diego Padres",
+    "SF":  "San Francisco Giants",
+    "SFG": "San Francisco Giants",
+    "SEA": "Seattle Mariners",
+    "STL": "St. Louis Cardinals",
+    "TB":  "Tampa Bay Rays",
+    "TBR": "Tampa Bay Rays",
+    "TEX": "Texas Rangers",
+    "TOR": "Toronto Blue Jays",
+    "WSN": "Washington Nationals",
+    "WSH": "Washington Nationals",
+}
+
+# How many IP does an SP need before their xFIP is considered reliable?
+_SP_XFIP_RELIABLE_IP = 20.0
+
+# ---------------------------------------------------------------------------
 # League average baselines (2024/2025 MLB)
 # ---------------------------------------------------------------------------
 
@@ -276,8 +322,12 @@ def _get_sp_xfip_by_mlbam(
     mlbam_ids: set[int],
     db: "Session",
     season: int,
-) -> dict[int, float]:
-    """Return {mlbam_id: xfip} for probable starters found in our DB."""
+) -> dict[int, tuple[float, float]]:
+    """Return {mlbam_id: (xfip, ip_used)} for probable starters found in our DB.
+
+    ip_used is the IP of the row the xFIP came from (0.0 for projection rows).
+    Callers use ip_used to decide whether to flag the value as early-season.
+    """
     if not mlbam_ids:
         return {}
 
@@ -303,29 +353,30 @@ def _get_sp_xfip_by_mlbam(
         .all()
     )
 
-    # Minimum IP thresholds: actual stats need at least 5 IP to be reliable;
-    # projection stats are always accepted regardless of IP.
+    # Minimum IP threshold: actual stats need at least 5 IP to be usable.
+    # Projection rows are always accepted (ip_used=0.0).
     _MIN_ACTUAL_IP = 5.0
 
-    pid_to_xfip: dict[int, float] = {}
+    pid_to_pair: dict[int, tuple[float, float]] = {}  # pid → (xfip, ip)
     for row in rows:
         adv   = row.advanced_stats or {}
         rate  = row.rate_stats or {}
         xfip  = _safe_float(adv.get("xFIP") or rate.get("xFIP"), None)  # type: ignore[arg-type]
         if xfip is None or xfip <= 0:
             continue
-        ip    = _safe_float((row.counting_stats or {}).get("IP"), 0.0)
-        # Skip tiny-sample actual rows — their xFIP is too noisy
+        ip = _safe_float((row.counting_stats or {}).get("IP"), 0.0)
+        # Skip tiny-sample actual rows
         if row.data_source == "actual" and ip < _MIN_ACTUAL_IP:
             continue
         # Prefer actual over projection when sample is sufficient
-        if row.player_id not in pid_to_xfip or row.data_source == "actual":
-            pid_to_xfip[row.player_id] = xfip
+        ip_out = ip if row.data_source == "actual" else 0.0
+        if row.player_id not in pid_to_pair or row.data_source == "actual":
+            pid_to_pair[row.player_id] = (xfip, ip_out)
 
     return {
-        mlbam_id: pid_to_xfip[pid]
+        mlbam_id: pid_to_pair[pid]
         for mlbam_id, pid in mlbam_to_pid.items()
-        if pid in pid_to_xfip
+        if pid in pid_to_pair
     }
 
 
@@ -388,10 +439,11 @@ def _pitcher_raw_score(
         if k9 >= 9.0 and opp_k_pct >= _LEAGUE_AVG_K_PCT + 0.020:
             k_note = f", high-K lineup ({opp_k_pct:.1%} K rate)"
 
+        opp_display = _TEAM_DISPLAY.get(opp, opp)
         starts.append(StartMatchup(
             opponent_abbr=opp,
             tier="",   # filled after pool z-normalization
-            detail=f"vs {opp}: {woba_note}{k_note}",
+            detail=f"vs. {opp_display}: {woba_note}{k_note}",
         ))
         total += raw
 
@@ -400,19 +452,20 @@ def _pitcher_raw_score(
 
 def _batter_raw_score(
     ps: "PlayerSchedule",
-    sp_xfip_map: dict[int, float],
+    sp_xfip_map: dict[int, tuple[float, float]],
     team_pit: dict[str, dict],
-) -> tuple[float, list[tuple[str, float]]]:
+) -> tuple[float, list[tuple[str, float, float]]]:
     """Compute raw matchup score for a batter. Higher = easier week.
 
-    Returns (raw_score, [(opp_abbr, sp_xfip), ...]) for per-start context.
+    Returns (raw_score, [(opp_abbr, sp_xfip, sp_ip), ...]) for per-game context.
+    sp_ip is the IP used for the xFIP lookup (0.0 = projection row used).
     """
     game_log = ps.batter_game_log
     if not game_log:
         return 0.0, []
 
     total          = 0.0
-    per_start_info: list[tuple[str, float]] = []   # (opp_abbr, sp_xfip_used)
+    per_start_info: list[tuple[str, float, float]] = []
 
     for game in game_log:
         sp_mlbam = game.get("sp_mlbam_id")
@@ -426,9 +479,12 @@ def _batter_raw_score(
         )
 
         # Opposing SP xFIP — prefer DB lookup; fall back to team aggregate
-        sp_xfip = sp_xfip_map.get(sp_mlbam) if sp_mlbam else None
-        if sp_xfip is None:
+        sp_pair  = sp_xfip_map.get(sp_mlbam) if sp_mlbam else None
+        if sp_pair is not None:
+            sp_xfip, sp_ip = sp_pair
+        else:
             sp_xfip = opp_pit.get("xFIP", _LEAGUE_AVG_SP_XFIP)
+            sp_ip   = 0.0   # team aggregate — treat like projection
 
         # Higher xFIP / ERA = weaker pitching = better for batter
         sp_score  = (sp_xfip - _LEAGUE_AVG_SP_XFIP) * 2.0
@@ -436,7 +492,7 @@ def _batter_raw_score(
 
         game_score = 0.60 * sp_score + 0.40 * bp_score
         total += game_score
-        per_start_info.append((opp, sp_xfip))
+        per_start_info.append((opp, sp_xfip, sp_ip))
 
     return total / len(game_log), per_start_info
 
@@ -538,12 +594,22 @@ def compute_all_matchup_scores(
         rank = p_rank_map.get(player_id, 0)
         n    = len(pitcher_raw)
 
+        # Header: tier label only — no raw rank fraction (confusing for model)
+        # Use superlative language at extremes for clarity
+        if rank == 1:
+            header = f"Pitcher matchup: {tier} — best SP draw of the week"
+        elif rank == n:
+            header = f"Pitcher matchup: {tier} — toughest SP draw of the week"
+        elif rank <= max(3, n // 10):
+            header = f"Pitcher matchup: {tier} — among the most favorable this week"
+        elif rank >= n - max(3, n // 10):
+            header = f"Pitcher matchup: {tier} — among the toughest this week"
+        else:
+            header = f"Pitcher matchup: {tier}"
+
         start_lines = [f"  {sm.detail}" for sm in starts]
         body        = "\n".join(start_lines)
-        details     = (
-            f"Pitcher matchup: {tier} (#{rank} of {n} SP matchup slots this week)\n"
-            + body
-        ).rstrip()
+        details     = (header + "\n" + body).rstrip()
 
         result[player_id] = MatchupQuality(
             z_score=z, tier=tier,
@@ -558,22 +624,35 @@ def compute_all_matchup_scores(
         rank = b_rank_map.get(player_id, 0)
         n    = len(batter_raw)
 
-        # Build detail lines
-        lines: list[str] = [f"Batter matchup: {tier} (#{rank} of {n} batter matchup slots this week)"]
+        # Header: tier label only
+        if rank <= max(5, n // 20):
+            header = f"Batter matchup: {tier} — among the best draws this week"
+        elif rank >= n - max(5, n // 20):
+            header = f"Batter matchup: {tier} — among the toughest draws this week"
+        else:
+            header = f"Batter matchup: {tier}"
+
+        lines: list[str] = [header]
         if per_start:
-            valid = [(opp, xfip) for opp, xfip in per_start if xfip > 0]
+            valid = [(opp, xfip, ip) for opp, xfip, ip in per_start if xfip > 0]
             if valid:
-                avg_xfip = sum(x for _, x in valid) / len(valid)
-                lines.append(f"  Avg opposing SP xFIP this week: {avg_xfip:.2f}")
+                avg_xfip     = sum(x for _, x, _ in valid) / len(valid)
+                avg_reliable = all(ip >= _SP_XFIP_RELIABLE_IP for _, _, ip in valid if ip > 0)
+                caveat       = "" if avg_reliable else " (early season — treat as estimate)"
+                lines.append(f"  Avg opposing SP xFIP this week: {avg_xfip:.2f}{caveat}")
                 if len(valid) >= 2:
                     best  = max(valid, key=lambda t: t[1])
                     worst = min(valid, key=lambda t: t[1])
-                    if abs(best[1] - worst[1]) >= 0.30:   # only surface meaningful gaps
+                    if abs(best[1] - worst[1]) >= 0.30:
+                        best_team  = _TEAM_DISPLAY.get(best[0],  best[0])
+                        worst_team = _TEAM_DISPLAY.get(worst[0], worst[0])
+                        best_cav   = " (small sample)" if best[2]  < _SP_XFIP_RELIABLE_IP and best[2]  > 0 else ""
+                        worst_cav  = " (small sample)" if worst[2] < _SP_XFIP_RELIABLE_IP and worst[2] > 0 else ""
                         lines.append(
-                            f"  Best game: vs {best[0]} ({best[1]:.2f} SP xFIP)"
+                            f"  Favorable game: vs. {best_team} (SP xFIP: {best[1]:.2f}{best_cav})"
                         )
                         lines.append(
-                            f"  Toughest: vs {worst[0]} ({worst[1]:.2f} SP xFIP)"
+                            f"  Tough game: vs. {worst_team} (SP xFIP: {worst[1]:.2f}{worst_cav})"
                         )
 
         result[player_id] = MatchupQuality(
