@@ -928,7 +928,7 @@ def share_blurb_card(share_token: str, db: Session = Depends(get_db)):
     previews and shared directly between users.
     """
     import os
-    from fastapi.responses import FileResponse, Response
+    from fastapi.responses import FileResponse
     from fantasai.models.ranking import Ranking
     from fantasai.models.player import Player
     from fantasai.brain.grade_card import render_blurb_card
@@ -972,4 +972,96 @@ def share_blurb_card(share_token: str, db: Session = Depends(get_db)):
             "Cache-Control": "public, max-age=3600",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin: sync player handedness
+# ---------------------------------------------------------------------------
+
+def _run_handedness_sync(db: Session) -> None:
+    """Background task: populate Player.throws / Player.bats from MLB Stats API."""
+    import time as _time
+
+    import httpx
+
+    from fantasai.models.player import Player as PlayerModel
+
+    players = db.query(PlayerModel).filter(PlayerModel.mlbam_id.isnot(None)).all()
+    mlbam_ids = [p.mlbam_id for p in players if p.mlbam_id]
+    if not mlbam_ids:
+        logger.info("sync-handedness: no players with mlbam_id found")
+        return
+
+    mlbam_to_player: dict[int, PlayerModel] = {
+        p.mlbam_id: p for p in players if p.mlbam_id
+    }
+
+    batch_size = 100
+    updated = 0
+    failed  = 0
+
+    for i in range(0, len(mlbam_ids), batch_size):
+        batch   = mlbam_ids[i : i + batch_size]
+        ids_str = ",".join(str(m) for m in batch)
+        url     = (
+            f"https://statsapi.mlb.com/api/v1/people"
+            f"?personIds={ids_str}"
+            f"&fields=people,id,pitchHand,batSide"
+        )
+        try:
+            resp = httpx.get(url, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("sync-handedness: MLB Stats API failed (batch %d): %s", i, exc)
+            failed += len(batch)
+            continue
+
+        for person in data.get("people") or []:
+            mlbam_id  = person.get("id")
+            player    = mlbam_to_player.get(mlbam_id)
+            if player is None:
+                continue
+
+            pitch_hand = (person.get("pitchHand") or {}).get("code")
+            bat_side   = (person.get("batSide")   or {}).get("code")
+
+            changed = False
+            if pitch_hand and getattr(player, "throws", None) != pitch_hand:
+                player.throws = pitch_hand
+                changed = True
+            if bat_side and getattr(player, "bats", None) != bat_side:
+                player.bats = bat_side
+                changed = True
+            if changed:
+                updated += 1
+
+        _time.sleep(0.1)   # polite rate-limiting
+
+    try:
+        db.commit()
+        logger.info("sync-handedness: committed — %d updated, %d failed", updated, failed)
+    except Exception as exc:
+        db.rollback()
+        logger.error("sync-handedness: commit failed: %s", exc)
+
+
+@router.post("/sync-handedness", status_code=202, tags=["admin"])
+def sync_handedness(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Populate Player.throws and Player.bats from the MLB Stats API.
+
+    Queries the /people endpoint in batches of 100 using each player's mlbam_id
+    and stores pitchHand.code → throws, batSide.code → bats.
+
+    Admin endpoint — no authentication required (consistent with other admin
+    endpoints in this file).
+    """
+    background_tasks.add_task(_run_handedness_sync, db)
+    return {
+        "status": "accepted",
+        "message": "Syncing player handedness (throws/bats) in background via MLB Stats API",
+    }
 

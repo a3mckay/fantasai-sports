@@ -154,12 +154,27 @@ def generate_rankings_blurbs(
     # For week mode, pre-fetch the schedule so we can enrich blurb prompts
     # with starts, opponent teams, park factors, Vegas odds, and weather.
     week_player_schedules: dict = {}
+    matchup_quality_map: dict = {}
     if mode == "week":
         try:
             week_start, week_end = get_current_week_bounds()
             week_player_schedules = fetch_weekly_schedule(week_start, week_end, db)
         except Exception:
             _log.warning("blurb_scheduler: could not fetch weekly schedule for blurb context", exc_info=True)
+
+        # Compute opponent matchup quality scores for all scheduled players.
+        # Non-fatal: blurbs continue without matchup context if this fails.
+        if week_player_schedules:
+            try:
+                from fantasai.engine.matchup_quality import compute_all_matchup_scores
+                matchup_quality_map = compute_all_matchup_scores(
+                    week_player_schedules, db, season=2026
+                )
+            except Exception:
+                _log.warning(
+                    "blurb_scheduler: matchup quality computation failed (non-fatal)",
+                    exc_info=True,
+                )
 
     # Bulk-fetch key raw stats for all top players so we can include actual
     # metric values in prompts (SwStr%, xFIP, Barrel%, xwOBA, etc.)
@@ -577,6 +592,7 @@ def generate_rankings_blurbs(
 
         # Build week context note
         week_context_note: str | None = None
+        _matchup_quality = None
         if mode == "week":
             ps = week_player_schedules.get(player.player_id)
             if ps is not None:
@@ -589,6 +605,7 @@ def generate_rankings_blurbs(
             elif is_rp:
                 # RPs don't have probable-start entries; give neutral fallback
                 week_context_note = "standard relief appearances expected this week (no scheduled starts)"
+            _matchup_quality = matchup_quality_map.get(player.player_id)
 
         # Pull percentile data and outperformer flag from PlayerRanking if available
         pct_data      = getattr(player, "percentile_data", None) or {}
@@ -636,6 +653,17 @@ def generate_rankings_blurbs(
                 skipped += 1
                 continue
 
+            # Build matchup quality block for week prompts
+            # Only surface tiers that are actionably notable (skip Neutral)
+            _mq_block = ""
+            if _matchup_quality is not None:
+                _notable_tiers = {
+                    "Elite matchup", "Very favorable", "Favorable",
+                    "Tough draw", "Nightmare matchup",
+                }
+                if _matchup_quality.tier in _notable_tiers or abs(_matchup_quality.z_score) >= 0.25:
+                    _mq_block = f"MATCHUP QUALITY:\n{_matchup_quality.details}\n\n"
+
             if is_sp:
                 _two_start_flag = "⭐ 2-START WEEK" if week_context_note and "2 starts" in week_context_note else ""
                 prompt = (
@@ -645,6 +673,7 @@ def generate_rankings_blurbs(
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'no probable start confirmed yet'}\n\n"
+                    + _mq_block
                     + _recent_form_block
                     + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
@@ -654,6 +683,9 @@ def generate_rankings_blurbs(
                        f"- Lead with the start count and opponent(s) from the WEEKLY SCHEDULE above.\n")
                     + f"- If the schedule shows Vegas run environment, weather, or park factor, cite it specifically.\n"
                     f"- Cite at least one predictive metric by value (e.g. '14.2% SwStr%', '3.1 xFIP').\n"
+                    + (f"- If MATCHUP QUALITY shows a notable tier (Favorable through Elite, or Tough draw/"
+                       f"Nightmare) — work it into the blurb naturally as a start/sit signal.\n"
+                       if _mq_block else "")
                     + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
                     + f"- 2-3 sentences. Direct — no hedging."
                 )
@@ -682,13 +714,17 @@ def generate_rankings_blurbs(
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'standard 6-game week'}\n\n"
+                    + _mq_block
                     + _recent_form_block
                     + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
                     f"REQUIREMENTS:\n"
                     f"- If the schedule shows a favorable/unfavorable matchup, park factor, Vegas run "
                     f"environment, or weather — mention it. These are actionable start/sit signals.\n"
-                    f"- Cite at least one metric value (e.g. '12% Barrel%', '.384 xwOBA').\n"
+                    + (f"- If MATCHUP QUALITY shows a notable tier (Favorable through Elite, or Tough draw/"
+                       f"Nightmare) — mention it. Owners are looking for start/sit signals.\n"
+                       if _mq_block else "")
+                    + f"- Cite at least one metric value (e.g. '12% Barrel%', '.384 xwOBA').\n"
                     + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
                     + f"- 2-3 sentences. Direct — no hedging."
                 )

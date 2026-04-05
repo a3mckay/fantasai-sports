@@ -30,6 +30,11 @@ class Player(TimestampMixin, Base):
     # "recent_surgery" → post-major-surgery risk (Wheeler): 0.80× discount
     risk_flag: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     risk_note: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    # Handedness — populated by POST /rankings/sync-handedness via MLB Stats API.
+    # throws: "R" | "L" | "S" (switch) — for pitchers
+    # bats:   "R" | "L" | "S"          — for batters / two-way players
+    throws: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
+    bats: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
 
     stats: Mapped[list[PlayerStats]] = relationship(back_populates="player")
     rolling_stats: Mapped[list[PlayerRollingStats]] = relationship(back_populates="player")

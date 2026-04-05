@@ -165,6 +165,11 @@ class PlayerSchedule:
     opponent_teams: list = field(default_factory=list)       # all opponents this week (pitchers)
     future_starts: int = 0                                    # starts on/after today (for blurb language)
     future_opponent_teams: list = field(default_factory=list) # upcoming opponents only
+    # Per-game context for batters — used by matchup_quality engine to look up
+    # opposing SP xFIP and team bullpen quality.
+    # Each entry: {"date": "2026-04-07", "opponent_abbr": "PHI",
+    #              "sp_mlbam_id": 12345 | None, "is_home": True}
+    batter_game_log: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +473,11 @@ def fetch_weekly_schedule(
     # team_abbr → list of game_pk_str for weather factor averaging
     team_abbr_to_game_pks: dict[str, list[str]] = {}
 
+    # Per-team batter game log — used by matchup_quality engine.
+    # team_abbr → [{date, opponent_abbr, sp_mlbam_id, is_home}]
+    # Note: home batters face the AWAY SP; away batters face the HOME SP.
+    team_abbr_game_log: dict[str, list[dict]] = {}
+
     dates = data.get("dates") or []
     for day in dates:
         game_date_str = day.get("date", "")
@@ -539,6 +549,22 @@ def fetch_weekly_schedule(
                     pitcher_future_starts[away_pitcher_id] = min(prev_f + 1, 2)
                     if home_abbr:
                         pitcher_future_opponents.setdefault(away_pitcher_id, []).append(home_abbr.upper())
+
+            # Build batter game log for matchup quality engine.
+            # HOME batters face the AWAY SP; AWAY batters face the HOME SP.
+            if home_abbr and away_abbr:
+                team_abbr_game_log.setdefault(home_abbr.upper(), []).append({
+                    "date": game_date_str,
+                    "opponent_abbr": away_abbr.upper(),
+                    "sp_mlbam_id": away_pitcher_id,   # away SP pitches vs home lineup
+                    "is_home": True,
+                })
+                team_abbr_game_log.setdefault(away_abbr.upper(), []).append({
+                    "date": game_date_str,
+                    "opponent_abbr": home_abbr.upper(),
+                    "sp_mlbam_id": home_pitcher_id,   # home SP pitches vs away lineup
+                    "is_home": False,
+                })
 
     if not team_game_counts and not pitcher_starts:
         logger.warning("MLB schedule response contained no usable game data")
@@ -612,11 +638,13 @@ def fetch_weekly_schedule(
         abbr_upper = abbr.strip().upper()
         weather_factor = team_weather_factor.get(abbr_upper, 1.0)
         vegas_factor = vegas_factors.get(abbr_upper, 1.0)
+        game_log = team_abbr_game_log.get(abbr_upper, [])
         player_ids_for_team = abbr_to_player_ids.get(abbr_upper, [])
         for player_id in player_ids_for_team:
             existing = result.get(player_id)
             if existing is not None:
-                # Update the team_games on an already-created entry (pitcher)
+                # Update the team_games / park / weather / Vegas on an already-created
+                # pitcher entry, and also attach the batter_game_log for matchup quality.
                 result[player_id] = PlayerSchedule(
                     probable_starts=existing.probable_starts,
                     team_games=game_count,
@@ -626,6 +654,7 @@ def fetch_weekly_schedule(
                     opponent_teams=existing.opponent_teams,
                     future_starts=existing.future_starts,
                     future_opponent_teams=existing.future_opponent_teams,
+                    batter_game_log=game_log,
                 )
             else:
                 result[player_id] = PlayerSchedule(
@@ -634,6 +663,7 @@ def fetch_weekly_schedule(
                     home_park=abbr_upper,
                     weather_hr_factor=weather_factor,
                     vegas_run_factor=vegas_factor,
+                    batter_game_log=game_log,
                 )
 
     return result
