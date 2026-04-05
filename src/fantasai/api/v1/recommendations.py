@@ -389,10 +389,21 @@ def _compute_rankings(
             from dataclasses import replace as _replace
             _base = HORIZON_CONFIGS[ProjectionHorizon.WEEK]
             _zero_sp = _replace(_base, sp_ip=0.0)
+            # Pitchers not covered by week_configs AND not in the schedule at all
+            # get zeroed out — they have no confirmed start this week.
+            #
+            # IMPORTANT: a pitcher whose config exactly matches the base config
+            # (e.g. 1 start × 6 IP, 6 team_games) is intentionally omitted from
+            # build_week_configs() as an optimization.  Such players ARE in the
+            # schedule and should NOT be zeroed — they'll use the base config
+            # (sp_ip=6.0) which is already correct for a 1-start week.
+            _in_schedule: set[int] = set(_week_schedule.keys()) if _week_schedule else set()
             uncovered = [
                 nd.player_id
                 for nd in players
-                if nd.stat_type == "pitching" and nd.player_id not in week_configs
+                if nd.stat_type == "pitching"
+                and nd.player_id not in week_configs
+                and nd.player_id not in _in_schedule
             ]
             if uncovered:
                 if not _week_schedule:
