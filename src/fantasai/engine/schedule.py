@@ -162,6 +162,8 @@ class PlayerSchedule:
     home_park: Optional[str]  # team abbreviation for home games this week
     weather_hr_factor: float = 1.0  # 0.85–1.15 wind/temp modifier for outdoor games
     vegas_run_factor: float = 1.0   # 0.90–1.10 implied-runs modifier from Vegas totals
+    weather_temp_f: float = 0.0     # average game-time temp this week (°F); 0 = unknown
+    weather_wind_mph: float = 0.0   # average wind speed this week (mph); 0 = unknown
     opponent_teams: list = field(default_factory=list)       # all opponents this week (pitchers)
     future_starts: int = 0                                    # starts on/after today (for blurb language)
     future_opponent_teams: list = field(default_factory=list) # upcoming opponents only
@@ -227,7 +229,8 @@ def fetch_game_weather(
         game_dt: str = game.get("gameDate") or ""  # ISO 8601 string from MLB API
         venue_games.setdefault(venue_id, []).append((game_pk_str, game_dt))
 
-    result: dict[str, float] = {}
+    # result maps game_pk_str → (hr_factor, temp_f, wind_mph)
+    result: dict[str, tuple[float, float, float]] = {}
 
     for venue_id, game_entries in venue_games.items():
         _name, lat, lng = _VENUE_COORDS[venue_id]
@@ -247,7 +250,7 @@ def fetch_game_weather(
         except Exception as exc:
             logger.warning("Open-Meteo request failed for venue %s: %s", venue_id, exc)
             for game_pk_str, _ in game_entries:
-                result[game_pk_str] = 1.0
+                result[game_pk_str] = (1.0, 72.0, 0.0)
             continue
 
         hourly = wx_data.get("hourly") or {}
@@ -256,8 +259,8 @@ def fetch_game_weather(
         winds: list[Optional[float]] = hourly.get("wind_speed_10m") or []
 
         for game_pk_str, game_dt in game_entries:
-            factor = _compute_weather_hr_factor(times, temps, winds, game_dt)
-            result[game_pk_str] = factor
+            factor, temp_f, wind_mph = _compute_weather_hr_factor(times, temps, winds, game_dt)
+            result[game_pk_str] = (factor, temp_f, wind_mph)
 
     _WEATHER_CACHE[cache_key] = (time.monotonic(), result)
     return result
@@ -268,10 +271,14 @@ def _compute_weather_hr_factor(
     temps: list[Optional[float]],
     winds: list[Optional[float]],
     game_dt: str,
-) -> float:
-    """Find the forecast hour nearest to game_dt and compute the HR factor."""
+) -> tuple[float, float, float]:
+    """Find the forecast hour nearest to game_dt and compute the HR factor.
+
+    Returns (hr_factor, temp_f, wind_mph) so callers can surface specific
+    weather conditions in blurb prompts.
+    """
     if not times or not game_dt:
-        return 1.0
+        return 1.0, 72.0, 0.0
 
     # Normalise the game datetime string to a bare "YYYY-MM-DDTHH:MM" prefix
     # so it can be compared to Open-Meteo hourly time strings.
@@ -295,10 +302,10 @@ def _compute_weather_hr_factor(
             best_idx = i
 
     if best_idx is None:
-        return 1.0
+        return 1.0, 72.0, 0.0
 
     temp_f: float = float(temps[best_idx]) if best_idx < len(temps) and temps[best_idx] is not None else 72.0
-    wind_mph: float = float(winds[best_idx]) if best_idx < len(winds) and winds[best_idx] is not None else 10.0
+    wind_mph: float = float(winds[best_idx]) if best_idx < len(winds) and winds[best_idx] is not None else 0.0
 
     # Wind component: only boost (high wind = more HRs on average across directions)
     wind_factor = 1.0 + max(0.0, wind_mph - 10.0) * 0.004
@@ -309,7 +316,7 @@ def _compute_weather_hr_factor(
     temp_factor = max(0.92, min(1.08, temp_factor))
 
     combined = wind_factor * temp_factor
-    return max(0.85, min(1.15, combined))
+    return max(0.85, min(1.15, combined)), temp_f, wind_mph
 
 
 # ---------------------------------------------------------------------------
@@ -579,18 +586,23 @@ def fetch_weekly_schedule(
         return {}
 
     # ── Weather enrichment ───────────────────────────────────────────────────
-    weather_by_game: dict[str, float] = {}
+    # weather_by_game: {game_pk_str: (hr_factor, temp_f, wind_mph)}
+    weather_by_game: dict[str, tuple[float, float, float]] = {}
     try:
         weather_by_game = fetch_game_weather(all_games, week_start)
     except Exception as exc:
         logger.warning("Weather enrichment failed (non-fatal): %s", exc)
 
-    # Pre-compute per-team average weather_hr_factor from all outdoor games
+    # Pre-compute per-team averages (factor, temp, wind) across all outdoor games
     team_weather_factor: dict[str, float] = {}
+    team_weather_temp_f: dict[str, float] = {}
+    team_weather_wind_mph: dict[str, float] = {}
     for abbr, pks in team_abbr_to_game_pks.items():
-        factors = [weather_by_game[pk] for pk in pks if pk in weather_by_game]
-        if factors:
-            team_weather_factor[abbr] = sum(factors) / len(factors)
+        entries = [weather_by_game[pk] for pk in pks if pk in weather_by_game]
+        if entries:
+            team_weather_factor[abbr]   = sum(f for f, t, w in entries) / len(entries)
+            team_weather_temp_f[abbr]   = sum(t for f, t, w in entries) / len(entries)
+            team_weather_wind_mph[abbr] = sum(w for f, t, w in entries) / len(entries)
 
     # ── Vegas enrichment ─────────────────────────────────────────────────────
     vegas_factors: dict[str, float] = {}
@@ -644,9 +656,11 @@ def fetch_weekly_schedule(
         if abbr is None:
             continue
         abbr_upper = abbr.strip().upper()
-        weather_factor = team_weather_factor.get(abbr_upper, 1.0)
-        vegas_factor = vegas_factors.get(abbr_upper, 1.0)
-        game_log = team_abbr_game_log.get(abbr_upper, [])
+        weather_factor  = team_weather_factor.get(abbr_upper, 1.0)
+        weather_temp    = team_weather_temp_f.get(abbr_upper, 0.0)
+        weather_wind    = team_weather_wind_mph.get(abbr_upper, 0.0)
+        vegas_factor    = vegas_factors.get(abbr_upper, 1.0)
+        game_log        = team_abbr_game_log.get(abbr_upper, [])
         player_ids_for_team = abbr_to_player_ids.get(abbr_upper, [])
         for player_id in player_ids_for_team:
             existing = result.get(player_id)
@@ -658,6 +672,8 @@ def fetch_weekly_schedule(
                     team_games=game_count,
                     home_park=abbr_upper,
                     weather_hr_factor=weather_factor,
+                    weather_temp_f=weather_temp,
+                    weather_wind_mph=weather_wind,
                     vegas_run_factor=vegas_factor,
                     opponent_teams=existing.opponent_teams,
                     future_starts=existing.future_starts,
@@ -670,6 +686,8 @@ def fetch_weekly_schedule(
                     team_games=game_count,
                     home_park=abbr_upper,
                     weather_hr_factor=weather_factor,
+                    weather_temp_f=weather_temp,
+                    weather_wind_mph=weather_wind,
                     vegas_run_factor=vegas_factor,
                     batter_game_log=game_log,
                 )
@@ -831,14 +849,43 @@ def build_player_week_context(
         else:
             notes.append(f"Vegas implies {implied_per_game} R/G (low-scoring environment)")
 
-    # ── Weather — surface both favorable (wind/heat boost) and adverse (cold/wind) ─
-    wf = ps.weather_hr_factor
+    # ── Weather — surface specifics (temp °F, wind mph) with mechanism explanation ─
+    wf       = ps.weather_hr_factor
+    temp_f   = ps.weather_temp_f
+    wind_mph = ps.weather_wind_mph
     if abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
-        pct = int(round(abs(wf - 1.0) * 100))
+        # Build a specific detail string (e.g. "46°F, 14mph wind")
+        wx_parts: list[str] = []
+        if temp_f > 0:
+            wx_parts.append(f"{int(round(temp_f))}°F")
+        if wind_mph >= 8:
+            wx_parts.append(f"{int(round(wind_mph))}mph wind")
+        wx_detail = f" ({', '.join(wx_parts)})" if wx_parts else ""
+
         if wf > 1.0:
-            notes.append(f"favorable weather conditions (+{pct}% HR environment)")
+            # Warm/windy = HR-friendly
+            if stat_type == "batting":
+                notes.append(
+                    f"favorable weather{wx_detail} — ball carries well, "
+                    f"+{int(round((wf - 1.0) * 100))}% HR environment this week"
+                )
+            else:
+                notes.append(
+                    f"hitter-friendly weather{wx_detail} — ball carries well "
+                    f"(+{int(round((wf - 1.0) * 100))}% HR park environment)"
+                )
         else:
-            notes.append(f"cold/adverse weather conditions (−{pct}% HR environment)")
+            # Cold/adverse = HR-suppressed
+            if stat_type == "pitching":
+                notes.append(
+                    f"cold weather{wx_detail} — dense air suppresses fly-ball carry, "
+                    f"favorable for pitchers (−{int(round((1.0 - wf) * 100))}% HR environment)"
+                )
+            else:
+                notes.append(
+                    f"cold/adverse weather{wx_detail} — ball won't carry as well, "
+                    f"−{int(round((1.0 - wf) * 100))}% HR environment this week"
+                )
 
     if not notes:
         return None
