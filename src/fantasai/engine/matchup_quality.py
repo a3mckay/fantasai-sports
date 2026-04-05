@@ -303,15 +303,24 @@ def _get_sp_xfip_by_mlbam(
         .all()
     )
 
+    # Minimum IP thresholds: actual stats need at least 5 IP to be reliable;
+    # projection stats are always accepted regardless of IP.
+    _MIN_ACTUAL_IP = 5.0
+
     pid_to_xfip: dict[int, float] = {}
     for row in rows:
-        adv  = row.advanced_stats or {}
-        rate = row.rate_stats or {}
-        xfip = _safe_float(adv.get("xFIP") or rate.get("xFIP"), None)  # type: ignore[arg-type]
-        if xfip is not None and xfip > 0:
-            # Prefer actual over projection
-            if row.player_id not in pid_to_xfip or row.data_source == "actual":
-                pid_to_xfip[row.player_id] = xfip
+        adv   = row.advanced_stats or {}
+        rate  = row.rate_stats or {}
+        xfip  = _safe_float(adv.get("xFIP") or rate.get("xFIP"), None)  # type: ignore[arg-type]
+        if xfip is None or xfip <= 0:
+            continue
+        ip    = _safe_float((row.counting_stats or {}).get("IP"), 0.0)
+        # Skip tiny-sample actual rows — their xFIP is too noisy
+        if row.data_source == "actual" and ip < _MIN_ACTUAL_IP:
+            continue
+        # Prefer actual over projection when sample is sufficient
+        if row.player_id not in pid_to_xfip or row.data_source == "actual":
+            pid_to_xfip[row.player_id] = xfip
 
     return {
         mlbam_id: pid_to_xfip[pid]

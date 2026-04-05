@@ -504,8 +504,16 @@ def fetch_weekly_schedule(
             away_team = away.get("team") or {}
             home_team_id: Optional[int] = home_team.get("id")
             away_team_id: Optional[int] = away_team.get("id")
-            home_abbr: Optional[str] = home_team.get("abbreviation")
-            away_abbr: Optional[str] = away_team.get("abbreviation")
+            # The MLB Stats API does not always return "abbreviation" — fall back to
+            # the full-name → abbreviation map (which covers all 30 franchises).
+            home_abbr: Optional[str] = (
+                home_team.get("abbreviation")
+                or _TEAM_NAME_TO_ABBR.get(home_team.get("name", ""))
+            )
+            away_abbr: Optional[str] = (
+                away_team.get("abbreviation")
+                or _TEAM_NAME_TO_ABBR.get(away_team.get("name", ""))
+            )
 
             if home_team_id is not None:
                 team_game_counts[home_team_id] = team_game_counts.get(home_team_id, 0) + 1
