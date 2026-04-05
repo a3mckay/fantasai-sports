@@ -793,12 +793,14 @@ def build_player_week_context(
         else:
             notes.append(f"Vegas implies {implied_per_game} R/G (low-scoring environment)")
 
-    # ── Weather — ONLY mention adverse conditions (cold/wind); skip favorable ─
+    # ── Weather — surface both favorable (wind/heat boost) and adverse (cold/wind) ─
     wf = ps.weather_hr_factor
-    if wf < 1.0 and abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
-        # factor < 1.0 means cold suppresses scoring — worth flagging
-        notes.append("cold/adverse weather conditions expected")
-    # Favorable weather (wf > 1.0) is intentionally not mentioned
+    if abs(wf - 1.0) >= _WEATHER_NOTABLE_THRESHOLD:
+        pct = int(round(abs(wf - 1.0) * 100))
+        if wf > 1.0:
+            notes.append(f"favorable weather conditions (+{pct}% HR environment)")
+        else:
+            notes.append(f"cold/adverse weather conditions (−{pct}% HR environment)")
 
     if not notes:
         return None

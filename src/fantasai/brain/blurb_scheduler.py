@@ -616,19 +616,46 @@ def generate_rankings_blurbs(
 
         # ── Prompt — week mode gets a schedule-first, metric-specific prompt ──
         if mode == "week":
+            # Skip players with clearly broken/zero stats in week mode —
+            # e.g. a reliever with 0 IP who shows 0.00 K/9, 0.00 ERA, etc.
+            _week_stats = raw_stats_map.get(player.player_id, {})
+            _week_sample = float(
+                _week_stats.get("counting", {}).get("IP") or
+                _week_stats.get("counting", {}).get("PA") or 0
+            )
+            _week_rates = _week_stats.get("rate", {})
+            _all_zero_rates = (
+                stat_type == "pitching"
+                and _week_sample < 1.0
+                and all(
+                    float(_week_rates.get(k) or 0) == 0.0
+                    for k in ["ERA", "WHIP", "K/9"] if k in _week_rates
+                )
+            )
+            if _all_zero_rates:
+                skipped += 1
+                continue
+
             if is_sp:
+                _two_start_flag = "⭐ 2-START WEEK" if week_context_note and "2 starts" in week_context_note else ""
                 prompt = (
                     f"THIS WEEK FANTASY NOTE — {player.name} "
-                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})"
+                    + (f" {_two_start_flag}" if _two_start_flag else "") + "\n\n"
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'no probable start confirmed yet'}\n\n"
-                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    + _recent_form_block
+                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
-                    f"Write 2-3 sentences for a fantasy owner deciding whether to start this pitcher "
-                    f"this week. LEAD with the start count and opponent(s). Cite at least one specific "
-                    f"predictive metric by actual value (e.g. '14.2% SwStr%', '3.1 xFIP'). "
-                    f"Note any significant park or weather concern. Direct and specific — no hedging."
+                    f"REQUIREMENTS:\n"
+                    + (f"- This pitcher has TWO STARTS this week — that MUST be the first thing you mention. "
+                       f"It is the most important fantasy fact.\n" if _two_start_flag else
+                       f"- Lead with the start count and opponent(s) from the WEEKLY SCHEDULE above.\n")
+                    + f"- If the schedule shows Vegas run environment, weather, or park factor, cite it specifically.\n"
+                    f"- Cite at least one predictive metric by value (e.g. '14.2% SwStr%', '3.1 xFIP').\n"
+                    + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
+                    + f"- 2-3 sentences. Direct — no hedging."
                 )
             elif is_rp:
                 prompt = (
@@ -638,11 +665,15 @@ def generate_rankings_blurbs(
                     f"Do not reference any other team.\n\n"
                     f"ROLE: Relief pitcher / closer — makes NO starts. "
                     f"Value comes from saves, strikeouts, ERA, and WHIP in high-leverage appearances.\n\n"
-                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    + _recent_form_block
+                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
-                    f"Write 2-3 sentences for a fantasy owner. Focus on save opportunities, "
-                    f"strikeout rate, and ratios — never mention starts. "
-                    f"Cite at least one specific metric value. Direct and specific — no hedging."
+                    f"REQUIREMENTS:\n"
+                    f"- Lead with save opportunity context and role security.\n"
+                    f"- Cite at least one specific metric value.\n"
+                    f"- Never mention starts.\n"
+                    + (f"- Recent form data is real and citable.\n" if _recent_form_block else "")
+                    + f"- 2-3 sentences. Direct — no hedging."
                 )
             else:
                 prompt = (
@@ -651,12 +682,15 @@ def generate_rankings_blurbs(
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'standard 6-game week'}\n\n"
-                    f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
+                    + _recent_form_block
+                    + f"KEY PREDICTIVE METRICS:\n{key_stats}\n\n"
                     f"CATEGORY SIGNALS: {cat_summary}\n\n"
-                    f"Write 2-3 sentences for a fantasy owner deciding whether to start this batter "
-                    f"this week. Cite at least one actual metric value (e.g. '12% Barrel%', '.384 xwOBA'). "
-                    f"Note any significant run environment, park factor, or schedule advantage. "
-                    f"Direct and specific — no hedging."
+                    f"REQUIREMENTS:\n"
+                    f"- If the schedule shows a favorable/unfavorable matchup, park factor, Vegas run "
+                    f"environment, or weather — mention it. These are actionable start/sit signals.\n"
+                    f"- Cite at least one metric value (e.g. '12% Barrel%', '.384 xwOBA').\n"
+                    + (f"- Recent form data is real and citable with 'over the last two weeks' language.\n" if _recent_form_block else "")
+                    + f"- 2-3 sentences. Direct — no hedging."
                 )
         else:
             # ── Non-week modes: season/month/current — talent-focused ──────────
