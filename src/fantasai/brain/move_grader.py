@@ -471,7 +471,12 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
         "- 'predicted-season-rank' is our internal rest-of-season ranking model; "
         "refer to it as 'ranked #N in our season projections' or similar.\n"
         "K/9 benchmarks for starters: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
-        "below avg=7.0-7.9, poor=<7.0. Do not call anything below 9.0 'elite'."
+        "below avg=7.0-7.9, poor=<7.0. Do not call anything below 9.0 'elite'.\n"
+        "POSITIONS ARE AUTHORITATIVE: A player's eligible position(s) are listed "
+        "in the data block as 'positions='. Use ONLY those — never infer, assume, "
+        "or recall a position from training knowledge. If a player is listed as "
+        "'positions=2B/OF', call them a 2B or outfielder, never a shortstop or "
+        "catcher regardless of what you know about their history."
     )
 
     # ── Per-type prompt bodies ────────────────────────────────────────────────
