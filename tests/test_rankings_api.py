@@ -15,19 +15,19 @@ def _seed_players_and_stats(db: Session) -> None:
     db.commit()
 
     db.add(PlayerStats(
-        player_id=1, season=2025, week=None, stat_type="batting",
-        counting_stats={"R": 90, "HR": 40, "RBI": 100, "SB": 5},
+        player_id=1, season=2026, week=None, stat_type="batting", data_source="actual",
+        counting_stats={"PA": 550, "R": 90, "HR": 40, "RBI": 100, "SB": 5},
         rate_stats={"AVG": 0.290, "OPS": 0.950},
         advanced_stats={"xwOBA": 0.400, "Barrel%": 20.0},
     ))
     db.add(PlayerStats(
-        player_id=2, season=2025, week=None, stat_type="batting",
-        counting_stats={"R": 95, "HR": 35, "RBI": 90, "SB": 8},
+        player_id=2, season=2026, week=None, stat_type="batting", data_source="actual",
+        counting_stats={"PA": 520, "R": 95, "HR": 35, "RBI": 90, "SB": 8},
         rate_stats={"AVG": 0.280, "OPS": 0.920},
         advanced_stats={"xwOBA": 0.390, "Barrel%": 17.0},
     ))
     db.add(PlayerStats(
-        player_id=10, season=2025, week=None, stat_type="pitching",
+        player_id=10, season=2026, week=None, stat_type="pitching", data_source="actual",
         counting_stats={"IP": 180.0, "W": 14, "SV": 0, "SO": 200},
         rate_stats={"ERA": 2.90, "WHIP": 1.05},
         advanced_stats={"xERA": 3.10, "Stuff+": 115},

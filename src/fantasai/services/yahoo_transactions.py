@@ -150,7 +150,16 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
                     for item in p_info:
                         if isinstance(item, dict):
                             p_meta.update(item)
-                    p_txn_data = p_raw[1].get("transaction_data", [{}])[0] if len(p_raw) > 1 else {}
+                    if len(p_raw) > 1:
+                        _td_raw = p_raw[1].get("transaction_data", {})
+                        if isinstance(_td_raw, list):
+                            p_txn_data = _td_raw[0] if _td_raw else {}
+                        else:
+                            # Yahoo returns transaction_data as a plain dict for
+                            # the dropped player in a combined add/drop transaction.
+                            p_txn_data = _td_raw
+                    else:
+                        p_txn_data = {}
                     players.append({
                         "player_key": p_meta.get("player_key", ""),
                         "name": p_meta.get("full_name", p_meta.get("name", {}).get("full", "")),
@@ -175,7 +184,7 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
                     "tradee_team_key": meta.get("tradee_team_key", ""),
                 })
         except Exception:
-            _log.debug("fetch_league_transactions: failed to parse transaction %d", i, exc_info=True)
+            _log.warning("fetch_league_transactions: failed to parse transaction %d", i, exc_info=True)
             continue
 
     return results
