@@ -397,10 +397,15 @@ def generate_rankings_blurbs(
                         "Sweet-Spot%", "PulledFB%", "Sprint Speed", "wRC+"]
 
     def _fmt_metric(key: str, val: float) -> str:
-        """Format a raw metric value for a prompt data block."""
+        """Format a raw metric value for a prompt data block.
+
+        Percentage stats (Barrel%, SwStr%, etc.) are stored as fractions (0–1)
+        in the DB — e.g. Barrel%=0.111 means 11.1%.  Multiply by 100 so the
+        model sees "11.1%" not "0.1%".
+        """
         pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "HardHit%", "Barrel%", "Sweet-Spot%", "PulledFB%", "K-BB%"}
         if key in pct_keys:
-            return f"{key}: {val:.1f}%"
+            return f"{key}: {val * 100:.1f}%"
         if key in {"xwOBA", "xBA", "xSLG", "OBP", "AVG"}:
             return f"{key}: {val:.3f}"
         if key == "Sprint Speed":
