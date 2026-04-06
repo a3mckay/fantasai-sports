@@ -518,6 +518,32 @@ def compare_category_projections(
 # Claude narrative generation
 # ---------------------------------------------------------------------------
 
+import re as _re
+
+def _strip_markdown(text: str) -> str:
+    """Remove common markdown artifacts from LLM output.
+
+    Belt-and-suspenders safety net for when the model ignores the plain-prose
+    instruction.  Handles: ATX headers (#), bold/italic (**/*/_), inline code,
+    horizontal rules, and leading list markers (- / * / 1.).
+    """
+    # ATX headers: "# Foo" → "Foo"
+    text = _re.sub(r"^\s*#{1,6}\s+", "", text, flags=_re.MULTILINE)
+    # Bold/italic: **text** or *text* or __text__ or _text_
+    text = _re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
+    text = _re.sub(r"_{1,2}(.*?)_{1,2}", r"\1", text)
+    # Inline code
+    text = _re.sub(r"`([^`]+)`", r"\1", text)
+    # Horizontal rules
+    text = _re.sub(r"^\s*[-*_]{3,}\s*$", "", text, flags=_re.MULTILINE)
+    # Leading list markers
+    text = _re.sub(r"^\s*[-*]\s+", "", text, flags=_re.MULTILINE)
+    text = _re.sub(r"^\s*\d+\.\s+", "", text, flags=_re.MULTILINE)
+    # Collapse extra blank lines left behind
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def generate_matchup_narrative(
     matchup_data: dict,
     league_categories: list[str],
@@ -595,7 +621,9 @@ def generate_matchup_narrative(
     system_prompt = (
         "You are a sharp, entertaining fantasy baseball analyst. Write punchy matchup previews "
         "— knowledgeable and fun, like a sports radio host who also knows advanced stats. "
-        "Be specific about the categories."
+        "Be specific about the categories. "
+        "IMPORTANT: Plain prose only. No markdown — no headers (#), no bold (**), no bullets, "
+        "no special formatting of any kind. Just clean sentences."
     )
 
     try:
@@ -619,7 +647,7 @@ def generate_matchup_narrative(
             content_blocks = data.get("content", [])
             for block in content_blocks:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    return block["text"].strip()
+                    return _strip_markdown(block["text"].strip())
     except Exception as exc:
         logger.warning("Claude narrative generation failed: %s", exc)
 
@@ -657,19 +685,21 @@ def analyze_league_matchups(
         week_start = date.today()
         week_end = date.today()
 
-    # 2. Week number — simple ISO calendar proxy
-    week_num: int = date.today().isocalendar()[1]
-
-    # 3. Fetch scoreboard
+    # 2. Fetch scoreboard — week number comes from Yahoo, not ISO calendar
     scoreboard = fetch_league_scoreboard(
         access_token=access_token,
         league_key=league.league_id,
     )
     if not scoreboard:
         logger.warning(
-            "No scoreboard data for league %s week %d", league.league_id, week_num
+            "No scoreboard data for league %s", league.league_id,
         )
         return 0
+
+    # Extract the fantasy week number from the first scoreboard entry.
+    # Yahoo returns the actual fantasy week (e.g. 3), not the ISO calendar
+    # week (e.g. 14), so this is always correct regardless of calendar date.
+    week_num: int = int(scoreboard[0].get("week") or 0) or date.today().isocalendar()[1]
 
     # 4. Weekly schedule for weather/Vegas enrichment
     week_schedule: dict = {}
