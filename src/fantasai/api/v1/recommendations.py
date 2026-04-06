@@ -266,12 +266,25 @@ def _compute_rankings(
         for p in db.query(Player).filter(Player.player_id.in_(all_stat_player_ids)).all()
     }
 
+    # Pre-compute each player's primary stat type from their positions.
+    # FanGraphs ingests batting rows for ALL players including pitchers (and
+    # occasionally pitching rows for position players).  Without this guard,
+    # Kyle Freeland-style pitchers end up with a stat_type='batting' ranking
+    # entry that passes the "Batters" position filter on the rankings page.
+    _pitcher_pos = {"SP", "RP", "P"}
+    def _primary_stat_type(player) -> str:
+        positions = player.positions or []
+        return "pitching" if any(p.upper() in _pitcher_pos for p in positions) else "batting"
+
     # Build player list from actual rows (lookback) first
     players = []
     ytd_player_ids: set[int] = set()
     for stats in actual_rows:
         player = player_map.get(stats.player_id)
         if not player:
+            continue
+        # Skip rows whose stat_type doesn't match the player's primary type.
+        if stats.stat_type != _primary_stat_type(player):
             continue
         players.append(
             NormalizedPlayerData(
@@ -647,11 +660,17 @@ def _inject_prospect_rankings(
     working: list = [_dc.replace(r, is_prospect=False, pav_score=None) for r in rankings]
 
     # Build a set of player_ids that have 2026 ACTUAL stats in our DB.
-    # True MiLB prospects only have 2026 Steamer projection data (season=2026, week=None via steamer).
-    # Established MLB players (Henderson, Soto, etc.) will have 2026 YTD actuals once synced.
+    # True MiLB prospects only have Steamer projection data; established MLB
+    # players have actual YTD rows once the stats pipeline runs.  Filtering
+    # to data_source="actual" ensures Steamer-only players (e.g. Walker Jenkins
+    # with proj PA=46 but no real MLB games) are correctly flagged is_prospect.
     players_with_2026_stats: set[int] = {
         pid for (pid,) in db.query(PlayerStats.player_id)
-        .filter(PlayerStats.season == 2026, PlayerStats.week.is_(None))
+        .filter(
+            PlayerStats.season == 2026,
+            PlayerStats.week.is_(None),
+            PlayerStats.data_source == "actual",
+        )
         .distinct()
         .all()
     }
