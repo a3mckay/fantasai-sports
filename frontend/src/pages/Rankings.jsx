@@ -714,7 +714,7 @@ export default function Rankings() {
       {!loading && filtered.length === 0 && (activeList?.length ?? 0) > 0 && (
         <p className="text-center text-slate-600 text-sm py-8">
           {(rosterFilter === 'mine' || rosterFilter === 'available') && myTeam === null
-            ? 'Your team roster isn't loaded yet — try refreshing your league sync.'
+            ? `Your team roster isn't loaded yet — try refreshing your league sync.`
             : search
               ? `No players found matching "${search}".`
               : `No players found for the selected filters.`}
