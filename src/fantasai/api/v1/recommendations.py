@@ -166,13 +166,22 @@ def _compute_rankings(
             for p in db.query(Player).filter(Player.player_id.in_(stat_player_ids)).all()
         }
 
+        # Minimum sample thresholds for Current Season rankings.
+        # A light floor to filter out truly micro-samples (e.g. a guy who went
+        # 2-for-3 with a HR in his first game ranking #1 on 3 PA).
+        # Intentionally conservative — early-season hot starts on real volume
+        # (e.g. 3 HR in 25 PA) are legitimate accumulated stats and should rank.
+        # 20 PA ≈ 5–6 games; 5 IP ≈ one quality start.
+        _MIN_BATTER_PA = 20
+        _MIN_PITCHER_IP = 5.0
+
         players = []
         for stats in stats_rows:
             player = player_map.get(stats.player_id)
             if not player:
                 continue
-            # Filter out players with no meaningful stats (all zeros / empty)
             counting = stats.counting_stats or {}
+            # Filter out players with no meaningful stats (all zeros / empty)
             has_stats = any(
                 v is not None and float(v) > 0
                 for v in counting.values()
@@ -180,6 +189,15 @@ def _compute_rankings(
             )
             if not has_stats:
                 continue
+            # Enforce minimum sample — tiny samples produce misleading z-scores
+            if stats.stat_type == "batting":
+                pa = float(counting.get("PA") or 0)
+                if pa < _MIN_BATTER_PA:
+                    continue
+            else:
+                ip = float(counting.get("IP") or 0)
+                if ip < _MIN_PITCHER_IP:
+                    continue
             players.append(
                 NormalizedPlayerData(
                     player_id=stats.player_id,
