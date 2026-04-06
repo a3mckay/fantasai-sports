@@ -551,9 +551,14 @@ def generate_rankings_blurbs(
             return ""
         return "STEAMER PROJECTION (what was expected this season — compare to YTD actuals):\n  " + ", ".join(parts[:5])
 
+    # Collect prospect player IDs so we can generate PAV blurbs after the MLB loop.
+    # The two passes keep code paths clean and avoid mixing two prompting styles.
+    prospect_player_ids: list[int] = []
+
     for player in top_players:
-        # Skip MiLB prospects — they have PAV blurbs
+        # Skip MiLB prospects — collect for PAV blurb generation below
         if getattr(player, "is_prospect", False):
+            prospect_player_ids.append(player.player_id)
             skipped += 1
             continue
 
@@ -1252,14 +1257,42 @@ def generate_rankings_blurbs(
         _log.info("blurb_scheduler: mode=%s collected %d prompts for batch submission", mode, generated)
         return {"collected": generated, "mode": mode}
 
+    # Phase 2: generate PAV blurbs for any MiLB prospects that appeared in the
+    # top-N but don't yet have a PAV blurb stored.  This keeps MiLB prospects
+    # current without requiring a full sync_prospect_data run.
+    pav_generated = 0
+    if prospect_player_ids and api_key and mode in ("season", "month"):
+        try:
+            from fantasai.engine.prospect_pipeline import generate_prospect_blurbs
+            from fantasai.models.prospect import ProspectProfile as _ProspectProfile
+
+            profiles = (
+                db.query(_ProspectProfile)
+                .filter(_ProspectProfile.player_id.in_(prospect_player_ids))
+                .all()
+            )
+            if profiles:
+                pav_generated = generate_prospect_blurbs(db, profiles, api_key)
+                db.commit()
+                _log.info("blurb_scheduler: pav blurbs generated for %d prospects", pav_generated)
+        except Exception:
+            _log.warning("blurb_scheduler: PAV blurb generation failed (non-fatal)", exc_info=True)
+
     _log.info(
-        "blurb_scheduler: mode=%s generated=%d skipped=%d errors=%d",
+        "blurb_scheduler: mode=%s generated=%d pav_generated=%d skipped=%d errors=%d",
         mode,
         generated,
+        pav_generated,
         skipped,
         errors,
     )
-    return {"generated": generated, "skipped": skipped, "errors": errors, "mode": mode}
+    return {
+        "generated": generated,
+        "pav_generated": pav_generated,
+        "skipped": skipped,
+        "errors": errors,
+        "mode": mode,
+    }
 
 
 # ---------------------------------------------------------------------------

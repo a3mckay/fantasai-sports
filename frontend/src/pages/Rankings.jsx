@@ -157,9 +157,21 @@ const HORIZON_OPTIONS = [
 ]
 
 export default function Rankings() {
-  const { league, myTeam } = useLeague() || {}
+  const { league } = useLeague() || {}
 
-  // Build player_id → team_name ownership map from league context
+  // Resolve the user's own team from the league context.
+  // Primary: the team with is_mine=true.  Fallback: match by my_team_id from
+  // the API payload (handles the case where owner_user_id isn't set yet).
+  const myTeam = (
+    league?.teams?.find(t => t.is_mine)
+    ?? (league?.my_team_id != null
+        ? league.teams?.find(t => t.team_id === league.my_team_id)
+        : null)
+    ?? null
+  )
+
+  // Build player_id → team_name ownership map from ALL teams (used for badges
+  // and the "All Available Players" scope).
   const ownedByMap = {}
   if (league?.teams) {
     for (const team of league.teams) {
@@ -168,6 +180,13 @@ export default function Rankings() {
       }
     }
   }
+
+  // Build a fast Set of the user's own roster player IDs for the "My Team"
+  // and "My Team + Free Agents" roster filters.  Using a Set avoids the
+  // undefined===undefined trap that occurred when myTeam was null.
+  const myRosterIds = new Set(
+    myTeam?.roster?.map(p => p.player_id) ?? []
+  )
 
   const [mode, setMode]             = useState('predictive')
   const [horizon, setHorizon]       = useState('season')
@@ -323,13 +342,13 @@ export default function Rankings() {
       : levelFilter === 'MiLB' ? p.is_prospect === true
       : /* MLB */               p.is_prospect !== true
 
-    const ownedBy = ownedByMap[p.player_id]
-    const myTeamName = myTeam?.team_name
+    const isOnMyTeam = myRosterIds.has(p.player_id)
+    const isOwned    = ownedByMap[p.player_id] !== undefined
     const rosterOk =
       rosterFilter === 'all'         ? true
-      : rosterFilter === 'mine'        ? ownedBy === myTeamName
-      : rosterFilter === 'free_agents' ? !ownedBy
-      : /* available */                  ownedBy === myTeamName || !ownedBy
+      : rosterFilter === 'mine'        ? (myTeam !== null && isOnMyTeam)
+      : rosterFilter === 'free_agents' ? !isOwned
+      : /* available */                  (myTeam !== null && (isOnMyTeam || !isOwned))
 
     const searchOk = !search.trim() ||
       normalize(p.name).includes(normalize(search.trim()))
@@ -694,9 +713,11 @@ export default function Rankings() {
       {/* Empty state */}
       {!loading && filtered.length === 0 && (activeList?.length ?? 0) > 0 && (
         <p className="text-center text-slate-600 text-sm py-8">
-          {search
-            ? `No players found matching "${search}".`
-            : `No players found for position "${posFilter}".`}
+          {(rosterFilter === 'mine' || rosterFilter === 'available') && myTeam === null
+            ? 'Your team roster isn't loaded yet — try refreshing your league sync.'
+            : search
+              ? `No players found matching "${search}".`
+              : `No players found for the selected filters.`}
         </p>
       )}
 

@@ -9,9 +9,12 @@ machinery as the lookback model, ensuring that:
   - Horizon length controls both PA/IP volume and the talent-vs-recency blend
 
 Blend logic:
-  Short horizon (WEEK)  → pure projections (100% talent) — never use YTD stats
-  Medium horizon (MONTH) → mostly projections (80%), small breakout signal (20%)
-  Long horizon (SEASON) → 50/50 blend for Rest of Season
+  Short horizon (WEEK)  → mostly actuals (65%) + talent (35%)
+                          Recent hot/cold streaks matter for a 7-day window.
+  Medium horizon (MONTH) → balanced (40% actual / 60% talent)
+  Long horizon (SEASON) → mostly talent (85%) + small actual signal (15%)
+                           Process metrics (xwOBA, xERA) regress to the mean
+                           over a full season; YTD actuals are a small signal.
 
 Schedule-aware adjustments (opponent quality for short-term projections) are a
 future enhancement; the HorizonConfig dataclass has a slot reserved for that.
@@ -79,24 +82,24 @@ HORIZON_CONFIGS: dict[ProjectionHorizon, HorizonConfig] = {
         hitter_pa=26,
         sp_ip=6.0,
         rp_ip=3.5,
-        talent_weight=1.00,
-        actual_weight=0.00,
+        talent_weight=0.35,
+        actual_weight=0.65,
     ),
     ProjectionHorizon.MONTH: HorizonConfig(
         label="This Month",
         hitter_pa=100,
         sp_ip=28.0,
         rp_ip=13.0,
-        talent_weight=0.80,
-        actual_weight=0.20,
+        talent_weight=0.60,
+        actual_weight=0.40,
     ),
     ProjectionHorizon.SEASON: HorizonConfig(
         label="Rest of Season",
         hitter_pa=540,
         sp_ip=170.0,
         rp_ip=62.0,
-        talent_weight=0.50,
-        actual_weight=0.50,
+        talent_weight=0.85,
+        actual_weight=0.15,
     ),
 }
 
@@ -258,7 +261,13 @@ def project_hitter_stats(
     tw, aw = config.talent_weight, config.actual_weight
     pa = config.hitter_pa
 
-    season_pa = max(_safe(cnt, "PA", 1.0), 1.0)
+    # Distinguish "no data yet" (pre-season / prospect) from "tiny sample this season".
+    # When raw_pa is None or 0 the player hasn't batted at all — their advanced
+    # stats come from prior seasons and ARE a reliable talent signal.
+    # When raw_pa is 1–19 the stats are noisy current-season micro-samples.
+    _raw_pa = cnt.get("PA") if cnt else None
+    _has_actual_pa = _raw_pa is not None and float(_raw_pa) >= 1.0
+    season_pa = max(float(_raw_pa) if _raw_pa is not None else 1.0, 1.0)
 
     # Dynamic actual-weight scaling: prevent tiny early-season samples from
     # distorting projections.  A player hitting .750 over 4 PA is noise, not
@@ -274,13 +283,12 @@ def project_hitter_stats(
     if season_pa < _PA_FLOOR:
         aw = 0.0
         tw = 1.0
-        # When there's no Steamer projection AND the actual sample is tiny,
-        # also zero out the advanced stats dict.  Statcast xwOBA/xBA computed
-        # from 3–9 PA are pure noise (a lucky HR lifts xwOBA to 0.96+) and
-        # should not be used as the talent proxy via the xwOBA→OBP derivation.
-        # With Steamer data present this doesn't matter — Steamer provides the
-        # real talent signal and adv serves only as a secondary fallback.
-        if steamer_data is None:
+        # Only zero out advanced stats when the player has SOME current-season PA
+        # data that is too noisy to trust (e.g. 5 PA, xwOBA inflated by a lucky HR).
+        # When _has_actual_pa is False the player simply hasn't played yet —
+        # their adv stats are prior-season signals and should drive the projection.
+        # With Steamer data present this guard is irrelevant (Steamer is the signal).
+        if steamer_data is None and _has_actual_pa:
             adv = {}
     elif season_pa < _PA_FULL:
         aw = config.actual_weight * (season_pa - _PA_FLOOR) / (_PA_FULL - _PA_FLOOR)
@@ -290,7 +298,7 @@ def project_hitter_stats(
         # A debut player hitting .600 with xwOBA .600 in 25 PA would otherwise
         # drive a projected OBP of .460 and dominate the pool at 93% Steamer weight.
         # With Steamer absent, force league-average defaults for all derived stats.
-        if steamer_data is None:
+        if steamer_data is None and _has_actual_pa:
             adv = {}
             aw = 0.0
             tw = 1.0
@@ -458,7 +466,10 @@ def project_pitcher_stats(
     # rate stats (ERA, WHIP, K/9) unaffected while docking counting stats.
     ip = (config.sp_ip if is_sp else config.rp_ip) * _availability_multiplier(player, config)
 
-    season_ip = max(_safe(cnt, "IP", 0.1), 0.1)
+    # Distinguish "no data yet" (pre-season / prospect) from "tiny sample this season".
+    _raw_ip = cnt.get("IP") if cnt else None
+    _has_actual_ip = _raw_ip is not None and float(_raw_ip) >= 0.1
+    season_ip = max(float(_raw_ip) if _raw_ip is not None else 0.1, 0.1)
 
     # Dynamic actual-weight scaling by IP sample size — mirrors the hitter logic.
     # A 0.00 ERA over 3 IP is noise; blending 50% actual weight on that would
@@ -469,15 +480,16 @@ def project_pitcher_stats(
     if season_ip < _IP_FLOOR:
         aw = 0.0
         tw = 1.0
-        # Same guard as hitter side: don't let tiny-sample Statcast (xERA, SIERA
-        # from 0.2 IP) replace the real talent signal when no Steamer is present.
-        if steamer_data is None:
+        # Only clear adv when the player has SOME current-season IP that is too
+        # noisy to trust. When _has_actual_ip is False the player hasn't pitched
+        # yet — their adv stats are prior-season signals, not current-season noise.
+        if steamer_data is None and _has_actual_ip:
             adv = {}
     elif season_ip < _IP_FULL:
         aw = config.actual_weight * (season_ip - _IP_FLOOR) / (_IP_FULL - _IP_FLOOR)
         tw = 1.0 - aw
         # Extend guard into ramp zone — same reasoning as hitter side.
-        if steamer_data is None:
+        if steamer_data is None and _has_actual_ip:
             adv = {}
             aw = 0.0
             tw = 1.0

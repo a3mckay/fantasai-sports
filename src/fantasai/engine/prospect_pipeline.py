@@ -472,16 +472,18 @@ def generate_prospect_blurbs(
         if not player:
             continue
 
-        # Check if blurb already exists and score hasn't changed significantly
+        # Only skip if a PAV blurb already exists — non-PAV blurbs (predictive,
+        # lookback) generated before the "skip MiLB" guard was added may contain
+        # incorrect stats (e.g. wrong BB% from a faulty projection row).
+        # Generating a fresh PAV blurb overwrites those via the priority merge in
+        # rankings.py: "PAV blurbs take priority for prospects."
         existing = (
             db.query(Ranking)
             .filter_by(player_id=player.player_id, ranking_type="pav", league_id=None)
             .first()
         )
         if existing and existing.blurb:
-            # Regenerate only if score changed by >1 point
-            # We track previous score as a rough heuristic using rank change
-            continue  # skip if blurb exists (first-sync only: always generate)
+            continue  # PAV blurb already exists — skip
 
         # Build context for the blurb
         stints = pp.stints or []
