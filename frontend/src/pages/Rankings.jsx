@@ -13,9 +13,10 @@ import { useLeague } from '../contexts/LeagueContext'
 const POSITION_FILTERS = ['All', 'C', '1B', '2B', '3B', 'SS', 'OF', 'SP', 'RP', 'Batters', 'Pitchers']
 const LEVEL_FILTERS    = ['All', 'MLB', 'MiLB']
 const ROSTER_FILTERS   = [
-  { val: 'all',            label: 'All Players'         },
-  { val: 'mine',           label: 'My Team'             },
+  { val: 'all',            label: 'All Players'           },
+  { val: 'mine',           label: 'My Team'               },
   { val: 'available',      label: 'My Team + Free Agents' },
+  { val: 'free_agents',    label: 'All Available Players' },
 ]
 const PAGE_SIZES       = [50, 100, 250, 'All']
 const BLURB_TRUNCATE   = 150  // chars shown before "Show more"
@@ -325,9 +326,10 @@ export default function Rankings() {
     const ownedBy = ownedByMap[p.player_id]
     const myTeamName = myTeam?.team_name
     const rosterOk =
-      rosterFilter === 'all'  ? true
-      : rosterFilter === 'mine' ? ownedBy === myTeamName
-      : /* available */          ownedBy === myTeamName || !ownedBy
+      rosterFilter === 'all'         ? true
+      : rosterFilter === 'mine'        ? ownedBy === myTeamName
+      : rosterFilter === 'free_agents' ? !ownedBy
+      : /* available */                  ownedBy === myTeamName || !ownedBy
 
     const searchOk = !search.trim() ||
       normalize(p.name).includes(normalize(search.trim()))
