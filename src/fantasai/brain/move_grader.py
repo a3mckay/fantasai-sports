@@ -308,8 +308,29 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
             )
             .all()
         )
-        actual_row = next((r for r in stats_rows if r.data_source == "actual"), None)
-        proj_row = next((r for r in stats_rows if r.data_source == "projection"), None)
+        # Determine player's primary stat type from positions so we pick the
+        # right actual row.  Pitchers (SP/RP) should use the pitching row;
+        # everyone else uses the batting row.  This matters because the stats
+        # pipeline may ingest a spurious batting row for pitchers (FanGraphs
+        # includes pitchers in batting tables) which would otherwise win the
+        # next() race and report zero IP.
+        _pitcher_positions = {"SP", "RP", "P"}
+        _is_pitcher = bool(player.positions and any(
+            p.upper() in _pitcher_positions for p in player.positions
+        ))
+        _primary_stat_type = "pitching" if _is_pitcher else "batting"
+
+        actual_rows = [r for r in stats_rows if r.data_source == "actual"]
+        # Prefer the row matching the player's primary stat type; within that
+        # prefer rows with non-empty counting stats over empty/null ones.
+        def _actual_sort_key(r):
+            type_match = 0 if r.stat_type == _primary_stat_type else 1
+            has_stats = 0 if any(v is not None and v != 0 for v in (r.counting_stats or {}).values()) else 1
+            return (type_match, has_stats)
+        actual_rows.sort(key=_actual_sort_key)
+        actual_row = actual_rows[0] if actual_rows else None
+
+        proj_row = next((r for r in stats_rows if r.data_source == "projection" and r.stat_type == _primary_stat_type), None)
         stats_row = actual_row or proj_row
         is_actual = stats_row is not None and stats_row.data_source == "actual"
         is_proj = stats_row is not None and stats_row.data_source == "projection"
