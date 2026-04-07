@@ -130,131 +130,206 @@ function GradeBadge({ grade }) {
   )
 }
 
-function SlotCard({ slot }) {
-  const [expanded, setExpanded] = useState(slot.assessment === 'empty')
-  const hasUpgrades = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
-  const isUpgradeable = slot.assessment === 'weak' || slot.assessment === 'empty'
+// ── Special slot labels for NA/IL ─────────────────────────────────────────
 
-  // Split trade targets into actionable vs long-shots for cleaner display
+const SPECIAL_SLOT_LABEL = {
+  NA: 'MiLB stash candidates',
+  IL: 'IL stash candidates',
+}
+
+// ── UpgradePanel — shared waiver + trade section ───────────────────────────
+
+function UpgradePanel({ slot }) {
   const actionableTrades = slot.trade_targets.filter(t => t.difficulty !== 'unrealistic')
   const unrealisticTrades = slot.trade_targets.filter(t => t.difficulty === 'unrealistic')
 
+  const isSpecial = slot.position === 'NA' || slot.position === 'IL'
+  const waiverLabel = isSpecial
+    ? SPECIAL_SLOT_LABEL[slot.position]
+    : 'Free Agents / Waivers'
+
   return (
-    <div className={`rounded-xl border bg-navy-900 ${ASSESSMENT_BORDER[slot.assessment] || 'border-navy-700'}`}>
-      {/* Header row */}
-      <div
-        className={`flex items-start gap-3 px-4 py-3 ${isUpgradeable && hasUpgrades ? 'cursor-pointer' : ''}`}
-        onClick={() => isUpgradeable && hasUpgrades && setExpanded(e => !e)}
-      >
-        <span className="font-bold text-white text-sm w-8 shrink-0 pt-0.5">{slot.position}</span>
-
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded capitalize shrink-0 mt-0.5 ${ASSESSMENT_LABEL_STYLE[slot.assessment] || ''}`}>
-          {slot.assessment}
-        </span>
-
-        {/* Player list with category chips */}
-        <div className="flex-1 min-w-0 space-y-1">
-          {slot.player_details && slot.player_details.length > 0
-            ? slot.player_details.map(p => (
-                <div key={p.player_name} className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs text-slate-300 font-medium">{p.player_name}</span>
-                  {p.top_categories.map(cat => (
-                    <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-navy-700 border border-navy-600 text-slate-400">
-                      {cat}
-                    </span>
-                  ))}
+    <div className="space-y-4">
+      {slot.waiver_upgrades.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <ArrowUpCircle size={12} className="text-field-500" />
+            <span className="text-[10px] font-semibold text-field-400 uppercase tracking-wide">{waiverLabel}</span>
+          </div>
+          <div className="space-y-2">
+            {slot.waiver_upgrades.map(w => (
+              <div key={w.player_id} className="flex items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm text-white font-medium">{w.player_name}</span>
+                    {w.positions.map(p => (
+                      <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
+                    ))}
+                  </div>
+                  {Object.keys(w.category_impact || {}).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {Object.entries(w.category_impact)
+                        .filter(([, v]) => v > 0.01)
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 4)
+                        .map(([cat, val]) => (
+                          <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-field-900/50 border border-field-800 text-field-400">
+                            {cat} +{val.toFixed(2)}
+                          </span>
+                        ))
+                      }
+                    </div>
+                  )}
                 </div>
-              ))
-            : (
-                <span className="text-xs text-slate-500">
-                  {slot.players.length > 0 ? slot.players.join(', ') : 'No player'}
-                </span>
-              )
-          }
+                <span className="font-mono text-xs text-field-400 shrink-0 pt-0.5">{w.score.toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {slot.trade_targets.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Handshake size={12} className="text-leather-400" />
+            <span className="text-[10px] font-semibold text-leather-300 uppercase tracking-wide">Trade Targets</span>
+          </div>
+          <div className="space-y-2">
+            {actionableTrades.map(t => (
+              <TradeTargetRow key={t.player_id} t={t} />
+            ))}
+            {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
+              <p className="text-[9px] text-slate-600 uppercase tracking-widest pt-1">Long shots</p>
+            )}
+            {unrealisticTrades.map(t => (
+              <TradeTargetRow key={t.player_id} t={t} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── PlayerRow — one player within a position group ────────────────────────
+
+function PlayerRow({ pos, player, slot, showUpgrade, isLast }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasUpgrades = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
+
+  const upgradeLabel = slot.assessment === 'weak' || slot.assessment === 'empty'
+    ? 'Upgrade needed'
+    : 'Possible upgrade'
+
+  return (
+    <>
+      <div className={`flex items-center gap-3 px-4 py-2.5 ${!isLast ? 'border-b border-navy-800/60' : ''}`}>
+        {/* Position pill */}
+        <span className="text-[10px] font-bold text-slate-500 w-8 shrink-0 font-mono uppercase">{pos}</span>
+
+        {/* Player name + category chips */}
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
+          <span className="text-sm text-slate-200 font-medium">{player.player_name}</span>
+          {player.top_categories.map(cat => (
+            <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-navy-700 border border-navy-600 text-slate-400">
+              {cat}
+            </span>
+          ))}
         </div>
 
-        {isUpgradeable && hasUpgrades && (
-          <span className="text-slate-600 shrink-0 pt-0.5">
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </span>
+        {/* Upgrade toggle on the weakest player's row */}
+        {showUpgrade && hasUpgrades && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="shrink-0 flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            <span className={slot.assessment === 'weak' || slot.assessment === 'empty' ? 'text-stitch-400' : 'text-slate-500'}>
+              {upgradeLabel}
+            </span>
+            {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
         )}
       </div>
 
-      {/* Upgrade section */}
-      {isUpgradeable && expanded && hasUpgrades && (
-        <div className="border-t border-navy-800 px-4 py-3 space-y-4">
-
-          {/* Waiver pickups */}
-          {slot.waiver_upgrades.length > 0 && (
-            <div>
-              <div className="flex items-center gap-1.5 mb-2">
-                <ArrowUpCircle size={12} className="text-field-500" />
-                <span className="text-[10px] font-semibold text-field-400 uppercase tracking-wide">Free Agents / Waivers</span>
-              </div>
-              <div className="space-y-2">
-                {slot.waiver_upgrades.map(w => (
-                  <div key={w.player_id} className="flex items-start gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-sm text-white font-medium">{w.player_name}</span>
-                        {w.positions.map(p => (
-                          <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
-                        ))}
-                      </div>
-                      {/* Top category impacts */}
-                      {Object.keys(w.category_impact || {}).length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {Object.entries(w.category_impact)
-                            .filter(([, v]) => v > 0.01)
-                            .sort((a, b) => b[1] - a[1])
-                            .slice(0, 4)
-                            .map(([cat, val]) => (
-                              <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-field-900/50 border border-field-800 text-field-400">
-                                {cat} +{val.toFixed(2)}
-                              </span>
-                            ))
-                          }
-                        </div>
-                      )}
-                    </div>
-                    <span className="font-mono text-xs text-field-400 shrink-0 pt-0.5">{w.score.toFixed(2)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Trade targets — actionable first */}
-          {slot.trade_targets.length > 0 && (
-            <div>
-              <div className="flex items-center gap-1.5 mb-2">
-                <Handshake size={12} className="text-leather-400" />
-                <span className="text-[10px] font-semibold text-leather-300 uppercase tracking-wide">Trade Targets</span>
-              </div>
-              <div className="space-y-2">
-                {/* Possible / hard targets first */}
-                {actionableTrades.map(t => (
-                  <TradeTargetRow key={t.player_id} t={t} />
-                ))}
-                {/* Divider before unrealistic if both groups present */}
-                {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
-                  <p className="text-[9px] text-slate-600 uppercase tracking-widest pt-1">Long shots</p>
-                )}
-                {unrealisticTrades.map(t => (
-                  <TradeTargetRow key={t.player_id} t={t} />
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Upgrade panel inline below this row */}
+      {showUpgrade && expanded && hasUpgrades && (
+        <div className="px-4 py-3 border-b border-navy-800/60 bg-navy-950/40">
+          <UpgradePanel slot={slot} />
         </div>
       )}
+    </>
+  )
+}
 
-      {/* No upgrades found */}
-      {isUpgradeable && !hasUpgrades && (
-        <div className="border-t border-navy-800 px-4 py-2">
-          <p className="text-[11px] text-slate-600 italic">No upgrades found — rankings may not be fully loaded.</p>
-        </div>
-      )}
+// ── PositionGroupCard — one card per position group ────────────────────────
+
+function PositionGroupCard({ slot }) {
+  const [emptyExpanded, setEmptyExpanded] = useState(false)
+  const hasUpgrades = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
+  const isSpecial = slot.position === 'NA' || slot.position === 'IL'
+
+  // Special NA/IL stash cards
+  if (isSpecial) {
+    const label = slot.position === 'NA'
+      ? 'Consider stashing a MiLB prospect here until they debut.'
+      : 'Consider stashing an injured player returning within 60 days.'
+    return (
+      <div className="rounded-xl border border-navy-700 bg-navy-900">
+        <button
+          className="w-full flex items-center gap-3 px-4 py-2.5 text-left"
+          onClick={() => setEmptyExpanded(e => !e)}
+        >
+          <span className="text-[10px] font-bold text-slate-500 w-8 shrink-0 font-mono uppercase">{slot.position}</span>
+          <span className="flex-1 text-xs text-slate-500 italic">{label}</span>
+          {hasUpgrades && (emptyExpanded ? <ChevronDown size={11} className="text-slate-600" /> : <ChevronRight size={11} className="text-slate-600" />)}
+        </button>
+        {emptyExpanded && hasUpgrades && (
+          <div className="px-4 py-3 border-t border-navy-800">
+            <UpgradePanel slot={slot} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Empty slot (no players)
+  if (slot.player_details.length === 0) {
+    return (
+      <div className={`rounded-xl border bg-navy-900 ${ASSESSMENT_BORDER[slot.assessment] || 'border-navy-700'}`}>
+        <button
+          className="w-full flex items-center gap-3 px-4 py-2.5 text-left"
+          onClick={() => hasUpgrades && setEmptyExpanded(e => !e)}
+        >
+          <span className="text-[10px] font-bold text-slate-500 w-8 shrink-0 font-mono uppercase">{slot.position}</span>
+          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded capitalize ${ASSESSMENT_LABEL_STYLE.empty}`}>empty</span>
+          <span className="flex-1" />
+          {hasUpgrades && (emptyExpanded ? <ChevronDown size={11} className="text-slate-600" /> : <ChevronRight size={11} className="text-slate-600" />)}
+        </button>
+        {emptyExpanded && hasUpgrades && (
+          <div className="px-4 py-3 border-t border-navy-800">
+            <UpgradePanel slot={slot} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Normal slot: one row per player
+  const players = slot.player_details
+  const weakestIdx = players.length - 1  // sorted desc by score in backend, last = weakest
+
+  return (
+    <div className={`rounded-xl border bg-navy-900 overflow-hidden ${ASSESSMENT_BORDER[slot.assessment] || 'border-navy-700'}`}>
+      {players.map((player, idx) => (
+        <PlayerRow
+          key={`${slot.position}-${player.player_name}`}
+          pos={slot.position}
+          player={player}
+          slot={slot}
+          showUpgrade={idx === weakestIdx}
+          isLast={idx === players.length - 1}
+        />
+      ))}
     </div>
   )
 }
@@ -279,8 +354,8 @@ function TradeTargetRow({ t }) {
   )
 }
 
-function RosterAnalysisPanel({ myTeam, data, loading, error, onLoad, onDismissError }) {
-  if (!myTeam) {
+function RosterAnalysisPanel({ selectedTeam, league, data, loading, error, onLoad, onDismissError }) {
+  if (!selectedTeam) {
     return (
       <div className="p-4 rounded-xl border border-amber-800/40 bg-amber-950/20 text-amber-400 text-sm">
         Connect your Yahoo account from Profile to use this feature.
@@ -288,10 +363,10 @@ function RosterAnalysisPanel({ myTeam, data, loading, error, onLoad, onDismissEr
     )
   }
 
-  if (loading) return <LoadingState message="Analyzing your roster…" />
+  if (loading) return <LoadingState message="Analyzing roster…" />
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <ErrorBanner message={error} onClose={onDismissError} />
 
       {data && (
@@ -321,10 +396,10 @@ function RosterAnalysisPanel({ myTeam, data, loading, error, onLoad, onDismissEr
             </button>
           </div>
 
-          {/* Slots */}
+          {/* Position group cards — one per group, each player on its own row */}
           <div className="space-y-2">
             {data.slots.map(slot => (
-              <SlotCard key={slot.position} slot={slot} />
+              <PositionGroupCard key={slot.position} slot={slot} />
             ))}
           </div>
         </>
@@ -340,17 +415,28 @@ export default function FindPlayer() {
 
   const [tab, setTab] = useState('analysis')
 
+  // Team selector — defaults to myTeam, but can be switched to any league team
+  const [selectedTeamId, setSelectedTeamId] = useState(null)
+  const allTeams = league?.teams || []
+  const selectedTeam = allTeams.find(t => t.team_id === selectedTeamId) || myTeam || null
+
+  // Sync selectedTeamId to myTeam when it first loads
+  useEffect(() => {
+    if (myTeam && !selectedTeamId) setSelectedTeamId(myTeam.team_id)
+  }, [myTeam?.team_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Roster Analysis state (lifted here so it survives tab switches)
   const [analysisData,    setAnalysisData]    = useState(null)
   const [analysisLoading, setAnalysisLoading] = useState(false)
   const [analysisError,   setAnalysisError]   = useState(null)
 
-  async function loadAnalysis() {
-    if (!myTeam) return
+  async function loadAnalysis(teamId) {
+    const tid = teamId ?? selectedTeam?.team_id
+    if (!tid) return
     setAnalysisLoading(true)
     setAnalysisError(null)
     try {
-      const res = await rosterAnalysis(myTeam.team_id)
+      const res = await rosterAnalysis(tid)
       setAnalysisData(res)
     } catch (err) {
       setAnalysisError(err.message)
@@ -359,10 +445,13 @@ export default function FindPlayer() {
     }
   }
 
-  // Auto-fetch once when myTeam becomes available (or on first mount with team)
+  // Auto-fetch when the selected team changes (or on first load)
   useEffect(() => {
-    if (myTeam && !analysisData && !analysisLoading) loadAnalysis()
-  }, [myTeam]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (selectedTeam?.team_id && !analysisLoading) {
+      setAnalysisData(null)
+      loadAnalysis(selectedTeam.team_id)
+    }
+  }, [selectedTeam?.team_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Find a Player form state
   const [positionSlot, setPositionSlot] = useState('')
@@ -445,8 +534,8 @@ export default function FindPlayer() {
         </p>
       </div>
 
-      {/* Tab switcher */}
-      <div className="flex gap-2">
+      {/* Tab switcher + team selector */}
+      <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={() => setTab('analysis')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
@@ -469,16 +558,32 @@ export default function FindPlayer() {
           <Search size={14} />
           Find a Player
         </button>
+
+        {/* Team selector — only shown on analysis tab, only when there are multiple teams */}
+        {tab === 'analysis' && allTeams.length > 1 && (
+          <select
+            value={selectedTeamId || ''}
+            onChange={e => setSelectedTeamId(Number(e.target.value))}
+            className="ml-auto px-3 py-2 rounded-lg text-sm bg-navy-800 border border-navy-700 text-slate-300 focus:outline-none focus:border-field-600"
+          >
+            {allTeams.map(t => (
+              <option key={t.team_id} value={t.team_id}>
+                {t.team_name}{t.is_mine ? ' (You)' : ''}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Tab content */}
       {tab === 'analysis' && (
         <RosterAnalysisPanel
-          myTeam={myTeam}
+          selectedTeam={selectedTeam}
+          league={league}
           data={analysisData}
           loading={analysisLoading}
           error={analysisError}
-          onLoad={loadAnalysis}
+          onLoad={() => loadAnalysis(selectedTeam?.team_id)}
           onDismissError={() => setAnalysisError(null)}
         />
       )}

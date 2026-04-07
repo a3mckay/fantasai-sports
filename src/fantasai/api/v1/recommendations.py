@@ -982,6 +982,13 @@ def get_strategy_suggestion(
 
 _ASSESSMENT_PRIORITY = {"empty": 0, "weak": 1, "average": 2, "solid": 3, "elite": 4}
 
+# Categories that are display artefacts / not real scoring categories.
+# Filter these from all response fields that surface category names.
+_JUNK_CATS = frozenset({"H/AB", "Batting", "Pitching", "AB"})
+
+# Roster slot types that don't benefit from position-specific upgrade suggestions.
+_NO_UPGRADE_SLOTS = frozenset({"BN"})
+
 
 @router.get(
     "/{team_id}/roster-analysis",
@@ -992,18 +999,17 @@ def roster_analysis(
     team_id: int,
     db: Session = Depends(get_db),
 ) -> RosterAnalysisResponse:
-    """Evaluate the team's roster and surface targeted upgrade options for weak slots.
+    """Evaluate the team's roster and surface targeted upgrade options for every slot.
 
-    For each position group assessed as weak or empty the response includes:
-    - Per-player category contributions so users can see what each player
-      is actually providing (e.g. "Suárez: HR, RBI").
-    - Up to 3 waiver wire pickups eligible for that slot (best available).
-    - Trade targets from other league teams with difficulty ratings.
-      When a team's best player at a position is unrealistic to acquire,
-      their runner-up at that position is also included so there is always
-      an actionable option. Targets are sorted possible → hard → unrealistic.
+    Upgrades (waivers + trade targets) are surfaced for every position group, not
+    only weak/empty ones — even an elite C might have a better free agent available.
+    BN/bench slots are shown but skipped for upgrades (any position can fill BN).
+
+    Junk display categories (H/AB, Batting, Pitching, AB) are stripped from all
+    category fields.  NA/IL stash suggestions are appended when the league has
+    those roster spots.
     """
-    from collections import defaultdict
+    from collections import Counter, defaultdict
 
     from fantasai.api.v1.analysis import _apply_team_weights  # lazy — avoids circular import
     from fantasai.brain.recommender import _player_eligible_for_slot
@@ -1134,14 +1140,13 @@ def roster_analysis(
             cat for cat, val in sorted(
                 r.category_contributions.items(), key=lambda x: x[1], reverse=True
             )
-            if val > 0
+            if val > 0 and cat not in _JUNK_CATS
         ][:n]
 
     # ── Assemble Slots ────────────────────────────────────────────────────────
     _DIFF_ORDER = {"possible": 0, "hard": 1, "unrealistic": 2}
 
     slots: list[RosterSlotRead] = []
-    upgrade_assessments = {"weak", "empty"}
 
     for i, group in enumerate(evaluation.position_breakdown):
         pos = group.position
@@ -1162,7 +1167,8 @@ def roster_analysis(
         waiver_upgrades: list[WaiverUpgradeRead] = []
         trade_targets: list[TradeTargetRead] = []
 
-        if group.assessment in upgrade_assessments:
+        # Compute upgrades for every position group except pure bench slots.
+        if pos not in _NO_UPGRADE_SLOTS:
             # Waiver upgrades eligible for this slot
             slot_waivers = [
                 w for w in all_waivers
@@ -1226,15 +1232,103 @@ def roster_analysis(
             trade_targets=trade_targets,
         ))
 
-    # Weak/empty slots first, then by canonical position order
-    slots.sort(key=lambda s: _ASSESSMENT_PRIORITY.get(s.assessment, 5))
+    # ── NA / IL stash suggestions ─────────────────────────────────────────────
+    # If the league has NA slots: suggest unrostered MiLB prospects.
+    # If the league has IL slots: suggest unrostered injured players returning soon.
+    na_count  = sum(1 for p in roster_positions if p == "NA")
+    il_count  = sum(1 for p in roster_positions if p in ("IL", "IL+", "DL"))
 
+    if na_count > 0:
+        from fantasai.models.player import Player
+        from fantasai.models.prospect import ProspectProfile
+
+        prospect_rows = (
+            db.query(ProspectProfile, Player)
+            .join(Player, Player.player_id == ProspectProfile.player_id)
+            .filter(ProspectProfile.pav_score >= 40.0)
+            .order_by(ProspectProfile.pav_score.desc())
+            .limit(50)
+            .all()
+        )
+        na_upgrades: list[WaiverUpgradeRead] = []
+        for pp, player in prospect_rows:
+            if player.player_id in all_rostered:
+                continue
+            na_upgrades.append(WaiverUpgradeRead(
+                player_id=player.player_id,
+                player_name=player.name,
+                positions=list(player.positions or [pp.stat_type[:2].upper()]),
+                score=round((pp.pav_score or 0) / 10.0, 3),
+                category_impact={},
+            ))
+            if len(na_upgrades) >= 3:
+                break
+
+        if na_upgrades:
+            slots.append(RosterSlotRead(
+                position="NA",
+                assessment="empty",
+                players=[],
+                player_details=[],
+                group_score=0.0,
+                priority=90,
+                waiver_upgrades=na_upgrades,
+                trade_targets=[],
+            ))
+
+    if il_count > 0:
+        from datetime import date as _date
+
+        from fantasai.models.player import InjuryRecord, Player
+
+        injury_rows = (
+            db.query(InjuryRecord, Player)
+            .join(Player, Player.player_id == InjuryRecord.player_id)
+            .filter(InjuryRecord.status != "out_for_season")
+            .order_by(InjuryRecord.return_date.asc().nulls_last())
+            .limit(100)
+            .all()
+        )
+        il_upgrades: list[WaiverUpgradeRead] = []
+        today = _date.today()
+        for ir, player in injury_rows:
+            if player.player_id in all_rostered:
+                continue
+            # Skip if return date is more than 60 days out (long-term)
+            if ir.return_date and (ir.return_date - today).days > 60:
+                continue
+            ranking = ranking_map.get(player.player_id)
+            score = round(ranking.score, 3) if ranking else 0.0
+            il_upgrades.append(WaiverUpgradeRead(
+                player_id=player.player_id,
+                player_name=player.name,
+                positions=list(player.positions or []),
+                score=score,
+                category_impact={},
+            ))
+            if len(il_upgrades) >= 3:
+                break
+
+        if il_upgrades:
+            slots.append(RosterSlotRead(
+                position="IL",
+                assessment="empty",
+                players=[],
+                player_details=[],
+                group_score=0.0,
+                priority=91,
+                waiver_upgrades=il_upgrades,
+                trade_targets=[],
+            ))
+
+    # Slots are already in canonical position order from evaluate_team().
+    # NA/IL stash slots appended at the end.
     return RosterAnalysisResponse(
         overall_grade=evaluation.letter_grade,
         overall_score=evaluation.overall_score,
         grade_percentile=evaluation.grade_percentile,
-        weak_categories=evaluation.weak_categories,
-        strong_categories=evaluation.strong_categories,
-        category_strengths=evaluation.category_strengths,
+        weak_categories=[c for c in evaluation.weak_categories if c not in _JUNK_CATS],
+        strong_categories=[c for c in evaluation.strong_categories if c not in _JUNK_CATS],
+        category_strengths={k: v for k, v in evaluation.category_strengths.items() if k not in _JUNK_CATS},
         slots=slots,
     )
