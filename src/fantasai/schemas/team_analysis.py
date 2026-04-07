@@ -319,13 +319,18 @@ class LeaguePowerResponse(BaseModel):
 
 
 class WaiverUpgradeRead(BaseModel):
-    """A waiver wire player that upgrades a weak roster slot."""
+    """A waiver wire player that could upgrade a roster slot."""
 
     player_id: int
     player_name: str
     positions: list[str]
     score: float
     category_impact: dict[str, float] = Field(default_factory=dict)
+    injury_status: Optional[str] = Field(
+        default=None,
+        description="il_10 | il_60 | day_to_day | out_for_season | None",
+    )
+    injury_note: Optional[str] = None
 
 
 class TradeTargetRead(BaseModel):
@@ -339,6 +344,8 @@ class TradeTargetRead(BaseModel):
     owner_team_id: int
     difficulty: str = Field(description='"possible" | "hard" | "unrealistic"')
     difficulty_reason: str
+    injury_status: Optional[str] = Field(default=None)
+    injury_note: Optional[str] = None
 
 
 class RosterPlayerRead(BaseModel):
@@ -351,17 +358,24 @@ class RosterPlayerRead(BaseModel):
         default_factory=list,
         description="Top 2–3 categories this player contributes positively to.",
     )
+    injury_status: Optional[str] = Field(
+        default=None,
+        description="il_10 | il_60 | day_to_day | out_for_season | None",
+    )
+    injury_note: Optional[str] = None
 
 
 class RosterSlotRead(BaseModel):
-    """One position group on the roster with its assessment and upgrade options."""
+    """One individual roster slot with its assigned player and upgrade options."""
 
     position: str
+    slot_index: int = Field(default=0, description="0-based index when multiple slots share a position (e.g. OF0, OF1, OF2).")
     assessment: str = Field(description='"elite" | "solid" | "average" | "weak" | "empty"')
     players: list[str]  # plain names for quick access / backward-compat
     player_details: list[RosterPlayerRead] = Field(default_factory=list)
     group_score: float
     priority: int = Field(description="Lower = higher urgency. Used for display ordering.")
+    has_upgrades: bool = Field(default=False, description="True when waiver_upgrades or trade_targets is non-empty.")
     waiver_upgrades: list[WaiverUpgradeRead] = Field(default_factory=list)
     trade_targets: list[TradeTargetRead] = Field(default_factory=list)
 

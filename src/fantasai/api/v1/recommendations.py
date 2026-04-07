@@ -1059,31 +1059,35 @@ def roster_analysis(
         league_type=league_type,
     )
 
-    # ── Waiver Upgrades ───────────────────────────────────────────────────────
-    # Run the recommender once at a high limit; filter results per-slot below.
+    # ── Collect all rostered player IDs across league ─────────────────────────
     all_rostered: set[int] = set()
     for t in league.teams:
         all_rostered.update(t.roster or [])
 
-    max_acq = max((league.settings or {}).get("max_acquisitions_per_week", 4), 1)
-    waiver_context = WaiverContext(
-        team_id=team_id,
-        roster_player_ids=player_ids,
-        league_type=league_type,
-        scoring_categories=categories,
-        roster_positions=roster_positions,
-        max_acquisitions_remaining=max_acq,
-        all_rankings=lookback,
-        predictive_rankings=predictive,
-        all_rostered_ids=all_rostered,
-        build_preferences=BuildPreferences(),
-    )
-    recommender = Recommender(categories, league_type=league_type)
-    all_waivers = recommender.get_waiver_recommendations(waiver_context, limit=60)
+    # ── Injury data for all relevant players ──────────────────────────────────
+    from fantasai.models.player import InjuryRecord as _InjuryRecord
+    injury_map: dict[int, _InjuryRecord] = {
+        ir.player_id: ir
+        for ir in db.query(_InjuryRecord).all()
+    }
 
-    # ── Trade Targets ─────────────────────────────────────────────────────────
-    # For every player on another team, compute how hard they'd be to acquire.
-    # difficulty = "unrealistic" | "hard" | "possible"
+    def _injury_fields(player_id: int) -> dict:
+        ir = injury_map.get(player_id)
+        if ir is None:
+            return {"injury_status": None, "injury_note": None}
+        return {"injury_status": ir.status, "injury_note": ir.injury_description}
+
+    # ── Available (unrostered) players sorted by score ─────────────────────────
+    # Used for direct score-based upgrade candidates — bypasses the category-fit
+    # filter in Recommender so that even strong teams always see options.
+    available_by_score = sorted(
+        [r for r in predictive if r.player_id not in all_rostered],
+        key=lambda r: r.score,
+        reverse=True,
+    )
+
+    # ── Trade target pool ─────────────────────────────────────────────────────
+    _DIFF_ORDER = {"possible": 0, "hard": 1, "unrealistic": 2}
     trade_pool: dict[int, dict] = {}
     for other_team in (league.teams or []):
         if other_team.team_id == team_id:
@@ -1099,10 +1103,7 @@ def roster_analysis(
         top_score = max((r.score for r in other_rankings), default=0.0)
 
         for r in other_rankings:
-            same_pos = [
-                x for x in other_rankings
-                if set(x.positions) & set(r.positions)
-            ]
+            same_pos = [x for x in other_rankings if set(x.positions) & set(r.positions)]
             same_pos_top = max((x.score for x in same_pos), default=0.0)
             pos_label = r.positions[0] if r.positions else "that position"
 
@@ -1120,6 +1121,7 @@ def roster_analysis(
                 difficulty = "possible"
                 reason = f"Depth at {pos_label} — they have {n} at that spot"
 
+            inj = _injury_fields(r.player_id)
             trade_pool[r.player_id] = {
                 "player_id": r.player_id,
                 "player_name": r.name,
@@ -1129,13 +1131,13 @@ def roster_analysis(
                 "owner_team_id": other_team.team_id,
                 "difficulty": difficulty,
                 "difficulty_reason": reason,
+                "injury_status": inj["injury_status"],
+                "injury_note": inj["injury_note"],
             }
 
-    # ── Per-player category data (for "are they helping in SBs? HRs?" display) ──
-    group_data = _compute_group_scores(roster_rankings, categories)
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _top_cats(r: "PlayerRanking", n: int = 3) -> list[str]:
-        """Return the top n categories this player contributes positively to."""
         return [
             cat for cat, val in sorted(
                 r.category_contributions.items(), key=lambda x: x[1], reverse=True
@@ -1143,91 +1145,165 @@ def roster_analysis(
             if val > 0 and cat not in _JUNK_CATS
         ][:n]
 
-    # ── Assemble Slots ────────────────────────────────────────────────────────
-    _DIFF_ORDER = {"possible": 0, "hard": 1, "unrealistic": 2}
+    def _build_upgrades(slot_pos: str) -> tuple[list[WaiverUpgradeRead], list[TradeTargetRead]]:
+        """Return (waiver_upgrades, trade_targets) for a given slot position."""
+        if slot_pos in _NO_UPGRADE_SLOTS:
+            return [], []
 
-    slots: list[RosterSlotRead] = []
-
-    for i, group in enumerate(evaluation.position_breakdown):
-        pos = group.position
-        base_priority = _ASSESSMENT_PRIORITY.get(group.assessment, 5) * 10 + i
-
-        # Build per-player details from the group_data computed above
-        group_players = group_data.get(pos, ([], 0.0, 0.0))[0]
-        player_details = [
-            RosterPlayerRead(
+        # Waiver upgrades: top 3 unrostered players eligible for this slot by score.
+        # Direct score lookup — always surfaces candidates regardless of category fit.
+        slot_waivers = [
+            r for r in available_by_score
+            if _player_eligible_for_slot(r.positions, slot_pos)
+        ][:3]
+        waiver_upgrades = [
+            WaiverUpgradeRead(
+                player_id=r.player_id,
                 player_name=r.name,
                 positions=r.positions,
                 score=round(r.score, 3),
-                top_categories=_top_cats(r),
+                category_impact={
+                    cat: round(val, 3)
+                    for cat, val in r.category_contributions.items()
+                    if val > 0.01 and cat not in _JUNK_CATS
+                },
+                **_injury_fields(r.player_id),
             )
-            for r in sorted(group_players, key=lambda x: x.score, reverse=True)
+            for r in slot_waivers
         ]
 
-        waiver_upgrades: list[WaiverUpgradeRead] = []
-        trade_targets: list[TradeTargetRead] = []
-
-        # Compute upgrades for every position group except pure bench slots.
-        if pos not in _NO_UPGRADE_SLOTS:
-            # Waiver upgrades eligible for this slot
-            slot_waivers = [
-                w for w in all_waivers
-                if _player_eligible_for_slot(w.positions, pos)
-            ][:3]
-            waiver_upgrades = [
-                WaiverUpgradeRead(
-                    player_id=w.player_id,
-                    player_name=w.player_name,
-                    positions=w.positions,
-                    score=w.priority_score,
-                    category_impact=dict(w.category_impact or {}),
-                )
-                for w in slot_waivers
-            ]
-
-            # Trade targets: per-team approach.
-            # Step 1 — collect eligible candidates, grouped by team.
-            # Iterate by score descending so each team's #1 is always processed first.
-            # If the #1 from a team is unrealistic, also include their #2 at this
-            # position so there's always an actionable alternative shown.
-            pos_pool = sorted(
-                [t for t in trade_pool.values() if _player_eligible_for_slot(t["positions"], pos)],
-                key=lambda x: -x["score"],
-            )
-
-            pos_candidates: list[dict] = []
-            seen_teams: dict[int, int] = {}  # team_id → count included so far
-
-            for t in pos_pool:
-                tid = t["owner_team_id"]
-                already = seen_teams.get(tid, 0)
-                if already == 0:
-                    # Always take the best player from each team
+        # Trade targets: per-team runner-up logic (same as before).
+        pos_pool = sorted(
+            [t for t in trade_pool.values() if _player_eligible_for_slot(t["positions"], slot_pos)],
+            key=lambda x: -x["score"],
+        )
+        pos_candidates: list[dict] = []
+        seen_teams: dict[int, int] = {}
+        for t in pos_pool:
+            tid = t["owner_team_id"]
+            already = seen_teams.get(tid, 0)
+            if already == 0:
+                pos_candidates.append(t)
+                seen_teams[tid] = 1
+            elif already == 1:
+                first = next((c for c in pos_candidates if c["owner_team_id"] == tid), None)
+                if first and first["difficulty"] == "unrealistic":
                     pos_candidates.append(t)
-                    seen_teams[tid] = 1
-                elif already == 1:
-                    # Include runner-up only when the team's first pick was unrealistic
-                    first = next(
-                        (c for c in pos_candidates if c["owner_team_id"] == tid), None
-                    )
-                    if first and first["difficulty"] == "unrealistic":
-                        pos_candidates.append(t)
-                        seen_teams[tid] = 2
+                    seen_teams[tid] = 2
+        pos_candidates.sort(key=lambda x: (_DIFF_ORDER.get(x["difficulty"], 9), -x["score"]))
+        trade_targets = [TradeTargetRead(**t) for t in pos_candidates[:5]]
 
-            # Step 2 — sort final list: actionable (possible/hard) first, then
-            # unrealistic. Within each difficulty tier, sort by score descending.
-            pos_candidates.sort(
-                key=lambda x: (_DIFF_ORDER.get(x["difficulty"], 9), -x["score"])
-            )
-            trade_targets = [TradeTargetRead(**t) for t in pos_candidates[:5]]
+        return waiver_upgrades, trade_targets
+
+    # ── Slot-based roster assignment ──────────────────────────────────────────
+    # Assign players to individual roster slots (not just position groups).
+    # Greedy: iterate slots in canonical order, assign best eligible unassigned player.
+    _SPECIAL_SLOTS = frozenset({"BN", "NA", "IL", "IL+", "DL"})
+
+    # Build assessment lookup from evaluate_team's position breakdown
+    # (one assessment per position type, reused for each individual slot of that type)
+    group_assessment: dict[str, str] = {
+        g.position: g.assessment for g in evaluation.position_breakdown
+    }
+    group_score_map: dict[str, float] = {
+        g.position: g.group_score for g in evaluation.position_breakdown
+    }
+
+    # Sort roster rankings by score descending for greedy assignment
+    assignable = sorted(roster_rankings, key=lambda r: r.score, reverse=True)
+    assigned_ids: set[int] = set()
+
+    starting_positions = [p for p in roster_positions if p not in _SPECIAL_SLOTS]
+    bench_positions    = [p for p in roster_positions if p == "BN"]
+
+    slots: list[RosterSlotRead] = []
+    slot_pos_counts: dict[str, int] = {}
+
+    # Fill starting slots
+    for slot_pos in starting_positions:
+        idx = slot_pos_counts.get(slot_pos, 0)
+        slot_pos_counts[slot_pos] = idx + 1
+
+        # Best eligible unassigned player
+        assigned_player = None
+        for r in assignable:
+            if r.player_id in assigned_ids:
+                continue
+            if _player_eligible_for_slot(r.positions, slot_pos):
+                assigned_player = r
+                assigned_ids.add(r.player_id)
+                break
+
+        assessment = group_assessment.get(slot_pos, "empty") if assigned_player else "empty"
+        g_score = group_score_map.get(slot_pos, 0.0)
+
+        player_details = []
+        if assigned_player:
+            inj = _injury_fields(assigned_player.player_id)
+            player_details = [RosterPlayerRead(
+                player_name=assigned_player.name,
+                positions=assigned_player.positions,
+                score=round(assigned_player.score, 3),
+                top_categories=_top_cats(assigned_player),
+                **inj,
+            )]
+
+        waiver_upgrades, trade_targets = _build_upgrades(slot_pos)
+        has_upgrades = bool(waiver_upgrades or trade_targets)
 
         slots.append(RosterSlotRead(
-            position=pos,
-            assessment=group.assessment,
-            players=group.players,
+            position=slot_pos,
+            slot_index=idx,
+            assessment=assessment,
+            players=[assigned_player.name] if assigned_player else [],
             player_details=player_details,
-            group_score=group.group_score,
-            priority=base_priority,
+            group_score=g_score,
+            priority=_ASSESSMENT_PRIORITY.get(assessment, 5) * 10 + len(slots),
+            has_upgrades=has_upgrades,
+            waiver_upgrades=waiver_upgrades,
+            trade_targets=trade_targets,
+        ))
+
+    # Fill BN slots with remaining players (weakest first — most upgrade-worthy)
+    bench_players = sorted(
+        [r for r in roster_rankings if r.player_id not in assigned_ids],
+        key=lambda r: r.score,  # ascending: weakest first
+    )
+    bn_idx = 0
+    for slot_pos in bench_positions:
+        bn_player = bench_players[bn_idx] if bn_idx < len(bench_players) else None
+        bn_idx += 1
+
+        assessment = group_assessment.get(
+            (bn_player.positions[0] if bn_player and bn_player.positions else "BN"),
+            "average"
+        ) if bn_player else "empty"
+
+        player_details = []
+        if bn_player:
+            inj = _injury_fields(bn_player.player_id)
+            player_details = [RosterPlayerRead(
+                player_name=bn_player.name,
+                positions=bn_player.positions,
+                score=round(bn_player.score, 3),
+                top_categories=_top_cats(bn_player),
+                **inj,
+            )]
+
+        waiver_upgrades, trade_targets = _build_upgrades(
+            bn_player.positions[0] if bn_player and bn_player.positions else "BN"
+        )
+        has_upgrades = bool(waiver_upgrades or trade_targets)
+
+        slots.append(RosterSlotRead(
+            position="BN",
+            slot_index=bn_idx - 1,
+            assessment=assessment,
+            players=[bn_player.name] if bn_player else [],
+            player_details=player_details,
+            group_score=0.0,
+            priority=80 + bn_idx,
+            has_upgrades=has_upgrades,
             waiver_upgrades=waiver_upgrades,
             trade_targets=trade_targets,
         ))
@@ -1267,11 +1343,13 @@ def roster_analysis(
         if na_upgrades:
             slots.append(RosterSlotRead(
                 position="NA",
+                slot_index=0,
                 assessment="empty",
                 players=[],
                 player_details=[],
                 group_score=0.0,
                 priority=90,
+                has_upgrades=True,
                 waiver_upgrades=na_upgrades,
                 trade_targets=[],
             ))
@@ -1312,11 +1390,13 @@ def roster_analysis(
         if il_upgrades:
             slots.append(RosterSlotRead(
                 position="IL",
+                slot_index=0,
                 assessment="empty",
                 players=[],
                 player_details=[],
                 group_score=0.0,
                 priority=91,
+                has_upgrades=True,
                 waiver_upgrades=il_upgrades,
                 trade_targets=[],
             ))
