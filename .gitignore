@@ -39,3 +39,10 @@ alembic/versions/__pycache__/
 .DS_Store
 Thumbs.db
 fantasai.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Claude Code internals
+.claude/
