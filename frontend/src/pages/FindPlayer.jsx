@@ -135,25 +135,46 @@ function SlotCard({ slot }) {
   const hasUpgrades = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
   const isUpgradeable = slot.assessment === 'weak' || slot.assessment === 'empty'
 
+  // Split trade targets into actionable vs long-shots for cleaner display
+  const actionableTrades = slot.trade_targets.filter(t => t.difficulty !== 'unrealistic')
+  const unrealisticTrades = slot.trade_targets.filter(t => t.difficulty === 'unrealistic')
+
   return (
     <div className={`rounded-xl border bg-navy-900 ${ASSESSMENT_BORDER[slot.assessment] || 'border-navy-700'}`}>
-      {/* Header */}
+      {/* Header row */}
       <div
-        className={`flex items-center gap-3 px-4 py-3 ${isUpgradeable && hasUpgrades ? 'cursor-pointer' : ''}`}
+        className={`flex items-start gap-3 px-4 py-3 ${isUpgradeable && hasUpgrades ? 'cursor-pointer' : ''}`}
         onClick={() => isUpgradeable && hasUpgrades && setExpanded(e => !e)}
       >
-        <span className="font-bold text-white text-sm w-8 shrink-0">{slot.position}</span>
+        <span className="font-bold text-white text-sm w-8 shrink-0 pt-0.5">{slot.position}</span>
 
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded capitalize ${ASSESSMENT_LABEL_STYLE[slot.assessment] || ''}`}>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded capitalize shrink-0 mt-0.5 ${ASSESSMENT_LABEL_STYLE[slot.assessment] || ''}`}>
           {slot.assessment}
         </span>
 
-        <span className="text-xs text-slate-500 flex-1 truncate">
-          {slot.players.length > 0 ? slot.players.join(', ') : 'No player'}
-        </span>
+        {/* Player list with category chips */}
+        <div className="flex-1 min-w-0 space-y-1">
+          {slot.player_details && slot.player_details.length > 0
+            ? slot.player_details.map(p => (
+                <div key={p.player_name} className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-slate-300 font-medium">{p.player_name}</span>
+                  {p.top_categories.map(cat => (
+                    <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-navy-700 border border-navy-600 text-slate-400">
+                      {cat}
+                    </span>
+                  ))}
+                </div>
+              ))
+            : (
+                <span className="text-xs text-slate-500">
+                  {slot.players.length > 0 ? slot.players.join(', ') : 'No player'}
+                </span>
+              )
+          }
+        </div>
 
         {isUpgradeable && hasUpgrades && (
-          <span className="text-slate-600 shrink-0">
+          <span className="text-slate-600 shrink-0 pt-0.5">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
         )}
@@ -162,30 +183,48 @@ function SlotCard({ slot }) {
       {/* Upgrade section */}
       {isUpgradeable && expanded && hasUpgrades && (
         <div className="border-t border-navy-800 px-4 py-3 space-y-4">
+
           {/* Waiver pickups */}
           {slot.waiver_upgrades.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-2">
                 <ArrowUpCircle size={12} className="text-field-500" />
-                <span className="text-[10px] font-semibold text-field-400 uppercase tracking-wide">Waiver Pickups</span>
+                <span className="text-[10px] font-semibold text-field-400 uppercase tracking-wide">Free Agents / Waivers</span>
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 {slot.waiver_upgrades.map(w => (
-                  <div key={w.player_id} className="flex items-center gap-2 text-sm">
-                    <span className="text-white font-medium flex-1 truncate">{w.player_name}</span>
-                    <div className="flex gap-1 shrink-0">
-                      {w.positions.map(p => (
-                        <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
-                      ))}
+                  <div key={w.player_id} className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-sm text-white font-medium">{w.player_name}</span>
+                        {w.positions.map(p => (
+                          <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
+                        ))}
+                      </div>
+                      {/* Top category impacts */}
+                      {Object.keys(w.category_impact || {}).length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {Object.entries(w.category_impact)
+                            .filter(([, v]) => v > 0.01)
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 4)
+                            .map(([cat, val]) => (
+                              <span key={cat} className="text-[9px] font-mono px-1 py-0.5 rounded bg-field-900/50 border border-field-800 text-field-400">
+                                {cat} +{val.toFixed(2)}
+                              </span>
+                            ))
+                          }
+                        </div>
+                      )}
                     </div>
-                    <span className="font-mono text-xs text-field-400 shrink-0">{w.score.toFixed(2)}</span>
+                    <span className="font-mono text-xs text-field-400 shrink-0 pt-0.5">{w.score.toFixed(2)}</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Trade targets */}
+          {/* Trade targets — actionable first */}
           {slot.trade_targets.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-2">
@@ -193,22 +232,16 @@ function SlotCard({ slot }) {
                 <span className="text-[10px] font-semibold text-leather-300 uppercase tracking-wide">Trade Targets</span>
               </div>
               <div className="space-y-2">
-                {slot.trade_targets.map(t => (
-                  <div key={t.player_id} className="flex items-start gap-2 text-sm">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-white font-medium">{t.player_name}</span>
-                        {t.positions.map(p => (
-                          <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
-                        ))}
-                        <span className="text-slate-600 text-[10px]">({t.owner_team_name})</span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 mt-0.5">{t.difficulty_reason}</p>
-                    </div>
-                    <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
-                      {t.difficulty}
-                    </span>
-                  </div>
+                {/* Possible / hard targets first */}
+                {actionableTrades.map(t => (
+                  <TradeTargetRow key={t.player_id} t={t} />
+                ))}
+                {/* Divider before unrealistic if both groups present */}
+                {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
+                  <p className="text-[9px] text-slate-600 uppercase tracking-widest pt-1">Long shots</p>
+                )}
+                {unrealisticTrades.map(t => (
+                  <TradeTargetRow key={t.player_id} t={t} />
                 ))}
               </div>
             </div>
@@ -216,12 +249,32 @@ function SlotCard({ slot }) {
         </div>
       )}
 
-      {/* No upgrades found for weak/empty slot */}
+      {/* No upgrades found */}
       {isUpgradeable && !hasUpgrades && (
         <div className="border-t border-navy-800 px-4 py-2">
           <p className="text-[11px] text-slate-600 italic">No upgrades found — rankings may not be fully loaded.</p>
         </div>
       )}
+    </div>
+  )
+}
+
+function TradeTargetRow({ t }) {
+  return (
+    <div className="flex items-start gap-2 text-sm">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-white font-medium">{t.player_name}</span>
+          {t.positions.map(p => (
+            <span key={p} className="stat-pill bg-navy-700 text-slate-500 text-[10px]">{p}</span>
+          ))}
+          <span className="text-slate-600 text-[10px]">({t.owner_team_name})</span>
+        </div>
+        <p className="text-[10px] text-slate-500 mt-0.5">{t.difficulty_reason}</p>
+      </div>
+      <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
+        {t.difficulty}
+      </span>
     </div>
   )
 }

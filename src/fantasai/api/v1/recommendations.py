@@ -30,6 +30,7 @@ from fantasai.schemas.recommendation import (
 )
 from fantasai.schemas.team_analysis import (
     RosterAnalysisResponse,
+    RosterPlayerRead,
     RosterSlotRead,
     TradeTargetRead,
     WaiverUpgradeRead,
@@ -994,31 +995,40 @@ def roster_analysis(
     """Evaluate the team's roster and surface targeted upgrade options for weak slots.
 
     For each position group assessed as weak or empty the response includes:
-    - Up to 3 waiver wire pickups eligible for that slot (best available)
-    - Up to 3 trade targets from other league teams, each tagged with a
-      difficulty rating (possible / hard / unrealistic) based on how
-      replaceable the player is on their current team.
+    - Per-player category contributions so users can see what each player
+      is actually providing (e.g. "Suárez: HR, RBI").
+    - Up to 3 waiver wire pickups eligible for that slot (best available).
+    - Trade targets from other league teams with difficulty ratings.
+      When a team's best player at a position is unrealistic to acquire,
+      their runner-up at that position is also included so there is always
+      an actionable option. Targets are sorted possible → hard → unrealistic.
     """
     from collections import defaultdict
 
     from fantasai.api.v1.analysis import _apply_team_weights  # lazy — avoids circular import
     from fantasai.brain.recommender import _player_eligible_for_slot
-    from fantasai.brain.team_evaluator import evaluate_team
+    from fantasai.brain.team_evaluator import _compute_group_scores, evaluate_team
 
     team, league = _fetch_team_and_league(team_id, db)
     categories = league.scoring_categories or []
     roster_positions = league.roster_positions or []
     league_type = league.league_type or "h2h_categories"
 
+    # ── Early guard: empty roster (before the expensive rankings fetch) ───────
+    player_ids = team.roster or []
+    if not player_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="Team has no rostered players — sync your league first.",
+        )
+
     # ── Rankings ──────────────────────────────────────────────────────────────
     lookback, predictive = _compute_rankings(db, categories)
     if not predictive:
         raise HTTPException(status_code=404, detail="No player stats available for rankings.")
 
-    # Deduped map for league-wide lookups
     ranking_map = {r.player_id: r for r in predictive}
 
-    # Raw multi-map for two-way players (e.g. Ohtani has batting + pitching entry)
     raw_pair = _get_cached_raw_rankings(categories, ProjectionHorizon.SEASON)
     raw_source = raw_pair[1] if raw_pair else predictive
     raw_multi: dict = defaultdict(list)
@@ -1026,12 +1036,6 @@ def roster_analysis(
         raw_multi[r.player_id].append(r)
 
     # ── My Roster Rankings ────────────────────────────────────────────────────
-    player_ids = team.roster or []
-    if not player_ids:
-        raise HTTPException(
-            status_code=404,
-            detail="Team has no rostered players — sync your league first.",
-        )
     il_ids = list(team.il_player_ids or [])
     injured_stats = dict(team.injured_player_statuses or {})
     consumed: dict = defaultdict(int)
@@ -1121,13 +1125,39 @@ def roster_analysis(
                 "difficulty_reason": reason,
             }
 
+    # ── Per-player category data (for "are they helping in SBs? HRs?" display) ──
+    group_data = _compute_group_scores(roster_rankings, categories)
+
+    def _top_cats(r: "PlayerRanking", n: int = 3) -> list[str]:
+        """Return the top n categories this player contributes positively to."""
+        return [
+            cat for cat, val in sorted(
+                r.category_contributions.items(), key=lambda x: x[1], reverse=True
+            )
+            if val > 0
+        ][:n]
+
     # ── Assemble Slots ────────────────────────────────────────────────────────
+    _DIFF_ORDER = {"possible": 0, "hard": 1, "unrealistic": 2}
+
     slots: list[RosterSlotRead] = []
     upgrade_assessments = {"weak", "empty"}
 
     for i, group in enumerate(evaluation.position_breakdown):
         pos = group.position
         base_priority = _ASSESSMENT_PRIORITY.get(group.assessment, 5) * 10 + i
+
+        # Build per-player details from the group_data computed above
+        group_players = group_data.get(pos, ([], 0.0, 0.0))[0]
+        player_details = [
+            RosterPlayerRead(
+                player_name=r.name,
+                positions=r.positions,
+                score=round(r.score, 3),
+                top_categories=_top_cats(r),
+            )
+            for r in sorted(group_players, key=lambda x: x.score, reverse=True)
+        ]
 
         waiver_upgrades: list[WaiverUpgradeRead] = []
         trade_targets: list[TradeTargetRead] = []
@@ -1149,18 +1179,47 @@ def roster_analysis(
                 for w in slot_waivers
             ]
 
-            # Trade targets eligible for this slot, sorted by score descending
-            pos_targets = sorted(
+            # Trade targets: per-team approach.
+            # Step 1 — collect eligible candidates, grouped by team.
+            # Iterate by score descending so each team's #1 is always processed first.
+            # If the #1 from a team is unrealistic, also include their #2 at this
+            # position so there's always an actionable alternative shown.
+            pos_pool = sorted(
                 [t for t in trade_pool.values() if _player_eligible_for_slot(t["positions"], pos)],
-                key=lambda x: x["score"],
-                reverse=True,
-            )[:3]
-            trade_targets = [TradeTargetRead(**t) for t in pos_targets]
+                key=lambda x: -x["score"],
+            )
+
+            pos_candidates: list[dict] = []
+            seen_teams: dict[int, int] = {}  # team_id → count included so far
+
+            for t in pos_pool:
+                tid = t["owner_team_id"]
+                already = seen_teams.get(tid, 0)
+                if already == 0:
+                    # Always take the best player from each team
+                    pos_candidates.append(t)
+                    seen_teams[tid] = 1
+                elif already == 1:
+                    # Include runner-up only when the team's first pick was unrealistic
+                    first = next(
+                        (c for c in pos_candidates if c["owner_team_id"] == tid), None
+                    )
+                    if first and first["difficulty"] == "unrealistic":
+                        pos_candidates.append(t)
+                        seen_teams[tid] = 2
+
+            # Step 2 — sort final list: actionable (possible/hard) first, then
+            # unrealistic. Within each difficulty tier, sort by score descending.
+            pos_candidates.sort(
+                key=lambda x: (_DIFF_ORDER.get(x["difficulty"], 9), -x["score"])
+            )
+            trade_targets = [TradeTargetRead(**t) for t in pos_candidates[:5]]
 
         slots.append(RosterSlotRead(
             position=pos,
             assessment=group.assessment,
             players=group.players,
+            player_details=player_details,
             group_score=group.group_score,
             priority=base_priority,
             waiver_upgrades=waiver_upgrades,

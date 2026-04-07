@@ -341,12 +341,25 @@ class TradeTargetRead(BaseModel):
     difficulty_reason: str
 
 
+class RosterPlayerRead(BaseModel):
+    """A single player in a roster slot with their category contributions."""
+
+    player_name: str
+    positions: list[str]
+    score: float
+    top_categories: list[str] = Field(
+        default_factory=list,
+        description="Top 2–3 categories this player contributes positively to.",
+    )
+
+
 class RosterSlotRead(BaseModel):
     """One position group on the roster with its assessment and upgrade options."""
 
     position: str
     assessment: str = Field(description='"elite" | "solid" | "average" | "weak" | "empty"')
-    players: list[str]
+    players: list[str]  # plain names for quick access / backward-compat
+    player_details: list[RosterPlayerRead] = Field(default_factory=list)
     group_score: float
     priority: int = Field(description="Lower = higher urgency. Used for display ordering.")
     waiver_upgrades: list[WaiverUpgradeRead] = Field(default_factory=list)
