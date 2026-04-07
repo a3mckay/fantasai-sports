@@ -311,3 +311,55 @@ class LeaguePowerResponse(BaseModel):
         description="Top 10 most complementary trade pairs in the league.",
     )
     analysis_blurb: str
+
+
+# ---------------------------------------------------------------------------
+# Feature 5 — Roster Analysis (Recommend a Player → Roster Analysis tab)
+# ---------------------------------------------------------------------------
+
+
+class WaiverUpgradeRead(BaseModel):
+    """A waiver wire player that upgrades a weak roster slot."""
+
+    player_id: int
+    player_name: str
+    positions: list[str]
+    score: float
+    category_impact: dict[str, float] = Field(default_factory=dict)
+
+
+class TradeTargetRead(BaseModel):
+    """A rostered player on another team that could upgrade a weak slot."""
+
+    player_id: int
+    player_name: str
+    positions: list[str]
+    score: float
+    owner_team_name: str
+    owner_team_id: int
+    difficulty: str = Field(description='"possible" | "hard" | "unrealistic"')
+    difficulty_reason: str
+
+
+class RosterSlotRead(BaseModel):
+    """One position group on the roster with its assessment and upgrade options."""
+
+    position: str
+    assessment: str = Field(description='"elite" | "solid" | "average" | "weak" | "empty"')
+    players: list[str]
+    group_score: float
+    priority: int = Field(description="Lower = higher urgency. Used for display ordering.")
+    waiver_upgrades: list[WaiverUpgradeRead] = Field(default_factory=list)
+    trade_targets: list[TradeTargetRead] = Field(default_factory=list)
+
+
+class RosterAnalysisResponse(BaseModel):
+    """Full roster analysis with per-slot upgrade recommendations."""
+
+    overall_grade: str
+    overall_score: float
+    grade_percentile: float
+    weak_categories: list[str]
+    strong_categories: list[str]
+    category_strengths: dict[str, float]
+    slots: list[RosterSlotRead]

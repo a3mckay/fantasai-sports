@@ -86,6 +86,7 @@ export const keeperEval      = (body) => post('/api/v1/analysis/keeper-eval', bo
 export const compareTeams    = (body) => post('/api/v1/analysis/compare-teams', body)
 export const leaguePower     = (id)   => get(`/api/v1/analysis/league-power/${id}`)
 export const extractPlayers  = (body) => post('/api/v1/analysis/extract-players', body)
+export const rosterAnalysis  = (teamId) => get(`/api/v1/recommendations/${teamId}/roster-analysis`)
 
 // ── Rankings ─────────────────────────────────────────────────────────────────
 export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, position, horizon } = {}) => {
