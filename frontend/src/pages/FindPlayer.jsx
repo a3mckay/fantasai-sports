@@ -226,28 +226,7 @@ function SlotCard({ slot }) {
   )
 }
 
-function RosterAnalysisPanel({ myTeam }) {
-  const [data,    setData]    = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error,   setError]   = useState(null)
-
-  async function load() {
-    if (!myTeam) return
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await rosterAnalysis(myTeam.team_id)
-      setData(res)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Auto-load on mount (myTeam is already available at this point)
-  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
+function RosterAnalysisPanel({ myTeam, data, loading, error, onLoad, onDismissError }) {
   if (!myTeam) {
     return (
       <div className="p-4 rounded-xl border border-amber-800/40 bg-amber-950/20 text-amber-400 text-sm">
@@ -260,7 +239,7 @@ function RosterAnalysisPanel({ myTeam }) {
 
   return (
     <div className="space-y-5">
-      <ErrorBanner message={error} onClose={() => setError(null)} />
+      <ErrorBanner message={error} onClose={onDismissError} />
 
       {data && (
         <>
@@ -272,7 +251,7 @@ function RosterAnalysisPanel({ myTeam }) {
               <p className="text-sm text-white font-medium">{data.grade_percentile.toFixed(0)}th percentile in league</p>
             </div>
             {data.weak_categories.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap ml-auto">
+              <div className="flex items-center gap-2 flex-wrap">
                 <AlertTriangle size={13} className="text-stitch-400 shrink-0" />
                 <span className="text-xs text-slate-500">Weak in:</span>
                 {data.weak_categories.map(c => (
@@ -281,7 +260,7 @@ function RosterAnalysisPanel({ myTeam }) {
               </div>
             )}
             <button
-              onClick={load}
+              onClick={onLoad}
               className="ml-auto flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
             >
               <RefreshCw size={12} />
@@ -307,6 +286,30 @@ export default function FindPlayer() {
   const { league, myTeam } = useLeague() || {}
 
   const [tab, setTab] = useState('analysis')
+
+  // Roster Analysis state (lifted here so it survives tab switches)
+  const [analysisData,    setAnalysisData]    = useState(null)
+  const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [analysisError,   setAnalysisError]   = useState(null)
+
+  async function loadAnalysis() {
+    if (!myTeam) return
+    setAnalysisLoading(true)
+    setAnalysisError(null)
+    try {
+      const res = await rosterAnalysis(myTeam.team_id)
+      setAnalysisData(res)
+    } catch (err) {
+      setAnalysisError(err.message)
+    } finally {
+      setAnalysisLoading(false)
+    }
+  }
+
+  // Auto-fetch once when myTeam becomes available (or on first mount with team)
+  useEffect(() => {
+    if (myTeam && !analysisData && !analysisLoading) loadAnalysis()
+  }, [myTeam]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Find a Player form state
   const [positionSlot, setPositionSlot] = useState('')
@@ -416,7 +419,16 @@ export default function FindPlayer() {
       </div>
 
       {/* Tab content */}
-      {tab === 'analysis' && <RosterAnalysisPanel myTeam={myTeam} />}
+      {tab === 'analysis' && (
+        <RosterAnalysisPanel
+          myTeam={myTeam}
+          data={analysisData}
+          loading={analysisLoading}
+          error={analysisError}
+          onLoad={loadAnalysis}
+          onDismissError={() => setAnalysisError(null)}
+        />
+      )}
 
       {tab === 'find' && (
         <>

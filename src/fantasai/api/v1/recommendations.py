@@ -1027,6 +1027,11 @@ def roster_analysis(
 
     # ── My Roster Rankings ────────────────────────────────────────────────────
     player_ids = team.roster or []
+    if not player_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="Team has no rostered players — sync your league first.",
+        )
     il_ids = list(team.il_player_ids or [])
     injured_stats = dict(team.injured_player_statuses or {})
     consumed: dict = defaultdict(int)
