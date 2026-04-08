@@ -166,6 +166,7 @@ function TradeTargetRow({ t }) {
           <span className="text-slate-600 text-[10px]">({t.owner_team_name})</span>
         </div>
         <p className="text-[10px] text-slate-500 mt-0.5">{t.difficulty_reason}</p>
+        {t.blurb && <p className="text-[10px] text-slate-600 mt-0.5 italic">{t.blurb}</p>}
       </div>
       <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
         {t.difficulty}
@@ -185,6 +186,7 @@ function WaiverRow({ w, isSpecialSlot }) {
           ))}
           <InjuryBadge status={w.injury_status} />
         </div>
+        {w.blurb && <p className="text-[10px] text-slate-500 mt-0.5 italic">{w.blurb}</p>}
         {!isSpecialSlot && Object.keys(w.category_impact || {}).length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1">
             {Object.entries(w.category_impact)
@@ -244,7 +246,11 @@ function UpgradeSection({ slot }) {
           <div className="space-y-2.5">
             {actionableTrades.map(t => <TradeTargetRow key={t.player_id} t={t} />)}
             {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
-              <p className="text-[9px] text-slate-600 uppercase tracking-widest pt-1">Long shots</p>
+              <div className="flex items-center gap-2 pt-2 pb-1">
+                <div className="flex-1 h-px bg-navy-700" />
+                <span className="text-[10px] text-slate-500 font-medium uppercase tracking-widest shrink-0">Long shots</span>
+                <div className="flex-1 h-px bg-navy-700" />
+              </div>
             )}
             {unrealisticTrades.map(t => <TradeTargetRow key={t.player_id} t={t} />)}
           </div>
@@ -319,46 +325,24 @@ function SlotRow({ slot }) {
   )
 }
 
-// ── RosterSection — Batters or Pitchers ───────────────────────────────────
+// ── SlotGroup — a labeled group of slots (collapsible) ────────────────────
 
-function RosterSection({ title, slots }) {
-  const [solidCollapsed, setSolidCollapsed] = useState(true)
-
+function SlotGroup({ title, slots, defaultCollapsed = false }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
   if (slots.length === 0) return null
-
-  const upgradeSlots = slots.filter(s => s.has_upgrades)
-  const solidSlots   = slots.filter(s => !s.has_upgrades)
-
   return (
-    <div className="space-y-3">
-      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">{title}</h3>
-
-      {/* Upgrade-worthy slots first */}
-      {upgradeSlots.length > 0 && (
+    <div>
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        className="flex items-center gap-1.5 text-[10px] text-slate-500 hover:text-slate-300 transition-colors mb-2 w-full text-left"
+      >
+        {collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+        <span className="uppercase tracking-widest font-semibold">{title}</span>
+        <span className="text-slate-700 ml-1">({slots.length})</span>
+      </button>
+      {!collapsed && (
         <div className="space-y-2">
-          {upgradeSlots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
-        </div>
-      )}
-
-      {/* Strong slots collapsed at the bottom */}
-      {solidSlots.length > 0 && (
-        <div>
-          <button
-            onClick={() => setSolidCollapsed(c => !c)}
-            className="flex items-center gap-1.5 text-[10px] text-slate-600 hover:text-slate-400 transition-colors mb-2"
-          >
-            {solidCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
-            <span className="uppercase tracking-wide">
-              {solidCollapsed
-                ? `${solidSlots.length} strong position${solidSlots.length !== 1 ? 's' : ''} — no upgrades needed`
-                : 'Hide strong positions'}
-            </span>
-          </button>
-          {!solidCollapsed && (
-            <div className="space-y-2">
-              {solidSlots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
-            </div>
-          )}
+          {slots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
         </div>
       )}
     </div>
@@ -378,10 +362,20 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
 
   if (loading) return <LoadingState message="Analyzing roster…" />
 
-  // Split slots into sections
-  const batterSlots  = (data?.slots || []).filter(s => BATTER_START_SLOTS.has(s.position) || (s.position === 'BN' && s.player_details[0] && !['SP','RP','P'].some(p => (s.player_details[0].positions || []).includes(p))))
-  const pitcherSlots = (data?.slots || []).filter(s => PITCHER_START_SLOTS.has(s.position) || (s.position === 'BN' && s.player_details[0] && ['SP','RP','P'].some(p => (s.player_details[0].positions || []).includes(p))))
-  const specialSlots = (data?.slots || []).filter(s => s.position === 'NA' || s.position === 'IL')
+  // Split slots by type and upgrade status
+  const isBatter  = s => BATTER_START_SLOTS.has(s.position) ||
+    (s.position === 'BN' && s.player_details[0] && !['SP','RP','P'].some(p => (s.player_details[0].positions || []).includes(p)))
+  const isPitcher = s => PITCHER_START_SLOTS.has(s.position) ||
+    (s.position === 'BN' && s.player_details[0] && ['SP','RP','P'].some(p => (s.player_details[0].positions || []).includes(p)))
+
+  const allSlots = data?.slots || []
+  const batterUpgrade  = allSlots.filter(s => isBatter(s)  && s.has_upgrades)
+  const batterSolid    = allSlots.filter(s => isBatter(s)  && !s.has_upgrades)
+  const pitcherUpgrade = allSlots.filter(s => isPitcher(s) && s.has_upgrades)
+  const pitcherSolid   = allSlots.filter(s => isPitcher(s) && !s.has_upgrades)
+  const specialSlots   = allSlots.filter(s => s.position === 'NA' || s.position === 'IL')
+
+  const hasUpgrades = batterUpgrade.length > 0 || pitcherUpgrade.length > 0
 
   return (
     <div className="space-y-5">
@@ -414,11 +408,33 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
             </button>
           </div>
 
-          {/* Batters */}
-          <RosterSection title="Batters" slots={batterSlots} />
+          {/* Upgrades available — Batters then Pitchers */}
+          {hasUpgrades && (
+            <div className="space-y-4">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest">Upgrades Available</h3>
+              {batterUpgrade.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Batters</p>
+                  {batterUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+                </div>
+              )}
+              {pitcherUpgrade.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Pitchers</p>
+                  {pitcherUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+                </div>
+              )}
+            </div>
+          )}
 
-          {/* Pitchers */}
-          <RosterSection title="Pitchers" slots={pitcherSlots} />
+          {/* Strong positions — collapsed by default */}
+          {(batterSolid.length > 0 || pitcherSolid.length > 0) && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">No Upgrades Needed</h3>
+              <SlotGroup title="Batters" slots={batterSolid} defaultCollapsed={true} />
+              <SlotGroup title="Pitchers" slots={pitcherSolid} defaultCollapsed={true} />
+            </div>
+          )}
 
           {/* Special stash slots (NA / IL) */}
           {specialSlots.length > 0 && (

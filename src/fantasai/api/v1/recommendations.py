@@ -1094,6 +1094,25 @@ def roster_analysis(
 
     # ── Trade target pool ─────────────────────────────────────────────────────
     _DIFF_ORDER = {"possible": 0, "hard": 1, "unrealistic": 2}
+
+    # Absolute rank thresholds — elite players are unrealistic regardless of
+    # positional depth on the other team (e.g. Yordan Alvarez with 4 OF teammates
+    # should not show as "possible").
+    _all_scores = sorted([r.score for r in predictive], reverse=True)
+    _top25_threshold = _all_scores[24] if len(_all_scores) >= 25 else 0.0
+    _top60_threshold = _all_scores[59] if len(_all_scores) >= 60 else 0.0
+
+    def _rank_blurb(r: "PlayerRanking") -> str:
+        """Short projection context for display."""
+        top_cats = [
+            cat for cat, val in sorted(
+                r.category_contributions.items(), key=lambda x: x[1], reverse=True
+            )
+            if val > 0 and cat not in _JUNK_CATS
+        ][:2]
+        cat_str = f" · strong in {', '.join(top_cats)}" if top_cats else ""
+        return f"Ranked #{r.overall_rank} overall{cat_str}"
+
     trade_pool: dict[int, dict] = {}
     for other_team in (league.teams or []):
         if other_team.team_id == team_id:
@@ -1113,7 +1132,14 @@ def roster_analysis(
             same_pos_top = max((x.score for x in same_pos), default=0.0)
             pos_label = r.positions[0] if r.positions else "that position"
 
-            if len(same_pos) == 1:
+            # Absolute elite threshold takes priority over positional logic
+            if _top25_threshold > 0 and r.score >= _top25_threshold:
+                difficulty = "unrealistic"
+                reason = f"Top-25 player overall — not realistically available"
+            elif _top60_threshold > 0 and r.score >= _top60_threshold:
+                difficulty = "hard"
+                reason = f"Top-60 player — unlikely to be moved"
+            elif len(same_pos) == 1:
                 difficulty = "unrealistic"
                 reason = f"Only {pos_label} on their roster"
             elif top_score > 0 and r.score >= top_score * 0.92:
@@ -1139,6 +1165,7 @@ def roster_analysis(
                 "difficulty_reason": reason,
                 "injury_status": inj["injury_status"],
                 "injury_note": inj["injury_note"],
+                "blurb": _rank_blurb(r),
             }
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -1173,6 +1200,7 @@ def roster_analysis(
                     for cat, val in r.category_contributions.items()
                     if val > 0.01 and cat not in _JUNK_CATS
                 },
+                blurb=_rank_blurb(r),
                 **_injury_fields(r.player_id),
             )
             for r in slot_waivers
@@ -1328,9 +1356,11 @@ def roster_analysis(
         ))
 
     # ── NA / IL stash suggestions ─────────────────────────────────────────────
-    # If the league has NA slots: suggest unrostered MiLB prospects.
-    # If the league has IL slots: suggest unrostered injured players returning soon.
-    na_count  = sum(1 for p in roster_positions if p == "NA")
+    # Only suggest stash candidates for slots that are actually empty (not already
+    # occupied by a rostered player).  il_player_ids tracks players the team has
+    # parked in IL/NA slots.
+    na_occupied = len(il_ids)  # Yahoo puts NA/IL occupants in il_player_ids
+    na_count  = max(0, sum(1 for p in roster_positions if p == "NA") - na_occupied)
     il_count  = sum(1 for p in roster_positions if p in ("IL", "IL+", "DL"))
 
     if na_count > 0:
@@ -1345,8 +1375,27 @@ def roster_analysis(
             .limit(50)
             .all()
         )
+
+        # Prefer prospects whose stat_type addresses the team's weak categories.
+        _weak_cats = set(evaluation.weak_categories) - _JUNK_CATS
+        _batting_weak  = bool(_weak_cats & {"R", "HR", "RBI", "SB", "AVG", "OPS", "H", "BB"})
+        _pitching_weak = bool(_weak_cats & {"W", "SV", "K", "ERA", "WHIP", "QS", "HLD"})
+
+        def _na_priority(pp_player: tuple) -> tuple:
+            pp, player = pp_player
+            if player.player_id in all_rostered:
+                return (99, 0)
+            # Prefer prospects that address a weakness; tie-break by PAV
+            stat_type = pp.stat_type or "batting"
+            addresses_weakness = (
+                (stat_type == "batting" and _batting_weak) or
+                (stat_type == "pitching" and _pitching_weak)
+            )
+            return (0 if addresses_weakness else 1, -(pp.pav_score or 0))
+
+        sorted_prospects = sorted(prospect_rows, key=_na_priority)
         na_upgrades: list[WaiverUpgradeRead] = []
-        for pp, player in prospect_rows:
+        for pp, player in sorted_prospects:
             if player.player_id in all_rostered:
                 continue
             na_upgrades.append(WaiverUpgradeRead(
@@ -1355,6 +1404,7 @@ def roster_analysis(
                 positions=list(player.positions or [pp.stat_type[:2].upper()]),
                 score=round((pp.pav_score or 0) / 10.0, 3),
                 category_impact={},
+                blurb=f"PAV {pp.pav_score:.0f} prospect — {pp.stat_type or 'batting'}",
             ))
             if len(na_upgrades) >= 3:
                 break

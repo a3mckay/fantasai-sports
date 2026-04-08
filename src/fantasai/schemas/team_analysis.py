@@ -331,6 +331,7 @@ class WaiverUpgradeRead(BaseModel):
         description="il_10 | il_60 | day_to_day | out_for_season | None",
     )
     injury_note: Optional[str] = None
+    blurb: Optional[str] = Field(default=None, description="Short projection context line.")
 
 
 class TradeTargetRead(BaseModel):
@@ -346,6 +347,7 @@ class TradeTargetRead(BaseModel):
     difficulty_reason: str
     injury_status: Optional[str] = Field(default=None)
     injury_note: Optional[str] = None
+    blurb: Optional[str] = Field(default=None, description="Short projection context line.")
 
 
 class RosterPlayerRead(BaseModel):

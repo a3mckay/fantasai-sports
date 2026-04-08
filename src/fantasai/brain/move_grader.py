@@ -401,7 +401,8 @@ def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str)
                         except (TypeError, ValueError):
                             pass
                 # Counting stats: label projected ones clearly
-                for k in ["HR", "SB", "R", "RBI"]:
+                # H is included so the LLM has hits context and can't hallucinate "0-for-X" slumps
+                for k in ["H", "HR", "SB", "R", "RBI"]:
                     v = counting.get(k)
                     if v is not None:
                         try:
