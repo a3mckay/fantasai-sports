@@ -829,6 +829,38 @@ def find_player_endpoint(
         else list(recommendations)
     )
 
+    # Fallback: the general recommender's need-weighted scoring may fill all 50
+    # slots with players at other positions (e.g. all batters when RP is requested).
+    # If the slot filter returns nothing, bypass need-weighting and pull directly
+    # from the full predictive rankings for that position.
+    if not position_recs and body.position_slot:
+        slot_source = predictive or lookback
+        fallback_candidates = [
+            r for r in slot_source
+            if r.player_id not in all_excluded_mlb
+            and _player_eligible_for_slot(r.positions, body.position_slot)
+        ]
+        # Wrap in lightweight WaiverRecommendation-like objects so downstream
+        # code (blurb, persist) works identically.
+        from fantasai.brain.recommender import WaiverRecommendation
+        position_recs = [
+            WaiverRecommendation(
+                player_id=r.player_id,
+                player_name=r.name,
+                team=r.team,
+                positions=r.positions,
+                priority_score=r.score,
+                category_impact={
+                    c: v for c, v in r.category_contributions.items() if v > 0
+                },
+                fills_positions=[body.position_slot],
+                weak_categories_addressed=[],
+                drop_candidates=[],
+                action=f"Add {r.name} ({'/'.join(r.positions)})",
+            )
+            for r in fallback_candidates[:20]
+        ]
+
     # Re-sort by priority categories if requested
     if body.priority_categories:
         position_recs.sort(
