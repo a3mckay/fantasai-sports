@@ -208,10 +208,19 @@ function UpgradeSection({ slot }) {
   const isSpecial = slot.position === 'NA' || slot.position === 'IL'
   const actionableTrades = slot.trade_targets.filter(t => t.difficulty !== 'unrealistic')
   const unrealisticTrades = slot.trade_targets.filter(t => t.difficulty === 'unrealistic')
+  const hasAny = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
 
   const waiverLabel = isSpecial
     ? (slot.position === 'NA' ? 'MiLB Stash Candidates' : 'IL Stash Candidates')
     : 'Free Agents / Waivers'
+
+  if (!hasAny) {
+    return (
+      <p className="text-[10px] text-slate-600 italic pt-1">
+        No upgrade candidates found — sync your league for the latest data.
+      </p>
+    )
+  }
 
   return (
     <div className="space-y-4 pt-1">

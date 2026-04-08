@@ -1015,8 +1015,14 @@ def roster_analysis(
     from fantasai.brain.recommender import _player_eligible_for_slot
     from fantasai.brain.team_evaluator import _compute_group_scores, evaluate_team
 
+    import logging as _log_ra
+    _logger_ra = _log_ra.getLogger(__name__)
+
     team, league = _fetch_team_and_league(team_id, db)
-    categories = league.scoring_categories or []
+    # Strip display-only artefacts (H/AB, Batting, Pitching, AB) before any
+    # computation so they don't pollute z-score means, ranking cache keys, or
+    # category display fields.
+    categories = [c for c in (league.scoring_categories or []) if c not in _JUNK_CATS]
     roster_positions = league.roster_positions or []
     league_type = league.league_type or "h2h_categories"
 
@@ -1213,8 +1219,19 @@ def roster_analysis(
     assignable = sorted(roster_rankings, key=lambda r: r.score, reverse=True)
     assigned_ids: set[int] = set()
 
-    starting_positions = [p for p in roster_positions if p not in _SPECIAL_SLOTS]
+    _CANONICAL_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "Util", "DH", "SP", "RP", "P"]
+    _POS_RANK = {p: i for i, p in enumerate(_CANONICAL_ORDER)}
+    starting_positions = sorted(
+        [p for p in roster_positions if p not in _SPECIAL_SLOTS],
+        key=lambda p: (_POS_RANK.get(p, 99), p),
+    )
     bench_positions    = [p for p in roster_positions if p == "BN"]
+
+    _logger_ra.info(
+        "roster_analysis team=%d: %d starting slots, %d bench, %d available_by_score, %d trade_pool",
+        team_id, len(starting_positions), len(bench_positions),
+        len(available_by_score), len(trade_pool),
+    )
 
     slots: list[RosterSlotRead] = []
     slot_pos_counts: dict[str, int] = {}
@@ -1249,7 +1266,9 @@ def roster_analysis(
             )]
 
         waiver_upgrades, trade_targets = _build_upgrades(slot_pos)
-        has_upgrades = bool(waiver_upgrades or trade_targets)
+        # Show weak/empty/average slots in the upgrade section even when no
+        # candidates are found — this surfaces actionable roster gaps.
+        has_upgrades = bool(waiver_upgrades or trade_targets) or assessment in ("weak", "empty", "average")
 
         slots.append(RosterSlotRead(
             position=slot_pos,
