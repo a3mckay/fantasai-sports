@@ -776,6 +776,149 @@ def _fetch_rolling_windows_map(
     return result
 
 
+def _fetch_raw_stats_map(
+    db: Session,
+    player_ids: list[int],
+    season: int = 2026,
+) -> dict[int, dict[str, float]]:
+    """Fetch season stats for players and return as flat dicts for blurb grounding.
+
+    Returns {player_id: {stat_label: value, ...}} where stat_label includes
+    a sample-size prefix like "[2026 actual — 42G, 156PA]" so the LLM knows
+    whether it's reading real season data or a Steamer projection.
+
+    This prevents blurb hallucinations: the model can only cite numbers that
+    appear here. If a stat is not in this dict, the writer persona prohibits
+    citing it.
+    """
+    if not player_ids:
+        return {}
+
+    _pitcher_positions = {"SP", "RP", "P"}
+
+    rows = (
+        db.query(PlayerStats)
+        .filter(
+            PlayerStats.player_id.in_(player_ids),
+            PlayerStats.season == season,
+            PlayerStats.week.is_(None),
+        )
+        .all()
+    )
+
+    # Group by player_id, prefer actual over projection, pick stat_type by position
+    from fantasai.models.player import Player as _Player
+    position_map: dict[int, list[str]] = {}
+    try:
+        player_rows = db.query(_Player.player_id, _Player.positions).filter(
+            _Player.player_id.in_(player_ids)
+        ).all()
+        for pid, positions in player_rows:
+            position_map[pid] = positions or []
+    except Exception:
+        pass
+
+    rows_by_player: dict[int, list] = {}
+    for row in rows:
+        rows_by_player.setdefault(row.player_id, []).append(row)
+
+    result: dict[int, dict[str, float]] = {}
+    for pid in player_ids:
+        player_rows_list = rows_by_player.get(pid, [])
+        if not player_rows_list:
+            continue
+
+        positions = position_map.get(pid, [])
+        is_pitcher = any(p.upper() in _pitcher_positions for p in positions)
+        primary_stat_type = "pitching" if is_pitcher else "batting"
+
+        # Prefer actual rows, then fall back to projection
+        actual_rows = [r for r in player_rows_list if r.data_source == "actual" and r.stat_type == primary_stat_type]
+        proj_rows = [r for r in player_rows_list if r.data_source == "projection" and r.stat_type == primary_stat_type]
+
+        if not actual_rows and not proj_rows:
+            # Try any stat_type
+            actual_rows = [r for r in player_rows_list if r.data_source == "actual"]
+            proj_rows = [r for r in player_rows_list if r.data_source == "projection"]
+
+        stats_row = actual_rows[0] if actual_rows else (proj_rows[0] if proj_rows else None)
+        if not stats_row:
+            continue
+
+        is_actual = stats_row.data_source == "actual"
+        counting = stats_row.counting_stats or {}
+        rate = stats_row.rate_stats or {}
+        advanced = stats_row.advanced_stats or {}
+
+        flat: dict[str, float] = {}
+
+        if primary_stat_type == "pitching":
+            ip = float(counting.get("IP", 0) or 0)
+            gs = int(float(counting.get("GS", 0) or 0))
+            if is_actual:
+                flat[f"[2026 actual — {gs} GS, {ip:.1f} IP]"] = 0.0
+            else:
+                flat["[2026 Steamer projection — full-season]"] = 0.0
+
+            for k in ["ERA", "WHIP", "K9", "K/9"]:
+                v = rate.get(k)
+                if v is not None:
+                    try:
+                        flat[k] = round(float(v), 2)
+                    except (TypeError, ValueError):
+                        pass
+            for k in ["xERA", "xFIP", "SIERA", "FIP"]:
+                v = advanced.get(k)
+                if v is not None:
+                    try:
+                        flat[k] = round(float(v), 2)
+                    except (TypeError, ValueError):
+                        pass
+            prefix = "" if is_actual else "proj-"
+            for k in ["W", "SV", "K", "IP", "GS"]:
+                v = counting.get(k)
+                if v is not None:
+                    try:
+                        flat[f"{prefix}{k}"] = round(float(v), 1) if k == "IP" else int(float(v))
+                    except (TypeError, ValueError):
+                        pass
+        else:
+            pa = int(float(counting.get("PA", 0) or counting.get("AB", 0) or 0))
+            g = int(float(counting.get("G", 0) or 0))
+            if is_actual:
+                flat[f"[2026 actual — {g} G, {pa} PA]"] = 0.0
+            else:
+                flat["[2026 Steamer projection — full-season]"] = 0.0
+
+            for k in ["AVG", "OBP", "SLG"]:
+                v = rate.get(k)
+                if v is not None:
+                    try:
+                        flat[k] = round(float(v), 3)
+                    except (TypeError, ValueError):
+                        pass
+            for k in ["xwOBA", "xBA", "xSLG", "wRC+"]:
+                v = advanced.get(k)
+                if v is not None:
+                    try:
+                        flat[k] = round(float(v), 3)
+                    except (TypeError, ValueError):
+                        pass
+            prefix = "" if is_actual else "proj-"
+            for k in ["H", "HR", "R", "RBI", "SB", "PA", "G"]:
+                v = counting.get(k)
+                if v is not None:
+                    try:
+                        flat[f"{prefix}{k}"] = int(float(v))
+                    except (TypeError, ValueError):
+                        pass
+
+        if flat:
+            result[pid] = flat
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -876,8 +1019,11 @@ def get_waiver_recommendations(
             ]
             if rec_rankings:
                 gen = get_blurb_generator(api_key=settings.anthropic_api_key)
-                # Fetch rolling window data for richer blurb context
                 rec_ids = [r.player_id for r in rec_rankings]
+                # Fetch season stats (actual or Steamer) — grounds the model so it
+                # can only cite numbers that actually exist for this player.
+                raw_map = _fetch_raw_stats_map(db, rec_ids)
+                # Rolling windows add recent-form context on top of season stats.
                 rolling_map = _fetch_rolling_windows_map(db, rec_ids)
                 # Single-call: all blurbs in one request so the model
                 # can vary language across the set (no repeated phrases).
@@ -885,6 +1031,7 @@ def get_waiver_recommendations(
                     rec_rankings,
                     ranking_type="predictive",
                     scoring_categories=categories,
+                    raw_stats_map=raw_map or None,
                     rolling_windows_map=rolling_map or None,
                     top_n=0,  # 0 = generate for all provided
                 )

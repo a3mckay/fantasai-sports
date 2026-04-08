@@ -103,9 +103,26 @@ def _format_category_signals(contributions: dict[str, float]) -> str:
 
 
 def _format_raw_stats(raw_stats: dict[str, float]) -> str:
-    """Format raw stats as a clean, human-readable data block."""
-    top = sorted(raw_stats.items(), key=lambda kv: abs(kv[1]), reverse=True)[:10]
-    return "  " + " | ".join(f"{k}: {v}" for k, v in top)
+    """Format raw stats as a clean, human-readable data block.
+
+    Keys starting with '[' are treated as labels/headers (e.g. sample-size
+    notes like "[2026 actual — 42G, 156PA]") and rendered on their own line.
+    Numeric stats are sorted by relevance (rate stats first, then counts).
+    """
+    label_keys = [k for k in raw_stats if k.startswith("[")]
+    stat_items = [(k, v) for k, v in raw_stats.items() if not k.startswith("[")]
+
+    # Rate/ratio stats (small absolute values) first, then counting stats
+    rate_items = [(k, v) for k, v in stat_items if abs(v) < 10]
+    count_items = [(k, v) for k, v in stat_items if abs(v) >= 10]
+    ordered = rate_items + count_items
+
+    parts: list[str] = []
+    if label_keys:
+        parts.append("  " + " | ".join(label_keys))
+    if ordered:
+        parts.append("  " + " | ".join(f"{k}: {v}" for k, v in ordered[:15]))
+    return "\n".join(parts) if parts else "  (no stats available)"
 
 
 def _make_user_prompt(

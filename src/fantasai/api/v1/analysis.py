@@ -97,6 +97,7 @@ from fantasai.api.v1.rankings import RANKINGS_DEFAULT_CATEGORIES as DEFAULT_CATE
 from fantasai.api.v1.recommendations import (
     _compute_projection_rankings,
     _compute_rankings,
+    _fetch_raw_stats_map,
     _fetch_team_and_league,
     _get_cached_raw_rankings,
 )
@@ -387,6 +388,7 @@ def _generate_find_player_blurb(
     ranking: PlayerRanking,
     categories: list[str],
     position_slot: str,
+    db: Optional[Session] = None,
 ) -> str:
     """Generate a 'why now' framing blurb for a find-player suggestion."""
     from fantasai.brain.blurb_generator import get_blurb_generator
@@ -396,10 +398,17 @@ def _generate_find_player_blurb(
 
     try:
         gen = get_blurb_generator(api_key=settings.anthropic_api_key)
+        # Fetch season stats to ground the blurb — prevents hallucinating
+        # counts (HR, RBI, etc.) that don't appear in the data block.
+        raw_stats: Optional[dict] = None
+        if db is not None:
+            stats_map = _fetch_raw_stats_map(db, [ranking.player_id])
+            raw_stats = stats_map.get(ranking.player_id)
         return gen.generate_blurb(
             ranking=ranking,
             ranking_type="predictive",
             scoring_categories=categories,
+            raw_stats=raw_stats,
         )
     except Exception as exc:
         logger.warning("Find-player blurb generation failed: %s", exc)
@@ -844,7 +853,7 @@ def find_player_endpoint(
     pred_ranking = pred_map.get(best.player_id)
     blurb = ""
     if pred_ranking:
-        blurb = _generate_find_player_blurb(pred_ranking, categories, body.position_slot or "")
+        blurb = _generate_find_player_blurb(pred_ranking, categories, body.position_slot or "", db=db)
 
     # Persist MLB suggestion
     slot_part = body.position_slot or "any"
