@@ -659,7 +659,7 @@ def grade_transaction(
             prompt = _build_prompt(txn, league, db)
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=150,
+                max_tokens=300,
                 system=(
                     "You are a sharp fantasy baseball analyst. Write brief, direct verdicts on "
                     "transactions. No hedging. No filler.\n\n"
@@ -1214,7 +1214,7 @@ def grade_transaction_lookback(
             prompt = _build_lookback_prompt(txn, league, db, context)
             response = client.messages.create(
                 model="claude-haiku-4-5",
-                max_tokens=150,
+                max_tokens=300,
                 system=(
                     "You are a sharp fantasy baseball analyst writing HINDSIGHT reviews of past transactions. "
                     "You have real outcome data and are grading decisions in retrospect.\n\n"
