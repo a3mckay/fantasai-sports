@@ -1325,16 +1325,25 @@ def roster_analysis(
             if val > 0 and cat not in _JUNK_CATS
         ][:n]
 
-    def _build_upgrades(slot_pos: str) -> tuple[list[WaiverUpgradeRead], list[TradeTargetRead]]:
-        """Return (waiver_upgrades, trade_targets) for a given slot position."""
+    def _build_upgrades(
+        slot_pos: str,
+        min_score: float = 0.0,
+    ) -> tuple[list[WaiverUpgradeRead], list[TradeTargetRead]]:
+        """Return (waiver_upgrades, trade_targets) for a given slot position.
+
+        min_score: only return candidates whose score exceeds this threshold.
+        Pass the current occupant's score so we never suggest a player who is
+        worse than (or equal to) who's already in the slot.
+        """
         if slot_pos in _NO_UPGRADE_SLOTS:
             return [], []
 
-        # Waiver upgrades: top 3 unrostered players eligible for this slot by score.
-        # Direct score lookup — always surfaces candidates regardless of category fit.
+        # Waiver upgrades: top 3 unrostered players eligible for this slot
+        # who are strictly better than the current occupant.
         slot_waivers = [
             r for r in available_by_score
             if _player_eligible_for_slot(r.positions, slot_pos)
+            and r.score > min_score
         ][:3]
         waiver_upgrades = [
             WaiverUpgradeRead(
@@ -1353,9 +1362,13 @@ def roster_analysis(
             for r in slot_waivers
         ]
 
-        # Trade targets: per-team runner-up logic (same as before).
+        # Trade targets: per-team runner-up logic, filtered to genuine upgrades.
         pos_pool = sorted(
-            [t for t in trade_pool.values() if _player_eligible_for_slot(t["positions"], slot_pos)],
+            [
+                t for t in trade_pool.values()
+                if _player_eligible_for_slot(t["positions"], slot_pos)
+                and t["score"] > min_score
+            ],
             key=lambda x: -x["score"],
         )
         pos_candidates: list[dict] = []
@@ -1426,8 +1439,29 @@ def roster_analysis(
                 assigned_ids.add(r.player_id)
                 break
 
-        assessment = group_assessment.get(slot_pos, "empty") if assigned_player else "empty"
-        g_score = group_score_map.get(slot_pos, 0.0)
+        # Assessment: use the assigned player's real position group, not the slot
+        # label. A closer (RP) in a generic "P" slot would otherwise get "empty"
+        # because group_assessment["P"] is never populated from "RP" group data.
+        _PITCHER_SLOTS_SET = frozenset({"SP", "RP", "P"})
+        if assigned_player:
+            if assigned_player.stat_type == "pitching":
+                real_group = next(
+                    (p for p in assigned_player.positions if p in _PITCHER_SLOTS_SET),
+                    "P",
+                )
+            else:
+                real_group = assigned_player.positions[0] if assigned_player.positions else slot_pos
+                if real_group in ("LF", "CF", "RF"):
+                    real_group = "OF"
+            assessment = (
+                group_assessment.get(real_group)
+                or group_assessment.get(slot_pos)
+                or "average"
+            )
+        else:
+            assessment = "empty"
+        _real_group_key = real_group if assigned_player else slot_pos
+        g_score = group_score_map.get(_real_group_key) or group_score_map.get(slot_pos, 0.0)
 
         player_details = []
         if assigned_player:
@@ -1440,7 +1474,8 @@ def roster_analysis(
                 **inj,
             )]
 
-        waiver_upgrades, trade_targets = _build_upgrades(slot_pos)
+        occupant_score = assigned_player.score if assigned_player else 0.0
+        waiver_upgrades, trade_targets = _build_upgrades(slot_pos, min_score=occupant_score)
         # Show weak/empty/average slots in the upgrade section even when no
         # candidates are found — this surfaces actionable roster gaps.
         has_upgrades = bool(waiver_upgrades or trade_targets) or assessment in ("weak", "empty", "average")
