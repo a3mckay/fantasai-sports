@@ -1029,7 +1029,7 @@ def get_waiver_recommendations(
                 # can vary language across the set (no repeated phrases).
                 blurbs = gen.generate_blurbs_single_call(
                     rec_rankings,
-                    ranking_type="predictive",
+                    ranking_type="predictive_season",
                     scoring_categories=categories,
                     raw_stats_map=raw_map or None,
                     rolling_windows_map=rolling_map or None,

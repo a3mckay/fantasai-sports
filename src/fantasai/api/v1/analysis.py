@@ -406,7 +406,7 @@ def _generate_find_player_blurb(
             raw_stats = stats_map.get(ranking.player_id)
         return gen.generate_blurb(
             ranking=ranking,
-            ranking_type="predictive",
+            ranking_type="predictive_season",
             scoring_categories=categories,
             raw_stats=raw_stats,
         )

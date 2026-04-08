@@ -125,6 +125,17 @@ def _format_raw_stats(raw_stats: dict[str, float]) -> str:
     return "\n".join(parts) if parts else "  (no stats available)"
 
 
+_RANKING_TYPE_LABELS: dict[str, tuple[str, str]] = {
+    # ranking_type → (short rank label, long description for ranking_type line)
+    "lookback":          ("Current Season rank",           "LOOKBACK — Current Season (year-to-date performance)"),
+    "current":           ("Current Season rank",           "CURRENT SEASON (year-to-date actuals only)"),
+    "predictive":        ("Rest-of-Season Projection rank","PREDICTIVE — Rest-of-Season projection"),
+    "predictive_season": ("Rest-of-Season Projection rank","PREDICTIVE — Rest-of-Season projection"),
+    "predictive_week":   ("This Week Projection rank",     "PREDICTIVE — This Week projection"),
+    "predictive_month":  ("This Month Projection rank",    "PREDICTIVE — This Month projection"),
+}
+
+
 def _make_user_prompt(
     ranking: PlayerRanking,
     ranking_type: str,
@@ -138,18 +149,17 @@ def _make_user_prompt(
     header signals to the model that only these figures are in-bounds.
     """
     positions_str = ", ".join(ranking.positions) if ranking.positions else "UTIL"
-    ranking_label = (
-        "LOOKBACK (season-to-date performance)"
-        if ranking_type == "lookback"
-        else "PREDICTIVE (forward-looking projection)"
+    rank_label, ranking_desc = _RANKING_TYPE_LABELS.get(
+        ranking_type,
+        ("Projection rank", f"PREDICTIVE ({ranking_type})"),
     )
     signals_str = _format_category_signals(ranking.category_contributions)
 
     lines = [
         "━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━",
         f"Player: {ranking.name} | Team: {ranking.team} | Positions: {positions_str}",
-        f"Stat type: {ranking.stat_type} | Ranking type: {ranking_label}",
-        f"Overall rank: #{ranking.overall_rank} (among all rostered + available players)",
+        f"Stat type: {ranking.stat_type} | Ranking type: {ranking_desc}",
+        f"{rank_label}: #{ranking.overall_rank} (among all rostered + available players)",
         f"League scoring categories: {', '.join(scoring_categories)}",
         "",
         "Category signals (season-to-date):",

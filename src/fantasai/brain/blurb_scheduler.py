@@ -732,7 +732,7 @@ def generate_rankings_blurbs(
                 _two_start_flag = "⭐ 2-START WEEK" if week_context_note and "2 starts" in week_context_note else ""
                 prompt = (
                     f"THIS WEEK FANTASY NOTE — {player.name} "
-                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})"
+                    f"({full_team}, {'/'.join(positions)}, This Week Projection rank #{player.overall_rank})"
                     + (f" {_two_start_flag}" if _two_start_flag else "") + "\n\n"
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
@@ -762,7 +762,7 @@ def generate_rankings_blurbs(
             elif is_rp:
                 prompt = (
                     f"THIS WEEK FANTASY NOTE — {player.name} "
-                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"({full_team}, {'/'.join(positions)}, This Week Projection rank #{player.overall_rank})\n\n"
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"ROLE: Relief pitcher / closer — makes NO starts. "
@@ -783,7 +783,7 @@ def generate_rankings_blurbs(
             else:
                 prompt = (
                     f"THIS WEEK FANTASY NOTE — {player.name} "
-                    f"({full_team}, {'/'.join(positions)}, rank #{player.overall_rank})\n\n"
+                    f"({full_team}, {'/'.join(positions)}, This Week Projection rank #{player.overall_rank})\n\n"
                     f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                     f"Do not reference any other team.\n\n"
                     f"WEEKLY SCHEDULE:\n{week_context_note or 'standard 6-game week'}\n\n"
@@ -990,8 +990,12 @@ def generate_rankings_blurbs(
                         "be direct about why the rank reflects the player's actual value.\n\n"
                     )
 
+                _proj_rank_label = (
+                    "THIS MONTH PROJECTION RANK" if mode == "month"
+                    else "REST-OF-SEASON PROJECTION RANK"
+                )
                 prompt = (
-                f"RANK #{player.overall_rank} — {player.name} "
+                f"{_proj_rank_label} #{player.overall_rank} — {player.name} "
                 f"({full_team}, {'/'.join(positions)})\n\n"
                 f"PLAYER FACTS (non-negotiable): {player.name} plays for the {full_team}. "
                 f"Do not reference any other team.\n\n"
