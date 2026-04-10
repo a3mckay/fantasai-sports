@@ -1574,9 +1574,11 @@ def roster_analysis(
             trade_targets=trade_targets,
         ))
 
-    # Fill BN slots with remaining players (weakest first — most upgrade-worthy)
+    # Fill BN slots with remaining players (weakest first — most upgrade-worthy).
+    # Exclude IL/NA players — they're handled separately in the stash section below
+    # and must not also consume BN slots (which would displace actual bench players).
     bench_players = sorted(
-        [r for r in roster_rankings if r.player_id not in assigned_ids],
+        [r for r in roster_rankings if r.player_id not in assigned_ids and r.player_id not in _il_id_set],
         key=lambda r: r.score,  # ascending: weakest first
     )
     bn_idx = 0
@@ -1815,6 +1817,48 @@ def roster_analysis(
             waiver_upgrades=stash_upgrades,
             trade_targets=[],
         ))
+
+    # ── Unranked roster members (no stats / stub players) ────────────────────
+    # Players whose Yahoo name couldn't be resolved to a FanGraphs ID are stored
+    # as stub Player records with negative player_ids and no PlayerStats rows.
+    # _apply_team_weights silently skips them, so they never appear in any slot
+    # above.  Show them explicitly as BN slots so the user sees their full roster.
+    _ranked_ids: set[int] = {r.player_id for r in roster_rankings}
+    _unranked_active_ids = [
+        pid for pid in player_ids
+        if pid not in _ranked_ids and pid not in _il_id_set
+    ]
+    if _unranked_active_ids:
+        from fantasai.models.player import Player as _UnrankedPlayer
+        _unranked_map = {
+            p.player_id: p
+            for p in db.query(_UnrankedPlayer).filter(
+                _UnrankedPlayer.player_id.in_(_unranked_active_ids)
+            ).all()
+        }
+        for _uid in _unranked_active_ids:
+            _up = _unranked_map.get(_uid)
+            if _up is None:
+                continue
+            inj = _injury_fields(_uid)
+            slots.append(RosterSlotRead(
+                position="BN",
+                slot_index=len(slots),
+                assessment="average",
+                players=[_up.name],
+                player_details=[RosterPlayerRead(
+                    player_name=_up.name,
+                    positions=list(_up.positions or []),
+                    score=0.0,
+                    top_categories=[],
+                    **inj,
+                )],
+                group_score=0.0,
+                priority=85,
+                has_upgrades=False,
+                waiver_upgrades=[],
+                trade_targets=[],
+            ))
 
     # Slots are already in canonical position order from evaluate_team().
     # NA/IL stash slots appended at the end.
