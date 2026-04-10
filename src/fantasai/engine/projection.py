@@ -466,6 +466,14 @@ def project_pitcher_stats(
     # rate stats (ERA, WHIP, K/9) unaffected while docking counting stats.
     ip = (config.sp_ip if is_sp else config.rp_ip) * _availability_multiplier(player, config)
 
+    # Cap IP at the Steamer projected volume — mirrors effective_pa = min(pa, consensus_pa)
+    # in project_hitter_stats.  Without this cap, a prospect projecting 30 Steamer IP at
+    # 10 K/9 gets scored as 170 IP × (10/9) = 189 K, pushing them above established aces.
+    if steamer_data is not None:
+        _steamer_ip_proj = float((steamer_data.counting_stats or {}).get("IP") or 0)
+        if _steamer_ip_proj > 1.0:
+            ip = min(ip, _steamer_ip_proj)
+
     # Distinguish "no data yet" (pre-season / prospect) from "tiny sample this season".
     _raw_ip = cnt.get("IP") if cnt else None
     _has_actual_ip = _raw_ip is not None and float(_raw_ip) >= 0.1

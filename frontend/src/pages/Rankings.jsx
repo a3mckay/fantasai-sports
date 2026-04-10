@@ -200,6 +200,7 @@ export default function Rankings() {
   const [predictive, setPredictive] = useState(null)
   const [lookback, setLookback]     = useState(null)    // used as comparison baseline for Projected mode
   const [current, setCurrent]       = useState(null)    // Current Season YTD stats rankings
+  const [blurbsGeneratedAt, setBlurbsGeneratedAt] = useState(null)
   const [expandedRows, setExpandedRows] = useState(new Set())
   const [showBackTop, setShowBackTop]   = useState(false)
   const [weekMode, setWeekMode]         = useState(null)
@@ -212,12 +213,15 @@ export default function Rankings() {
   // fetchAll already fetches the default horizon on mount.
   useEffect(() => {
     if (initialRender.current) { initialRender.current = false; return }
+    setPredictive(null)   // clear stale data immediately so old horizon doesn't linger
     fetchPredictive(horizon)
   }, [horizon])
 
-  // Fetch current-season rankings lazily when switching to that mode
+  // Fetch current-season rankings when switching to that mode.
+  // Always clear + refetch so stale data from a previous visit doesn't linger.
   useEffect(() => {
-    if (mode === 'current' && current === null) {
+    if (mode === 'current') {
+      setCurrent(null)
       fetchCurrent()
     }
   }, [mode])
@@ -247,6 +251,7 @@ export default function Rankings() {
     try {
       const pred = await getRankings({ ranking_type: 'predictive', limit: 400, horizon: h })
       setPredictive(Array.isArray(pred) ? pred : (pred.rankings || pred))
+      if (!Array.isArray(pred) && pred.blurbs_generated_at) setBlurbsGeneratedAt(pred.blurbs_generated_at)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -260,6 +265,7 @@ export default function Rankings() {
     try {
       const res = await getRankings({ ranking_type: 'current', limit: 400 })
       setCurrent(Array.isArray(res) ? res : (res.rankings || res))
+      if (!Array.isArray(res) && res.blurbs_generated_at) setBlurbsGeneratedAt(res.blurbs_generated_at)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -277,6 +283,8 @@ export default function Rankings() {
       ])
       setPredictive(Array.isArray(pred) ? pred : (pred.rankings || pred))
       setLookback(Array.isArray(look)  ? look  : (look.rankings  || look))
+      // Seed the timestamp from the initial predictive fetch (default mode on mount)
+      if (!Array.isArray(pred) && pred.blurbs_generated_at) setBlurbsGeneratedAt(pred.blurbs_generated_at)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -378,6 +386,17 @@ export default function Rankings() {
           Top 400 players ranked by fantasy value. Switch between projected outlook and current-season stats.
         </p>
       </div>
+
+      {/* ── Blurb freshness timestamp ── */}
+      {blurbsGeneratedAt && (
+        <p className="text-[11px] text-slate-600">
+          Blurbs generated{' '}
+          {new Date(blurbsGeneratedAt).toLocaleString('en-US', {
+            month: 'short', day: 'numeric', year: 'numeric',
+            hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+          })}
+        </p>
+      )}
 
       {/* ── Mode toggle + Search + Refresh ── */}
       <div className="flex items-center gap-3 flex-wrap">

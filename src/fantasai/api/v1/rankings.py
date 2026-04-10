@@ -12,7 +12,7 @@ from fantasai.api.deps import get_db
 from fantasai.brain.injury_classifier import maybe_apply_classification
 from fantasai.config import settings
 from fantasai.engine.projection import ProjectionHorizon
-from fantasai.schemas.ranking import PlayerRankingRead
+from fantasai.schemas.ranking import PlayerRankingRead, RankingsResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/rankings", tags=["rankings"])
@@ -28,7 +28,7 @@ RANKINGS_DEFAULT_CATEGORIES = [
 CURRENT_PERIOD = "2026-season"
 
 
-@router.get("", response_model=list[PlayerRankingRead])
+@router.get("", response_model=RankingsResponse)
 def list_rankings(
     ranking_type: Optional[str] = Query(default="lookback", pattern="^(lookback|predictive|current)$"),
     season: int = Query(default=2026),
@@ -72,7 +72,7 @@ def list_rankings(
         rankings = current_rankings
 
         if not rankings:
-            return []
+            return RankingsResponse(rankings=[])
 
         # Apply filters
         if stat_type:
@@ -86,6 +86,7 @@ def list_rankings(
         # Fetch pre-generated blurbs for current mode
         _current_blurb_map: dict[int, str] = {}
         _current_share_map: dict[int, str] = {}
+        _current_blurbs_generated_at: Optional[str] = None
         try:
             _current_pids = [r.player_id for r in rankings]
             _current_blurb_rows = (
@@ -102,30 +103,46 @@ def list_rankings(
                 if _row.blurb:
                     _current_blurb_map[_row.player_id] = _row.blurb
                     _current_share_map[_row.player_id] = _row.share_token
+            # Timestamp of the most recently generated current blurb.
+            from sqlalchemy import func as _sqlfunc
+            _current_ts = (
+                db.query(_sqlfunc.max(Ranking.updated_at))
+                .filter(
+                    Ranking.ranking_type == "current",
+                    Ranking.period == "2026-current",
+                    Ranking.league_id.is_(None),
+                )
+                .scalar()
+            )
+            if _current_ts:
+                _current_blurbs_generated_at = _current_ts.isoformat()
         except Exception:
             logger.warning("list_rankings: current blurb fetch failed (non-fatal)", exc_info=True)
             db.rollback()
 
-        return [
-            PlayerRankingRead(
-                player_id=r.player_id,
-                name=r.name,
-                team=r.team,
-                positions=r.positions,
-                stat_type=r.stat_type,
-                overall_rank=r.overall_rank,
-                score=r.score,
-                raw_score=r.raw_score,
-                category_contributions=r.category_contributions,
-                blurb=_current_blurb_map.get(r.player_id),
-                injury_status=r.injury_status,
-                risk_flag=r.risk_flag,
-                risk_note=r.risk_note,
-                is_prospect=getattr(r, "is_prospect", False),
-                pav_score=getattr(r, "pav_score", None),
-            )
-            for r in rankings
-        ]
+        return RankingsResponse(
+            rankings=[
+                PlayerRankingRead(
+                    player_id=r.player_id,
+                    name=r.name,
+                    team=r.team,
+                    positions=r.positions,
+                    stat_type=r.stat_type,
+                    overall_rank=r.overall_rank,
+                    score=r.score,
+                    raw_score=r.raw_score,
+                    category_contributions=r.category_contributions,
+                    blurb=_current_blurb_map.get(r.player_id),
+                    injury_status=r.injury_status,
+                    risk_flag=r.risk_flag,
+                    risk_note=r.risk_note,
+                    is_prospect=getattr(r, "is_prospect", False),
+                    pav_score=getattr(r, "pav_score", None),
+                )
+                for r in rankings
+            ],
+            blurbs_generated_at=_current_blurbs_generated_at,
+        )
 
     if season == _CACHED_SEASON:
         from fantasai.api.v1.recommendations import _compute_rankings, _get_cached_raw_rankings
@@ -147,7 +164,7 @@ def list_rankings(
             PlayerStats.stat_type.in_(["batting", "pitching"]),
         ).all()
         if not stats_rows:
-            return []
+            return RankingsResponse(rankings=[])
         players = []
         for stats in stats_rows:
             player = db.get(Player, stats.player_id)
@@ -164,7 +181,7 @@ def list_rankings(
                 advanced_stats=stats.advanced_stats or {},
             ))
         if not players:
-            return []
+            return RankingsResponse(rankings=[])
         adapter = MLBAdapter()
         eng = ScoringEngine(adapter, RANKINGS_DEFAULT_CATEGORIES)
         lookback_raw = eng.compute_lookback_rankings(season, players=players)
@@ -187,7 +204,7 @@ def list_rankings(
     rankings = predictive if ranking_type == "predictive" else lookback
 
     if not rankings:
-        return []
+        return RankingsResponse(rankings=[])
 
     # Inject MiLB prospects at their PAV-equivalent rank.
     # Only inject when no position / stat_type filter has been applied yet
@@ -238,6 +255,24 @@ def list_rankings(
         logger.warning("list_rankings: blurb fetch failed (non-fatal)", exc_info=True)
         db.rollback()
 
+    # Timestamp of the most recently generated blurb for this mode/period.
+    blurbs_generated_at: Optional[str] = None
+    try:
+        from sqlalchemy import func as _sqlfunc
+        _ts = (
+            db.query(_sqlfunc.max(Ranking.updated_at))
+            .filter(
+                Ranking.ranking_type.in_([ranking_type, "pav"]),
+                Ranking.period == blurb_period,
+                Ranking.league_id.is_(None),
+            )
+            .scalar()
+        )
+        if _ts:
+            blurbs_generated_at = _ts.isoformat()
+    except Exception:
+        logger.debug("blurbs_generated_at query failed (non-fatal)", exc_info=True)
+
     # Apply filters
     if stat_type:
         rankings = [r for r in rankings if r.stat_type == stat_type]
@@ -281,28 +316,31 @@ def list_rankings(
     # Paginate
     rankings = rankings[offset: offset + limit]
 
-    return [
-        PlayerRankingRead(
-            player_id=r.player_id,
-            name=r.name,
-            team=r.team,
-            positions=r.positions,
-            stat_type=r.stat_type,
-            overall_rank=r.overall_rank,
-            score=r.score,
-            raw_score=r.raw_score,
-            category_contributions=r.category_contributions,
-            blurb=blurb_map.get(r.player_id),
-            injury_status=r.injury_status,
-            risk_flag=r.risk_flag,
-            risk_note=r.risk_note,
-            is_prospect=getattr(r, "is_prospect", False),
-            pav_score=getattr(r, "pav_score", None),
-            rank_delta=rank_delta_map.get(r.player_id),
-            share_token=share_token_map.get(r.player_id),
-        )
-        for r in rankings
-    ]
+    return RankingsResponse(
+        rankings=[
+            PlayerRankingRead(
+                player_id=r.player_id,
+                name=r.name,
+                team=r.team,
+                positions=r.positions,
+                stat_type=r.stat_type,
+                overall_rank=r.overall_rank,
+                score=r.score,
+                raw_score=r.raw_score,
+                category_contributions=r.category_contributions,
+                blurb=blurb_map.get(r.player_id),
+                injury_status=r.injury_status,
+                risk_flag=r.risk_flag,
+                risk_note=r.risk_note,
+                is_prospect=getattr(r, "is_prospect", False),
+                pav_score=getattr(r, "pav_score", None),
+                rank_delta=rank_delta_map.get(r.player_id),
+                share_token=share_token_map.get(r.player_id),
+            )
+            for r in rankings
+        ],
+        blurbs_generated_at=blurbs_generated_at,
+    )
 
 
 # ---------------------------------------------------------------------------

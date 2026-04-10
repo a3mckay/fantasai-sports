@@ -44,3 +44,12 @@ class PlayerRankingRead(BaseModel):
     rank_delta: Optional[int] = None
     # Public share token — used to serve the blurb card PNG without auth.
     share_token: Optional[str] = None
+
+
+class RankingsResponse(BaseModel):
+    """Wrapper for the /rankings endpoint — carries metadata alongside the player list."""
+
+    rankings: list[PlayerRankingRead]
+    # ISO datetime string (UTC) of the most recently generated blurb for this mode/period.
+    # None when no blurbs have been generated yet.
+    blurbs_generated_at: Optional[str] = None
