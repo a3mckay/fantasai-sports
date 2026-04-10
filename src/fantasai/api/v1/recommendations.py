@@ -1495,10 +1495,24 @@ def roster_analysis(
 
         occupant_score = assigned_player.score if assigned_player else 0.0
         waiver_upgrades, trade_targets = _build_upgrades(slot_pos, min_score=occupant_score)
-        # "weak" and "empty" slots surface even without candidates (shows the gap).
-        # "average" is no longer enough to force the slot into Upgrades Available —
-        # an average player at a position doesn't need an urgent upgrade notice.
-        has_upgrades = bool(waiver_upgrades or trade_targets) or assessment in ("weak", "empty")
+
+        # Determine whether this slot belongs in the "Upgrades Available" fold.
+        # Rules:
+        #   solid/elite  → always "No Upgrades Needed" — there are always
+        #                   theoretically better players but we never nag the
+        #                   user to upgrade an already-great spot.  Clear any
+        #                   candidates too (no point showing them).
+        #   weak/empty   → always "Upgrades Available" even with no candidates
+        #                   (surfaces the gap explicitly).
+        #   average      → only "Upgrades Available" when actual candidates exist.
+        if assessment in ("solid", "elite"):
+            has_upgrades = False
+            waiver_upgrades = []
+            trade_targets = []
+        elif assessment in ("weak", "empty"):
+            has_upgrades = True
+        else:  # "average"
+            has_upgrades = bool(waiver_upgrades or trade_targets)
 
         slots.append(RosterSlotRead(
             position=slot_pos,
