@@ -1627,60 +1627,101 @@ def roster_analysis(
             trade_targets=trade_targets,
         ))
 
-    # ── NA / IL stash suggestions ─────────────────────────────────────────────
-    # Only suggest stash candidates for slots that are actually empty (not already
-    # occupied by a rostered player).  il_player_ids tracks players the team has
-    # parked in IL/NA slots.
-    na_occupied = len(il_ids)  # Yahoo puts NA/IL occupants in il_player_ids
+    # ── Pre-load stash candidates (used for both occupied and empty slots) ──────
+    from datetime import date as _date
+    from fantasai.models.player import InjuryRecord as _InjuryRec, Player as _StashPlayer
+    from fantasai.models.prospect import ProspectProfile as _StashPP
+
+    _stash_today = _date.today()
+
+    # All high-PAV prospects not already rostered, sorted by weakness-fit then PAV
+    _weak_cats    = set(evaluation.weak_categories) - _JUNK_CATS
+    _batting_weak  = bool(_weak_cats & {"R", "HR", "RBI", "SB", "AVG", "OPS", "H", "BB"})
+    _pitching_weak = bool(_weak_cats & {"W", "SV", "K", "ERA", "WHIP", "QS", "HLD"})
+
+    _all_prospect_rows = (
+        db.query(_StashPP, _StashPlayer)
+        .join(_StashPlayer, _StashPlayer.player_id == _StashPP.player_id)
+        .filter(_StashPP.pav_score >= 40.0)
+        .order_by(_StashPP.pav_score.desc())
+        .limit(50)
+        .all()
+    )
+
+    def _na_priority(pp_player: tuple) -> tuple:
+        pp, player = pp_player
+        if player.player_id in all_rostered:
+            return (99, 0)
+        stat_type = pp.stat_type or "batting"
+        addresses_weakness = (
+            (stat_type == "batting" and _batting_weak) or
+            (stat_type == "pitching" and _pitching_weak)
+        )
+        return (0 if addresses_weakness else 1, -(pp.pav_score or 0))
+
+    _sorted_prospects = sorted(_all_prospect_rows, key=_na_priority)
+
+    def _build_na_candidates(min_score: float = 0.0, limit: int = 3) -> list[WaiverUpgradeRead]:
+        """Return up to `limit` unrostered prospects better than min_score."""
+        result: list[WaiverUpgradeRead] = []
+        for pp, player in _sorted_prospects:
+            if player.player_id in all_rostered:
+                continue
+            pav_as_score = round((pp.pav_score or 0) / 10.0, 3)
+            if pav_as_score <= min_score:
+                continue
+            result.append(WaiverUpgradeRead(
+                player_id=player.player_id,
+                player_name=player.name,
+                positions=list(player.positions or [pp.stat_type[:2].upper()]),
+                score=pav_as_score,
+                category_impact={},
+                blurb=f"PAV {pp.pav_score:.0f} prospect — {pp.stat_type or 'batting'}",
+            ))
+            if len(result) >= limit:
+                break
+        return result
+
+    # All near-return injured players not already rostered
+    _all_injury_rows = (
+        db.query(_InjuryRec, _StashPlayer)
+        .join(_StashPlayer, _StashPlayer.player_id == _InjuryRec.player_id)
+        .filter(_InjuryRec.status != "out_for_season")
+        .order_by(_InjuryRec.return_date.asc().nulls_last())
+        .limit(100)
+        .all()
+    )
+
+    def _build_il_candidates(min_score: float = 0.0, limit: int = 3) -> list[WaiverUpgradeRead]:
+        """Return up to `limit` unrostered near-return injured players better than min_score."""
+        result: list[WaiverUpgradeRead] = []
+        for ir, player in _all_injury_rows:
+            if player.player_id in all_rostered:
+                continue
+            if ir.return_date and (ir.return_date - _stash_today).days > 60:
+                continue
+            ranking = ranking_map.get(player.player_id)
+            score = round(ranking.score, 3) if ranking else 0.0
+            if score <= min_score:
+                continue
+            result.append(WaiverUpgradeRead(
+                player_id=player.player_id,
+                player_name=player.name,
+                positions=list(player.positions or []),
+                score=score,
+                category_impact={},
+            ))
+            if len(result) >= limit:
+                break
+        return result
+
+    # ── NA / IL stash suggestions for EMPTY slots ─────────────────────────────
+    na_occupied = len(il_ids)
     na_count  = max(0, sum(1 for p in roster_positions if p == "NA") - na_occupied)
     il_count  = sum(1 for p in roster_positions if p in ("IL", "IL+", "DL"))
 
     if na_count > 0:
-        from fantasai.models.player import Player
-        from fantasai.models.prospect import ProspectProfile
-
-        prospect_rows = (
-            db.query(ProspectProfile, Player)
-            .join(Player, Player.player_id == ProspectProfile.player_id)
-            .filter(ProspectProfile.pav_score >= 40.0)
-            .order_by(ProspectProfile.pav_score.desc())
-            .limit(50)
-            .all()
-        )
-
-        # Prefer prospects whose stat_type addresses the team's weak categories.
-        _weak_cats = set(evaluation.weak_categories) - _JUNK_CATS
-        _batting_weak  = bool(_weak_cats & {"R", "HR", "RBI", "SB", "AVG", "OPS", "H", "BB"})
-        _pitching_weak = bool(_weak_cats & {"W", "SV", "K", "ERA", "WHIP", "QS", "HLD"})
-
-        def _na_priority(pp_player: tuple) -> tuple:
-            pp, player = pp_player
-            if player.player_id in all_rostered:
-                return (99, 0)
-            # Prefer prospects that address a weakness; tie-break by PAV
-            stat_type = pp.stat_type or "batting"
-            addresses_weakness = (
-                (stat_type == "batting" and _batting_weak) or
-                (stat_type == "pitching" and _pitching_weak)
-            )
-            return (0 if addresses_weakness else 1, -(pp.pav_score or 0))
-
-        sorted_prospects = sorted(prospect_rows, key=_na_priority)
-        na_upgrades: list[WaiverUpgradeRead] = []
-        for pp, player in sorted_prospects:
-            if player.player_id in all_rostered:
-                continue
-            na_upgrades.append(WaiverUpgradeRead(
-                player_id=player.player_id,
-                player_name=player.name,
-                positions=list(player.positions or [pp.stat_type[:2].upper()]),
-                score=round((pp.pav_score or 0) / 10.0, 3),
-                category_impact={},
-                blurb=f"PAV {pp.pav_score:.0f} prospect — {pp.stat_type or 'batting'}",
-            ))
-            if len(na_upgrades) >= 3:
-                break
-
+        na_upgrades = _build_na_candidates(min_score=0.0)
         if na_upgrades:
             slots.append(RosterSlotRead(
                 position="NA",
@@ -1696,38 +1737,7 @@ def roster_analysis(
             ))
 
     if il_count > 0:
-        from datetime import date as _date
-
-        from fantasai.models.player import InjuryRecord, Player
-
-        injury_rows = (
-            db.query(InjuryRecord, Player)
-            .join(Player, Player.player_id == InjuryRecord.player_id)
-            .filter(InjuryRecord.status != "out_for_season")
-            .order_by(InjuryRecord.return_date.asc().nulls_last())
-            .limit(100)
-            .all()
-        )
-        il_upgrades: list[WaiverUpgradeRead] = []
-        today = _date.today()
-        for ir, player in injury_rows:
-            if player.player_id in all_rostered:
-                continue
-            # Skip if return date is more than 60 days out (long-term)
-            if ir.return_date and (ir.return_date - today).days > 60:
-                continue
-            ranking = ranking_map.get(player.player_id)
-            score = round(ranking.score, 3) if ranking else 0.0
-            il_upgrades.append(WaiverUpgradeRead(
-                player_id=player.player_id,
-                player_name=player.name,
-                positions=list(player.positions or []),
-                score=score,
-                category_impact={},
-            ))
-            if len(il_upgrades) >= 3:
-                break
-
+        il_upgrades = _build_il_candidates(min_score=0.0)
         if il_upgrades:
             slots.append(RosterSlotRead(
                 position="IL",
@@ -1788,16 +1798,21 @@ def roster_analysis(
             top_categories=_top_cats(r),
             **inj,
         )]
+        # Suggest better stash candidates even for occupied slots.
+        if slot_pos == "NA":
+            stash_upgrades = _build_na_candidates(min_score=r.score)
+        else:
+            stash_upgrades = _build_il_candidates(min_score=r.score)
         slots.append(RosterSlotRead(
             position=slot_pos,
             slot_index=slot_idx,
-            assessment="average",   # neutral — slot is being used correctly
+            assessment="average",
             players=[r.name],
             player_details=player_details,
             group_score=0.0,
             priority=92 + slot_idx,
-            has_upgrades=False,
-            waiver_upgrades=[],
+            has_upgrades=bool(stash_upgrades),
+            waiver_upgrades=stash_upgrades,
             trade_targets=[],
         ))
 
