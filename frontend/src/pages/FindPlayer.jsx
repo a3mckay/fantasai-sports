@@ -277,11 +277,8 @@ function UpgradeSection({ slot, myTeamId }) {
 
 // ── SlotRow — one roster slot row (1 player + optional upgrade section) ────
 
-function SlotRow({ slot, myTeamId }) {
-  // Upgrade slots start expanded; solid/elite start collapsed
-  const defaultExpanded = slot.has_upgrades &&
-    (slot.assessment === 'weak' || slot.assessment === 'empty' || slot.assessment === 'average')
-  const [expanded, setExpanded] = useState(defaultExpanded)
+function SlotRow({ slot, myTeamId, autoExpand = false }) {
+  const [expanded, setExpanded] = useState(autoExpand && slot.has_upgrades)
 
   const isSpecial = slot.position === 'NA' || slot.position === 'IL'
   const player = slot.player_details[0] || null
@@ -392,6 +389,15 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
 
   const hasUpgrades = batterUpgrade.length > 0 || pitcherUpgrade.length > 0
 
+  // Only auto-expand the single most urgent upgrade slot (lowest priority value
+  // = highest urgency). All others start collapsed so the page isn't overwhelming.
+  const firstUpgradeKey = useMemo(() => {
+    const all = [...batterUpgrade, ...pitcherUpgrade]
+    if (all.length === 0) return null
+    const most = all.reduce((a, b) => a.priority < b.priority ? a : b)
+    return `${most.position}-${most.slot_index}`
+  }, [allSlots]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="space-y-5">
       <ErrorBanner message={error} onClose={onDismissError} />
@@ -430,13 +436,13 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
               {batterUpgrade.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Batters</p>
-                  {batterUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} />)}
+                  {batterUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} autoExpand={`${s.position}-${s.slot_index}` === firstUpgradeKey} />)}
                 </div>
               )}
               {pitcherUpgrade.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Pitchers</p>
-                  {pitcherUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} />)}
+                  {pitcherUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} autoExpand={`${s.position}-${s.slot_index}` === firstUpgradeKey} />)}
                 </div>
               )}
             </div>

@@ -1455,8 +1455,14 @@ def roster_analysis(
         g.position: g.group_score for g in evaluation.position_breakdown
     }
 
-    # Sort roster rankings by score descending for greedy assignment
-    assignable = sorted(roster_rankings, key=lambda r: r.score, reverse=True)
+    # Sort roster rankings by score descending for greedy assignment.
+    # Exclude players parked in IL/NA slots — they can't fill active roster
+    # spots and must not appear in both a starting slot AND the IL/NA section.
+    _il_id_set = set(il_ids)
+    assignable = sorted(
+        [r for r in roster_rankings if r.player_id not in _il_id_set],
+        key=lambda r: r.score, reverse=True,
+    )
     assigned_ids: set[int] = set()
 
     _CANONICAL_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "Util", "DH", "SP", "RP", "P"]
@@ -1510,6 +1516,14 @@ def roster_analysis(
                 or group_assessment.get(slot_pos)
                 or "average"
             )
+            # Per-player override: a group can drag down its assessment if
+            # paired with weaker teammates (e.g. Sanchez + Rasmussen → SP
+            # group "average").  An individually top-60 player should always
+            # show as at least solid regardless of group.
+            if assigned_player.score >= _top25_threshold:
+                assessment = "elite"
+            elif assigned_player.score >= _top60_threshold and assessment not in ("elite",):
+                assessment = "solid"
         else:
             assessment = "empty"
         _real_group_key = real_group if assigned_player else slot_pos
@@ -1586,10 +1600,19 @@ def roster_analysis(
                 **inj,
             )]
 
+        occupant_score = bn_player.score if bn_player else 0.0
         waiver_upgrades, trade_targets = _build_upgrades(
-            bn_player.positions[0] if bn_player and bn_player.positions else "BN"
+            bn_player.positions[0] if bn_player and bn_player.positions else "BN",
+            min_score=occupant_score,
         )
-        has_upgrades = bool(waiver_upgrades or trade_targets)
+        # Same solid/elite guard as starting slots — don't nag the user to
+        # upgrade a bench spot already occupied by a quality player.
+        if assessment in ("solid", "elite"):
+            has_upgrades = False
+            waiver_upgrades = []
+            trade_targets = []
+        else:
+            has_upgrades = bool(waiver_upgrades or trade_targets) or assessment == "empty"
 
         slots.append(RosterSlotRead(
             position="BN",
@@ -1723,18 +1746,41 @@ def roster_analysis(
     # Players the team has parked in IL/NA slots.  Show them as real slot rows
     # with their name and injury badge — the user can see who's sidelined and
     # when they're expected back.  These are informational only (no upgrades).
-    for slot_idx, il_pid in enumerate(il_ids):
+    # Determine which players are in NA slots vs IL slots.
+    # NA = MiLB prospects; IL = injured MLB players.
+    # We use ProspectProfile as the authoritative signal — if a player has a
+    # prospect profile they belong in a NA slot, otherwise in an IL slot.
+    from fantasai.models.prospect import ProspectProfile as _PP
+    _prospect_ids: set[int] = {
+        pid for (pid,) in db.query(_PP.player_id).all()
+    }
+    # Count how many NA vs IL slots the team actually has so we don't overflow.
+    _na_slots_total  = sum(1 for p in roster_positions if p == "NA")
+    _il_slots_total  = sum(1 for p in roster_positions if p in ("IL", "IL+", "DL"))
+    _na_used = 0
+    _il_used = 0
+
+    # Sort by score desc so the best stash appears first in the section.
+    il_ids_sorted = sorted(
+        il_ids,
+        key=lambda pid: ranking_map[pid].score if pid in ranking_map else 0.0,
+        reverse=True,
+    )
+
+    for slot_idx, il_pid in enumerate(il_ids_sorted):
         r = ranking_map.get(il_pid)
         if r is None:
             continue
         inj = _injury_fields(il_pid)
-        # Determine slot type: Yahoo stores "NA" status for MiLB prospects
-        yahoo_raw = (
-            injured_stats.get(str(il_pid))
-            or injured_stats.get(il_pid)
-            or ""
-        )
-        slot_pos = "NA" if str(yahoo_raw).upper() == "NA" else "IL"
+        # Classify into NA (prospect) or IL (injured MLB player).
+        if il_pid in _prospect_ids and _na_used < _na_slots_total:
+            slot_pos = "NA"
+            _na_used += 1
+        elif _il_used < _il_slots_total:
+            slot_pos = "IL"
+            _il_used += 1
+        else:
+            slot_pos = "IL"   # fallback if counts are off
         player_details = [RosterPlayerRead(
             player_name=r.name,
             positions=r.positions,
