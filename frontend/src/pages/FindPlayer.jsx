@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
-import { Search, Play, RefreshCw, Loader2, Star, TrendingUp, X, Trash2, Users, AlertTriangle, ChevronDown, ChevronRight, ArrowUpCircle, Handshake } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Search, Play, RefreshCw, Loader2, Star, TrendingUp, X, Trash2, Users, AlertTriangle, ChevronDown, ChevronRight, ArrowUpCircle, Handshake, ArrowLeftRight } from 'lucide-react'
 import { findPlayer, rosterAnalysis } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -153,7 +154,21 @@ function GradeBadge({ grade }) {
 
 // ── Upgrade section components ────────────────────────────────────────────
 
-function TradeTargetRow({ t }) {
+function TradeTargetRow({ t, myTeamId }) {
+  const navigate = useNavigate()
+
+  const handleEvaluateTrade = () => {
+    navigate('/trade', {
+      state: {
+        preloadReceiving: {
+          player_name: t.player_name,
+          player_id: t.player_id,
+        },
+        my_team_id: myTeamId,
+      }
+    })
+  }
+
   return (
     <div className="flex items-start gap-2">
       <div className="flex-1 min-w-0">
@@ -167,6 +182,13 @@ function TradeTargetRow({ t }) {
         </div>
         <p className="text-[10px] text-slate-500 mt-0.5">{t.difficulty_reason}</p>
         {t.blurb && <p className="text-[10px] text-slate-600 mt-0.5 italic">{t.blurb}</p>}
+        <button
+          onClick={handleEvaluateTrade}
+          className="mt-1 flex items-center gap-1 text-[10px] text-field-500 hover:text-field-300 transition-colors"
+        >
+          <ArrowLeftRight size={10} />
+          Evaluate Trade
+        </button>
       </div>
       <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
         {t.difficulty}
@@ -206,7 +228,7 @@ function WaiverRow({ w, isSpecialSlot }) {
   )
 }
 
-function UpgradeSection({ slot }) {
+function UpgradeSection({ slot, myTeamId }) {
   const isSpecial = slot.position === 'NA' || slot.position === 'IL'
   const actionableTrades = slot.trade_targets.filter(t => t.difficulty !== 'unrealistic')
   const unrealisticTrades = slot.trade_targets.filter(t => t.difficulty === 'unrealistic')
@@ -244,7 +266,7 @@ function UpgradeSection({ slot }) {
             <span className="text-[10px] font-semibold text-leather-300 uppercase tracking-wide">Trade Targets</span>
           </div>
           <div className="space-y-2.5">
-            {actionableTrades.map(t => <TradeTargetRow key={t.player_id} t={t} />)}
+            {actionableTrades.map(t => <TradeTargetRow key={t.player_id} t={t} myTeamId={myTeamId} />)}
             {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
               <div className="flex items-center gap-2 pt-2 pb-1">
                 <div className="flex-1 h-px bg-navy-700" />
@@ -252,7 +274,7 @@ function UpgradeSection({ slot }) {
                 <div className="flex-1 h-px bg-navy-700" />
               </div>
             )}
-            {unrealisticTrades.map(t => <TradeTargetRow key={t.player_id} t={t} />)}
+            {unrealisticTrades.map(t => <TradeTargetRow key={t.player_id} t={t} myTeamId={myTeamId} />)}
           </div>
         </div>
       )}
@@ -262,7 +284,7 @@ function UpgradeSection({ slot }) {
 
 // ── SlotRow — one roster slot row (1 player + optional upgrade section) ────
 
-function SlotRow({ slot }) {
+function SlotRow({ slot, myTeamId }) {
   // Upgrade slots start expanded; solid/elite start collapsed
   const defaultExpanded = slot.has_upgrades &&
     (slot.assessment === 'weak' || slot.assessment === 'empty' || slot.assessment === 'average')
@@ -318,7 +340,7 @@ function SlotRow({ slot }) {
       {/* Upgrade section — shown when expanded */}
       {slot.has_upgrades && expanded && (
         <div className="border-t border-navy-800 px-4 py-3">
-          <UpgradeSection slot={slot} />
+          <UpgradeSection slot={slot} myTeamId={myTeamId} />
         </div>
       )}
     </div>
@@ -327,7 +349,7 @@ function SlotRow({ slot }) {
 
 // ── SlotGroup — a labeled group of slots (collapsible) ────────────────────
 
-function SlotGroup({ title, slots, defaultCollapsed = false }) {
+function SlotGroup({ title, slots, defaultCollapsed = false, myTeamId }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   if (slots.length === 0) return null
   return (
@@ -342,7 +364,7 @@ function SlotGroup({ title, slots, defaultCollapsed = false }) {
       </button>
       {!collapsed && (
         <div className="space-y-2">
-          {slots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+          {slots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={myTeamId} />)}
         </div>
       )}
     </div>
@@ -415,13 +437,13 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
               {batterUpgrade.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Batters</p>
-                  {batterUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+                  {batterUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} />)}
                 </div>
               )}
               {pitcherUpgrade.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-[10px] text-slate-600 uppercase tracking-widest font-semibold">Pitchers</p>
-                  {pitcherUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+                  {pitcherUpgrade.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} />)}
                 </div>
               )}
             </div>
@@ -431,8 +453,8 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
           {(batterSolid.length > 0 || pitcherSolid.length > 0) && (
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">No Upgrades Needed</h3>
-              <SlotGroup title="Batters" slots={batterSolid} defaultCollapsed={true} />
-              <SlotGroup title="Pitchers" slots={pitcherSolid} defaultCollapsed={true} />
+              <SlotGroup title="Batters" slots={batterSolid} defaultCollapsed={true} myTeamId={selectedTeam?.team_id} />
+              <SlotGroup title="Pitchers" slots={pitcherSolid} defaultCollapsed={true} myTeamId={selectedTeam?.team_id} />
             </div>
           )}
 
@@ -441,7 +463,7 @@ function RosterAnalysisPanel({ selectedTeam, data, loading, error, onLoad, onDis
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Stash Spots</h3>
               <div className="space-y-2">
-                {specialSlots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} />)}
+                {specialSlots.map(s => <SlotRow key={`${s.position}-${s.slot_index}`} slot={s} myTeamId={selectedTeam?.team_id} />)}
               </div>
             </div>
           )}

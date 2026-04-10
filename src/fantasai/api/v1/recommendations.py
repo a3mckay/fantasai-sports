@@ -1233,8 +1233,19 @@ def roster_analysis(
     # ── Available (unrostered) players sorted by score ─────────────────────────
     # Used for direct score-based upgrade candidates — bypasses the category-fit
     # filter in Recommender so that even strong teams always see options.
+    # Exclude players on 60-day IL or out for the season — they can't contribute
+    # now and shouldn't appear as active waiver/trade targets. (10-day IL and
+    # day-to-day are kept since they may return within the week.)
+    _LONG_TERM_INJURY = frozenset({"il_60", "out_for_season"})
     available_by_score = sorted(
-        [r for r in predictive if r.player_id not in all_rostered],
+        [
+            r for r in predictive
+            if r.player_id not in all_rostered
+            and (
+                r.player_id not in injury_map
+                or injury_map[r.player_id].status not in _LONG_TERM_INJURY
+            )
+        ],
         key=lambda r: r.score,
         reverse=True,
     )
@@ -1275,9 +1286,17 @@ def roster_analysis(
         top_score = max((r.score for r in other_rankings), default=0.0)
 
         for r in other_rankings:
-            same_pos = [x for x in other_rankings if set(x.positions) & set(r.positions)]
+            # Count teammates who can play the target's PRIMARY position only.
+            # Using full set-intersection inflates depth (e.g. a SS/2B/3B player
+            # would count all infielders as "same position"), making "they have 8
+            # at that spot" style messages badly misleading.
+            primary_pos = r.positions[0] if r.positions else None
+            same_pos = (
+                [x for x in other_rankings if primary_pos and primary_pos in (x.positions or [])]
+                if primary_pos else [r]
+            )
             same_pos_top = max((x.score for x in same_pos), default=0.0)
-            pos_label = r.positions[0] if r.positions else "that position"
+            pos_label = primary_pos or "that position"
 
             # Absolute elite threshold takes priority over positional logic
             if _top25_threshold > 0 and r.score >= _top25_threshold:
@@ -1476,9 +1495,10 @@ def roster_analysis(
 
         occupant_score = assigned_player.score if assigned_player else 0.0
         waiver_upgrades, trade_targets = _build_upgrades(slot_pos, min_score=occupant_score)
-        # Show weak/empty/average slots in the upgrade section even when no
-        # candidates are found — this surfaces actionable roster gaps.
-        has_upgrades = bool(waiver_upgrades or trade_targets) or assessment in ("weak", "empty", "average")
+        # "weak" and "empty" slots surface even without candidates (shows the gap).
+        # "average" is no longer enough to force the slot into Upgrades Available —
+        # an average player at a position doesn't need an urgent upgrade notice.
+        has_upgrades = bool(waiver_upgrades or trade_targets) or assessment in ("weak", "empty")
 
         slots.append(RosterSlotRead(
             position=slot_pos,

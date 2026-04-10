@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, X, ChevronDown, ChevronRight, Search, Plus } from 'lucide-react'
 import { evaluateTrade, searchPlayers, getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
@@ -522,6 +523,7 @@ function ReplaceTeamModal({ currentTeam, newTeam, onConfirm, onCancel }) {
 
 export default function EvaluateTrade() {
   const { league, myTeam } = useLeague() || {}
+  const location = useLocation()
   const [team1, setTeam1] = useState(null)   // giving side — defaults to myTeam
   const [team2, setTeam2] = useState(null)   // receiving side
   const [replaceModal, setReplaceModal] = useState(null)
@@ -536,6 +538,14 @@ export default function EvaluateTrade() {
   const [receivingPicks, setReceivingPicks] = useState([])
   const [manualGiving, setManualGiving] = useState([])
   const [manualReceiving, setManualReceiving] = useState([])
+
+  // Pre-populate receiving side when navigated from "Evaluate Trade" CTA
+  useEffect(() => {
+    if (location.state?.preloadReceiving) {
+      const { player_name, player_id } = location.state.preloadReceiving
+      setManualReceiving([{ name: player_name, playerId: player_id }])
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const [context, setContext] = useState('')
   const [horizon, setHorizon] = useState('season')
   const [leagueSettings, setLeagueSettings] = useState(null)
