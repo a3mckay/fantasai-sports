@@ -164,6 +164,7 @@ function TradeTargetRow({ t, myTeamId }) {
           player_name: t.player_name,
           player_id: t.player_id,
         },
+        preloadOwnerTeamId: t.owner_team_id,
         my_team_id: myTeamId,
       }
     })
@@ -182,17 +183,19 @@ function TradeTargetRow({ t, myTeamId }) {
         </div>
         <p className="text-[10px] text-slate-500 mt-0.5">{t.difficulty_reason}</p>
         {t.blurb && <p className="text-[10px] text-slate-600 mt-0.5 italic">{t.blurb}</p>}
+      </div>
+      <div className="shrink-0 flex items-center gap-1.5">
         <button
           onClick={handleEvaluateTrade}
-          className="mt-1 flex items-center gap-1 text-[10px] text-field-500 hover:text-field-300 transition-colors"
+          className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded border border-field-700 text-field-400 hover:border-field-500 hover:text-field-300 transition-colors"
         >
-          <ArrowLeftRight size={10} />
-          Evaluate Trade
+          <ArrowLeftRight size={11} />
+          Trade
         </button>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
+          {t.difficulty}
+        </span>
       </div>
-      <span className={`shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border capitalize ${DIFFICULTY_STYLE[t.difficulty] || ''}`}>
-        {t.difficulty}
-      </span>
     </div>
   )
 }
