@@ -1,22 +1,21 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   BarChart2, ArrowLeftRight, Search, Star, Users,
-  Trophy, Zap, Menu, X, Activity, TrendingUp, UserCircle, Shield, LogOut, ScrollText, Swords
+  Trophy, Zap, Menu, X, TrendingUp, UserCircle, Shield, LogOut, ScrollText, Swords
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 
 const NAV = [
-  { to: '/',              icon: Activity,       label: 'Home'               },
   { to: '/rankings',      icon: TrendingUp,     label: 'Rankings'           },
-  { to: '/matchups',      icon: Swords,         label: 'Matchup Analyzer'   },
-  { to: '/find-player',   icon: Search,         label: 'Recommend a Player' },
-  { to: '/compare',       icon: BarChart2,      label: 'Compare Players'    },
-  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'     },
-  { to: '/team-eval',     icon: Star,           label: 'Team Eval'          },
-  { to: '/compare-teams', icon: Users,          label: 'Compare Teams'      },
-  { to: '/league-power',  icon: Zap,            label: 'League Power'       },
+  { to: '/league-power',  icon: Zap,            label: 'League Power Rankings' },
   { to: '/transactions',  icon: ScrollText,     label: 'Move Grades'        },
+  { to: '/find-player',   icon: Search,         label: 'Recommend a Player' },
+  { to: '/team-eval',     icon: Star,           label: 'Team Eval'          },
+  { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'     },
+  { to: '/compare',       icon: BarChart2,      label: 'Compare Players'    },
+  { to: '/compare-teams', icon: Users,          label: 'Compare Teams'      },
+  { to: '/matchups',      icon: Swords,         label: 'Matchup Analyzer'   },
   { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning'    },
 ]
 
