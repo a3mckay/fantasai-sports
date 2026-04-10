@@ -313,11 +313,11 @@ function TeamRosterPanel({ team, side, tradedPlayerIds, onAddPlayer, onRemovePla
 // Generic team search + accordion for both the giving and receiving sides.
 // `excludeTeamId` filters out whichever team is already loaded on the other side.
 
-function TeamPickerPanel({ league, excludeTeamId, side, onLoadTeam, onAddPlayer, tradedPlayerIds, picks, onPicksChange, rankingsMap, pickValueFn, initialExpandedTeamId }) {
+function TeamPickerPanel({ league, excludeTeamId, side, onLoadTeam, onAddPlayer, tradedPlayerIds, picks, onPicksChange, rankingsMap, pickValueFn }) {
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
-  const [expandedTeamId, setExpandedTeamId] = useState(initialExpandedTeamId ?? null)
+  const [expandedTeamId, setExpandedTeamId] = useState(null)
   const searchTimeoutRef = useRef(null)
   const searchContainerRef = useRef(null)
 
@@ -537,19 +537,22 @@ export default function EvaluateTrade() {
   const [givingPicks, setGivingPicks] = useState([])
   const [receivingPicks, setReceivingPicks] = useState([])
   const [manualGiving, setManualGiving] = useState([])
-  const [manualReceiving, setManualReceiving] = useState([])
 
-  // Pre-populate receiving side when navigated from "Evaluate Trade" CTA
-  const [preloadOwnerTeamId, setPreloadOwnerTeamId] = useState(null)
+  // Initialise synchronously so the value is available before any effects fire,
+  // even if league context is already loaded on first render.
+  const [manualReceiving, setManualReceiving] = useState(() => {
+    const pre = location.state?.preloadReceiving
+    return pre ? [{ name: pre.player_name, playerId: pre.player_id }] : []
+  })
+  const [preloadOwnerTeamId] = useState(() => location.state?.preloadOwnerTeamId ?? null)
+
+  // Auto-load the receiving team when league data becomes available.
+  // Runs whenever league loads (or if already loaded, on mount).
   useEffect(() => {
-    if (location.state?.preloadReceiving) {
-      const { player_name, player_id } = location.state.preloadReceiving
-      setManualReceiving([{ name: player_name, playerId: player_id }])
-    }
-    if (location.state?.preloadOwnerTeamId) {
-      setPreloadOwnerTeamId(location.state.preloadOwnerTeamId)
-    }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!preloadOwnerTeamId || !league || team2) return
+    const ownerTeam = (league.teams || []).find(t => t.team_id === preloadOwnerTeamId)
+    if (ownerTeam) loadTeam2(ownerTeam, null)
+  }, [preloadOwnerTeamId, league]) // eslint-disable-line react-hooks/exhaustive-deps
   const [context, setContext] = useState('')
   const [horizon, setHorizon] = useState('season')
   const [leagueSettings, setLeagueSettings] = useState(null)
@@ -815,7 +818,6 @@ export default function EvaluateTrade() {
       onPicksChange={setReceivingPicks}
       rankingsMap={rankingsMap}
       pickValueFn={pickValue}
-      initialExpandedTeamId={preloadOwnerTeamId}
     />
   ) : (
     <div className="space-y-2">
