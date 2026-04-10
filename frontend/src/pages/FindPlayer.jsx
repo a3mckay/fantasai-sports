@@ -233,8 +233,6 @@ function WaiverRow({ w, isSpecialSlot }) {
 
 function UpgradeSection({ slot, myTeamId }) {
   const isSpecial = slot.position === 'NA' || slot.position === 'IL'
-  const actionableTrades = slot.trade_targets.filter(t => t.difficulty !== 'unrealistic')
-  const unrealisticTrades = slot.trade_targets.filter(t => t.difficulty === 'unrealistic')
   const hasAny = slot.waiver_upgrades.length > 0 || slot.trade_targets.length > 0
 
   const waiverLabel = isSpecial
@@ -269,15 +267,7 @@ function UpgradeSection({ slot, myTeamId }) {
             <span className="text-[10px] font-semibold text-leather-300 uppercase tracking-wide">Trade Targets</span>
           </div>
           <div className="space-y-2.5">
-            {actionableTrades.map(t => <TradeTargetRow key={t.player_id} t={t} myTeamId={myTeamId} />)}
-            {actionableTrades.length > 0 && unrealisticTrades.length > 0 && (
-              <div className="flex items-center gap-2 pt-2 pb-1">
-                <div className="flex-1 h-px bg-navy-700" />
-                <span className="text-[10px] text-slate-500 font-medium uppercase tracking-widest shrink-0">Long shots</span>
-                <div className="flex-1 h-px bg-navy-700" />
-              </div>
-            )}
-            {unrealisticTrades.map(t => <TradeTargetRow key={t.player_id} t={t} myTeamId={myTeamId} />)}
+            {slot.trade_targets.map(t => <TradeTargetRow key={t.player_id} t={t} myTeamId={myTeamId} />)}
           </div>
         </div>
       )}

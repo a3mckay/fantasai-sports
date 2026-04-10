@@ -1204,12 +1204,30 @@ def roster_analysis(
         roster_positions, il_ids, injured_stats,
     )
 
+    # ── League-relative context for grading ──────────────────────────────────
+    # Without this, evaluate_team uses absolute z-score thresholds and most
+    # teams cluster in the B/average band.  Build per-team overall scores and
+    # per-position mean scores across the whole league so grades are relative.
+    league_team_scores: list[float] = []
+    league_pos_scores: dict[str, list[float]] = {}
+    for t in league.teams:
+        t_pids = list(t.roster or [])
+        t_rankings = [ranking_map[pid] for pid in t_pids if pid in ranking_map]
+        if not t_rankings:
+            continue
+        league_team_scores.append(sum(r.score for r in t_rankings) / len(t_rankings))
+        group_data = _compute_group_scores(t_rankings, categories)
+        for pos, (_, _, mean_score) in group_data.items():
+            league_pos_scores.setdefault(pos, []).append(mean_score)
+
     # ── Team Evaluation ───────────────────────────────────────────────────────
     evaluation = evaluate_team(
         roster_rankings=roster_rankings,
         categories=categories,
         roster_positions=roster_positions,
         league_type=league_type,
+        league_team_scores=league_team_scores or None,
+        league_position_mean_scores=league_pos_scores or None,
     )
 
     # ── Collect all rostered player IDs across league ─────────────────────────
@@ -1224,11 +1242,28 @@ def roster_analysis(
         for ir in db.query(_InjuryRecord).all()
     }
 
+    # Map Yahoo's injury designations (DTD, Q, O) to our internal status strings.
+    _YAHOO_STATUS_MAP = {
+        "O":   "il_10",
+        "IL":  "il_10",
+        "DTD": "day_to_day",
+        "Q":   "day_to_day",
+    }
+
     def _injury_fields(player_id: int) -> dict:
         ir = injury_map.get(player_id)
-        if ir is None:
-            return {"injury_status": None, "injury_note": None}
-        return {"injury_status": ir.status, "injury_note": ir.injury_description}
+        if ir is not None:
+            return {"injury_status": ir.status, "injury_note": ir.injury_description}
+        # Fallback: Yahoo-reported status stored on the team object.
+        yahoo = (
+            injured_stats.get(str(player_id))
+            or injured_stats.get(player_id)
+        )
+        if yahoo:
+            internal = _YAHOO_STATUS_MAP.get(str(yahoo).upper())
+            if internal:
+                return {"injury_status": internal, "injury_note": str(yahoo)}
+        return {"injury_status": None, "injury_note": None}
 
     # ── Available (unrostered) players sorted by score ─────────────────────────
     # Used for direct score-based upgrade candidates — bypasses the category-fit
@@ -1382,27 +1417,25 @@ def roster_analysis(
         ]
 
         # Trade targets: per-team runner-up logic, filtered to genuine upgrades.
+        # Only include actionable trade targets (possible + hard).
+        # "unrealistic" players (top-25 overall, sole position player, best on team)
+        # are never going to move — showing them makes the feature feel useless.
         pos_pool = sorted(
             [
                 t for t in trade_pool.values()
                 if _player_eligible_for_slot(t["positions"], slot_pos)
                 and t["score"] > min_score
+                and t.get("difficulty") != "unrealistic"
             ],
             key=lambda x: -x["score"],
         )
         pos_candidates: list[dict] = []
-        seen_teams: dict[int, int] = {}
+        seen_teams: set[int] = set()
         for t in pos_pool:
             tid = t["owner_team_id"]
-            already = seen_teams.get(tid, 0)
-            if already == 0:
+            if tid not in seen_teams:
                 pos_candidates.append(t)
-                seen_teams[tid] = 1
-            elif already == 1:
-                first = next((c for c in pos_candidates if c["owner_team_id"] == tid), None)
-                if first and first["difficulty"] == "unrealistic":
-                    pos_candidates.append(t)
-                    seen_teams[tid] = 2
+                seen_teams.add(tid)
         pos_candidates.sort(key=lambda x: (_DIFF_ORDER.get(x["difficulty"], 9), -x["score"]))
         trade_targets = [TradeTargetRead(**t) for t in pos_candidates[:5]]
 
@@ -1685,6 +1718,42 @@ def roster_analysis(
                 waiver_upgrades=il_upgrades,
                 trade_targets=[],
             ))
+
+    # ── Occupied IL / NA slots ────────────────────────────────────────────────
+    # Players the team has parked in IL/NA slots.  Show them as real slot rows
+    # with their name and injury badge — the user can see who's sidelined and
+    # when they're expected back.  These are informational only (no upgrades).
+    for slot_idx, il_pid in enumerate(il_ids):
+        r = ranking_map.get(il_pid)
+        if r is None:
+            continue
+        inj = _injury_fields(il_pid)
+        # Determine slot type: Yahoo stores "NA" status for MiLB prospects
+        yahoo_raw = (
+            injured_stats.get(str(il_pid))
+            or injured_stats.get(il_pid)
+            or ""
+        )
+        slot_pos = "NA" if str(yahoo_raw).upper() == "NA" else "IL"
+        player_details = [RosterPlayerRead(
+            player_name=r.name,
+            positions=r.positions,
+            score=round(r.score, 3),
+            top_categories=_top_cats(r),
+            **inj,
+        )]
+        slots.append(RosterSlotRead(
+            position=slot_pos,
+            slot_index=slot_idx,
+            assessment="average",   # neutral — slot is being used correctly
+            players=[r.name],
+            player_details=player_details,
+            group_score=0.0,
+            priority=92 + slot_idx,
+            has_upgrades=False,
+            waiver_upgrades=[],
+            trade_targets=[],
+        ))
 
     # Slots are already in canonical position order from evaluate_team().
     # NA/IL stash slots appended at the end.
