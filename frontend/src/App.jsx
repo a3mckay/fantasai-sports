@@ -9,6 +9,7 @@ import { API_BASE_URL } from './lib/api'
 import Home           from './pages/Home'
 import Rankings       from './pages/Rankings'
 import ComparePlayers from './pages/ComparePlayers'
+import ExplorePlayers from './pages/ExplorePlayers'
 import EvaluateTrade  from './pages/EvaluateTrade'
 import FindPlayer     from './pages/FindPlayer'
 import TeamEval       from './pages/TeamEval'
@@ -52,6 +53,7 @@ export default function App() {
                   <Route path="/"              element={<Home />} />
                   <Route path="/rankings"      element={<Rankings />} />
                   <Route path="/compare"       element={<ComparePlayers />} />
+                  <Route path="/explore"       element={<ExplorePlayers />} />
                   <Route path="/trade"         element={<EvaluateTrade />} />
                   <Route path="/find-player"   element={<FindPlayer />} />
                   <Route path="/team-eval"     element={<TeamEval />} />

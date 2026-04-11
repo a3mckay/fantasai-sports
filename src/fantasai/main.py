@@ -47,6 +47,7 @@ from fantasai.api.v1.users import router as users_router  # noqa: E402
 from fantasai.api.v1.settings import router as settings_router  # noqa: E402
 from fantasai.api.v1.transactions import router as transactions_router
 from fantasai.api.v1.matchups import router as matchups_router  # noqa: E402
+from fantasai.api.v1.explore import router as explore_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
@@ -349,3 +350,4 @@ app.include_router(users_router, prefix="/api/v1")
 app.include_router(settings_router, prefix="/api/v1")
 app.include_router(transactions_router, prefix="/api/v1")
 app.include_router(matchups_router, prefix="/api/v1")
+app.include_router(explore_router, prefix="/api/v1")

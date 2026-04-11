@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw,
   Search, X, ChevronDown, ChevronUp, ArrowUp, Calendar, Share2,
@@ -615,7 +616,12 @@ export default function Rankings() {
                     {/* Player name + blurb + (expanded) category bar */}
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-medium text-white text-sm">{player.name}</span>
+                        <Link
+                          to={`/explore?players=${player.player_id}`}
+                          className="font-medium text-white text-sm hover:text-field-300 transition-colors"
+                        >
+                          {player.name}
+                        </Link>
 {player.team && (
                           <span className="text-xs text-slate-500 hidden sm:inline">({player.team})</span>
                         )}

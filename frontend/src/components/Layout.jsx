@@ -14,7 +14,7 @@ const NAV = [
   { to: '/find-player',   icon: Search,         label: 'Recommend a Player' },
   { to: '/team-eval',     icon: Star,           label: 'Team Eval'          },
   { to: '/trade',         icon: ArrowLeftRight, label: 'Evaluate Trade'     },
-  { to: '/compare',       icon: BarChart2,      label: 'Compare Players'    },
+  { to: '/explore',       icon: BarChart2,      label: 'Explore Players'    },
   { to: '/compare-teams', icon: Users,          label: 'Compare Teams'      },
   { to: '/matchups',      icon: Swords,         label: 'Matchup Analyzer'   },
   { to: '/keeper-eval',   icon: Trophy,         label: 'Keeper Planning'    },

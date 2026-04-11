@@ -98,3 +98,41 @@ export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, 
 }
 
 export const getWeekMode = () => get('/api/v1/rankings/week-mode')
+
+// ── Explore Players ───────────────────────────────────────────────────────────
+export const explorePlayerContext = (playerId, leagueId) => {
+  const params = new URLSearchParams()
+  if (leagueId) params.set('league_id', leagueId)
+  const qs = params.toString()
+  return get(`/api/v1/explore/player/${playerId}${qs ? '?' + qs : ''}`)
+}
+
+/**
+ * Streaming explore chat. Returns a ReadableStream of SSE events.
+ * The caller reads the stream and handles {"type":"text","text":"..."} events.
+ */
+export async function exploreChatStream({ playerIds, messages, userMessage, leagueId }) {
+  const headers = { 'Content-Type': 'application/json' }
+  const token = await _getIdToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const url = `${BASE}/api/v1/explore/chat`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      player_ids: playerIds,
+      messages,
+      user_message: userMessage,
+      league_id: leagueId ?? null,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { const err = await res.json(); detail = err.detail || detail } catch {}
+    throw new Error(detail)
+  }
+
+  return res.body  // caller gets the ReadableStream
+}
