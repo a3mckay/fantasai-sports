@@ -4,7 +4,7 @@ import {
   BarChart2, X, Search, Send, RefreshCw, Trash2,
   TrendingUp, ChevronDown, ChevronUp, Loader2,
 } from 'lucide-react'
-import { explorePlayerContext, exploreChatStream, searchPlayers } from '../lib/api'
+import { explorePlayerContext, exploreChatStream, searchPlayers, getPlayer } from '../lib/api'
 import { useLeague } from '../contexts/LeagueContext'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
@@ -305,19 +305,19 @@ export default function ExplorePlayers() {
   const inputRef = useRef(null)
 
   // ---- Load player from URL ?players= param on mount ----
+  // Use the lightweight /players/{id} endpoint so the chip appears immediately,
+  // independent of the heavier context endpoint. The selectedPlayers effect then
+  // triggers the context load in the background.
   useEffect(() => {
     const param = searchParams.get('players')
     if (!param) return
     const id = parseInt(param, 10)
-    if (!isNaN(id)) {
-      // Fetch minimal player info then add to selection
-      explorePlayerContext(id, leagueId)
-        .then(ctx => {
-          setSelectedPlayers([{ player_id: ctx.player_id, name: ctx.name, team: ctx.team, positions: ctx.positions }])
-          setContexts({ [ctx.player_id]: ctx })
-        })
-        .catch(err => console.warn('Could not preload player from URL:', err))
-    }
+    if (isNaN(id)) return
+    getPlayer(id)
+      .then(p => {
+        setSelectedPlayers([{ player_id: p.player_id, name: p.name, team: p.team, positions: p.positions || [] }])
+      })
+      .catch(err => console.warn('Could not load player from URL param:', err))
   }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Fetch context for newly added players ----
@@ -576,8 +576,9 @@ export default function ExplorePlayers() {
               </div>
             )
             if (err) return (
-              <div key={p.player_id} className="bg-navy-800 border border-navy-700 rounded-xl p-4 text-center">
-                <p className="text-xs text-stitch-400">Could not load {p.name}</p>
+              <div key={p.player_id} className="bg-navy-800 border border-navy-700 rounded-xl p-4 text-center space-y-1">
+                <p className="text-xs text-stitch-400">Could not load stats for {p.name}</p>
+                <p className="text-[10px] text-slate-600">{contextError[p.player_id]}</p>
               </div>
             )
             if (!ctx) return null

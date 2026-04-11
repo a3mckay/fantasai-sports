@@ -100,6 +100,8 @@ export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, 
 export const getWeekMode = () => get('/api/v1/rankings/week-mode')
 
 // ── Explore Players ───────────────────────────────────────────────────────────
+export const getPlayer = (playerId) => get(`/api/v1/players/${playerId}`)
+
 export const explorePlayerContext = (playerId, leagueId) => {
   const params = new URLSearchParams()
   if (leagueId) params.set('league_id', leagueId)
@@ -130,7 +132,12 @@ export async function exploreChatStream({ playerIds, messages, userMessage, leag
 
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
-    try { const err = await res.json(); detail = err.detail || detail } catch {}
+    try {
+      const err = await res.json()
+      const d = err.detail
+      // FastAPI 422 returns detail as an array of validation errors — stringify it
+      detail = typeof d === 'string' ? d : d ? JSON.stringify(d) : detail
+    } catch {}
     throw new Error(detail)
   }
 
