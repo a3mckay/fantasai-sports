@@ -48,4 +48,4 @@ class ExploreChatRequest(BaseModel):
     player_ids: list[int]
     messages: list[ChatMessage] = []   # conversation history — last 5 pairs
     user_message: str
-    league_id: Optional[int] = None
+    league_id: Optional[str] = None

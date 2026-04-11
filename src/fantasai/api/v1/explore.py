@@ -180,7 +180,7 @@ def _get_player_context(
     )
 
 
-def _build_owned_by_map(league_id: Optional[int], db: Session) -> dict[int, str]:
+def _build_owned_by_map(league_id: Optional[str], db: Session) -> dict[int, str]:
     """Return {player_id: team_name} for all rostered players in a league.
 
     Teams store their roster as a JSON list of FanGraphs player IDs (int)
@@ -315,7 +315,7 @@ Never pad. Never repeat information already given in this conversation.
 @router.get("/player/{player_id}", response_model=PlayerContextResponse)
 def get_player_context(
     player_id: int,
-    league_id: Optional[int] = Query(default=None),
+    league_id: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ) -> PlayerContextResponse:
     """Fetch stat card context for a single player.
