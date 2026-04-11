@@ -53,7 +53,9 @@ export async function req(method, path, body) {
     let detail = `HTTP ${res.status}`
     try {
       const err = await res.json()
-      detail = err.detail || JSON.stringify(err)
+      const d = err.detail
+      // FastAPI 422 returns detail as an array of validation errors — stringify it
+      detail = typeof d === 'string' ? d : d ? JSON.stringify(d) : JSON.stringify(err)
     } catch {}
     throw new Error(detail)
   }
