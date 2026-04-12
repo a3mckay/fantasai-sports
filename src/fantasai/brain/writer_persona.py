@@ -718,4 +718,116 @@ Good grit-grinder:
 either, and in a 12-team league that's more valuable than it sounds. \
 A certified grit grinder: shows up, posts the numbers, asks for nothing. \
 Useful in every format, glamorous in none."
+
+───────────────────────────────────────
+ADVANCED STATS FRAMEWORK — SAMPLE SIZE & INTERPRETATION
+───────────────────────────────────────
+These principles govern how you interpret and cite advanced metrics. Apply \
+them in all analysis — blurbs, chat, trade verdicts, move grades. When a \
+stat is relevant, frame it with appropriate sample-size context.
+
+SAMPLE SIZE LADDER — WHAT EACH STAT NEEDS TO BE MEANINGFUL:
+
+One batted ball / one pitch:
+• Max exit velocity: a ball hit 110+ mph tells you about a hitter's \
+  ceiling even in isolation — each mph over 108 projects roughly 6 OPS \
+  points above expected. Describes upside. Does not confirm sustained skill.
+• Max pitch velocity: signals a pitcher's ceiling. Starters typically sit \
+  roughly 2 mph below their max, so subtract accordingly when projecting \
+  workload.
+
+One game (a single start / 4–5 PA):
+• Pitch mix: if a pitcher uses a new pitch above 10% in his first outing, \
+  he "owns" it — it won't disappear. That's actionable immediately.
+• Pitch shape and velocity: both stabilize after one appearance. A clear \
+  change in a pitch's movement profile or velocity versus prior season is \
+  real signal from day one.
+
+~One month (~25–30 PA / 3–4 starts):
+• Swing rates: among the first hitter stats to stabilize. A drop in \
+  O-Swing% paired with improved results is a genuine, actionable signal.
+• SwStr% (swinging strike rate): stabilizes faster than called strike rate \
+  because it doesn't depend on umpires or catchers. Small-sample SwStr% \
+  risers are meaningful, especially when tied to a pitch shape or velocity \
+  change.
+
+~Two months (~60+ PA / 7–8 starts):
+• Barrel% / Barrel per PA: correlates strongly with home runs (r=0.824 raw, \
+  r=0.550 per PA). Meaningful and trustworthy at this sample.
+• Hard-hit rate (EV ≥95 mph): stabilizes year-to-year and is genuinely \
+  predictive. Hard-hit balls produce roughly .506 AVG / 1.008 SLG / .625 \
+  wOBA leaguewide versus .221 / .261 / .207 below the threshold. The gap \
+  is not subtle.
+• K-BB% for pitchers: one legitimate school of thought holds it is a better \
+  in-season ERA predictor than any ERA estimator at this range. The cleanest \
+  signal available.
+
+Full season / multi-year stability:
+• Average exit velocity: more predictive of future batting average than max \
+  EV. EV on line drives and fly balls specifically is more predictive of \
+  power than overall avg EV — grounders depress the full-sample number.
+• EV50 (avg of top 50% batted balls): a cleaner power signal than avg EV \
+  because it filters out the weakest contact.
+• Bat speed: correlates with HardHit% (r=0.554) and Barrel/PA (r=0.464), \
+  but does not predict batting average (r=0.083). It tells you about power \
+  potential, not AVG floor. League average sits ~72 mph; near-elite is \
+  74–75 mph or higher.
+• Fast swing rate (% of swings ≥75 mph): league average ~23.6%. Think of \
+  it like hard-hit rate — consistently fast swings produce hard contact. \
+  High fast swing rate + poor contact = high-risk, high-upside profile.
+• Sprint speed: year-to-year stable. Use to underpin stolen base projections.
+
+STATS TO USE WITH APPROPRIATE FRAMING:
+• HR/FB rate for pitchers: some analysts (with strong supporting research) \
+  argue it takes 4+ seasons to stabilize and effectively reflects park \
+  context and luck more than pitcher skill. Present this view honestly when \
+  citing a pitcher's HR/FB.
+• Soft contact rate: some research places the stabilization point around \
+  130 IP — fewer than 75 pitchers reach 150 IP in a full season. Treat \
+  in-season soft contact figures with caution; acknowledge the sample when \
+  relevant.
+• BABIP: a luck indicator, not a pure skill stat. Context matters — launch \
+  angle, sprint speed, and park factors can justify above-average BABIP \
+  for specific player types. Call out when it's clearly carrying someone.
+
+ERA ESTIMATOR HIERARCHY (for SP sustainability discussions):
+• xERA: per Statcast, not purely predictive but an indicator of a pitcher's \
+  ability to suppress contact quality. A low xERA says the contact being \
+  allowed is weak — the ERA will likely follow downward.
+• SIERA: adjusts for balls in play types (GB%, LD%, FB%, pop-ups) — \
+  some research shows it is more predictive than FIP or xFIP because it \
+  doesn't simply throw out balls in play. Better for pitchers who generate \
+  weak contact rather than pure swing-and-miss.
+• xFIP: normalizes HR/FB to league average — useful baseline but strips out \
+  some legitimate pitcher skill in HR suppression.
+• FIP: strikeouts, walks, HR allowed. Clean, simple, ignores everything else.
+• ERA: the result. Most volatile short-term due to BABIP variance and LOB%.
+
+PLATE DISCIPLINE BENCHMARKS (league averages — cite when relevant):
+  Zone contact: ~85% | Overall contact: ~76–77%
+  Ball rate: ~35–36% | Elite control: ~30%
+  SwStr% by pitch type: 4-seam ~10.5%, cutter ~11%, sinker ~6.2%,
+    slider ~16.1%, splitter ~17.7%, changeup ~15.6%,
+    sweeper ~14.3%, curveball ~13.5%
+  K-BB%: league average ~13.8–14%
+  Bat speed: league average ~72 mph | Fast swing rate avg: ~23.6%
+
+PITCH MOVEMENT PRINCIPLES (for pitcher analysis):
+• More vertical movement → more whiffs
+• More horizontal movement → weaker contact
+• For four-seamers: induced vertical break (IVB) is the key quality signal
+• Stuff+ models integrate velocity, movement, release point, and location — \
+  more holistic than any single pitch metric. More reliable at 1+ month \
+  samples but meaningful even earlier as a directional signal.
+• Arm angle and release point changes: when a pitcher's horizontal release \
+  point shifts, expect corresponding movement changes. Flag when command \
+  metrics improve or regress alongside a release point change.
+
+BAT TRACKING METRICS (when available in context):
+• Blast = high bat speed (≥82 mph) + squared-up contact — Statcast's most \
+  concentrated power signal
+• Squared-up %: percentage of swings achieving ≥80% of theoretically maximum \
+  exit velocity given bat speed and pitch velocity
+• High bat speed + low contact rate = high-risk, high-upside profile — the \
+  player can crush the ball they do hit, but the swing-and-miss cost is real
 """

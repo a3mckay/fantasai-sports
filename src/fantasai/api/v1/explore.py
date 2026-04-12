@@ -36,20 +36,36 @@ from fantasai.engine.schedule import (
 _RANK_LIST_NAME = "Predictive Rankings (Rest of Season)"
 
 # Stat labels for the RAG context block (batting)
-# Note: xwOBA/xBA/Barrel%/HardHit%/EV come from Statcast; wRC+ from FanGraphs (when accessible)
+# Statcast sources: xwOBA/xBA/xSLG, Barrel%/HardHit%/EV/EV_FBLD/MaxEV/EV50, BatSpeed/FastSwing%/Blast%, SprintSpeed
+# FanGraphs source (when accessible): wRC+, BABIP
 _BATTING_STAT_LABELS = {
     "PA": "Plate Appearances", "R": "Runs", "HR": "HR", "RBI": "RBI",
     "SB": "SB", "AVG": "AVG", "OPS": "OPS", "OBP": "OBP",
-    "xwOBA": "xwOBA", "xBA": "xBA", "xSLG": "xSLG",
-    "Barrel%": "Barrel%", "HardHit%": "HardHit%", "EV": "Avg Exit Velo",
-    "wRC+": "wRC+",
+    # Expected / process metrics
+    "xwOBA": "xwOBA", "xBA": "xBA", "xSLG": "xSLG", "wRC+": "wRC+",
+    # Exit velocity — general and power-specific
+    "EV": "Avg Exit Velo", "EV_FBLD": "EV on FB/LD", "EV50": "EV50",
+    "MaxEV": "Max Exit Velo",
+    # Hard contact
+    "Barrel%": "Barrel%", "HardHit%": "HardHit%",
+    # Bat tracking (Hawkeye 2023+)
+    "BatSpeed": "Bat Speed (mph)", "FastSwing%": "Fast Swing Rate",
+    "Blast%": "Blast Rate", "SquaredUp%": "Squared-Up Rate",
+    # Speed
+    "SprintSpeed": "Sprint Speed (ft/s)",
 }
-# Note: xERA/Barrel%/HardHit%/EV come from Statcast; SIERA/Stuff+/CSW%/SwStr% from FanGraphs (when accessible)
+# Statcast sources: xERA, Barrel%/HardHit%/EV allowed
+# FanGraphs source (when accessible): SIERA, Stuff+, CSW%, SwStr%, xFIP
 _PITCHING_STAT_LABELS = {
     "IP": "IP", "W": "W", "SV": "SV", "SO": "K", "ERA": "ERA", "WHIP": "WHIP",
-    "xERA": "xERA", "K/9": "K/9", "BB/9": "BB/9", "FIP": "FIP",
-    "Barrel%": "Barrel% allowed", "HardHit%": "HardHit% allowed", "EV": "Avg Exit Velo allowed",
-    "Stuff+": "Stuff+", "SIERA": "SIERA", "CSW%": "CSW%",
+    "K/9": "K/9", "BB/9": "BB/9", "K-BB%": "K-BB%",
+    # ERA estimator hierarchy (xERA → SIERA → xFIP → FIP)
+    "xERA": "xERA", "SIERA": "SIERA", "xFIP": "xFIP", "FIP": "FIP",
+    # Contact suppression allowed
+    "Barrel%": "Barrel% allowed", "HardHit%": "HardHit% allowed",
+    "EV": "Avg Exit Velo allowed",
+    # Swing-and-miss
+    "Stuff+": "Stuff+", "CSW%": "CSW%", "SwStr%": "SwStr%",
 }
 
 
@@ -533,12 +549,23 @@ def _format_stats_block(stats: dict, stat_type: str, label: str) -> str:
         return f"{label}: No data available\n"
 
     labels = _PITCHING_STAT_LABELS if stat_type == "pitching" else _BATTING_STAT_LABELS
+    # Keys whose values are displayed with 1 decimal place (speed/velo in mph or ft/s)
+    _ONE_DP = {"EV", "EV_FBLD", "MaxEV", "EV50", "BatSpeed", "SprintSpeed"}
+    # Keys with 2 decimal places (rate stats > 1, ERA-family)
+    _TWO_DP = {"ERA", "WHIP", "FIP", "SIERA", "xERA", "xFIP", "K/9", "BB/9",
+               "wRC+", "Barrel%", "HardHit%", "Stuff+", "FastSwing%", "Blast%",
+               "SquaredUp%", "K-BB%", "CSW%", "SwStr%"}
     lines = [f"{label}:"]
     for key, human in labels.items():
         val = stats.get(key)
         if val is not None:
             if isinstance(val, float):
-                lines.append(f"  {human}: {val:.3f}" if val < 1.0 and key not in ("ERA", "WHIP", "FIP", "SIERA", "xERA", "K/9", "BB/9") else f"  {human}: {val:.2f}")
+                if key in _ONE_DP:
+                    lines.append(f"  {human}: {val:.1f}")
+                elif key in _TWO_DP or val >= 1.0:
+                    lines.append(f"  {human}: {val:.2f}")
+                else:
+                    lines.append(f"  {human}: {val:.3f}")
             else:
                 lines.append(f"  {human}: {val}")
     return "\n".join(lines) + "\n"
@@ -864,6 +891,32 @@ def _build_system_prompt(player_names: list[str]) -> str:
 EXPLORE PLAYERS — ANALYST CHAT MODE
 ───────────────────────────────────────
 You are operating as an interactive analyst. The user is researching {'and '.join(player_names)}.
+
+VOICE IN CHAT (critical — this is where most analysts go flat and you must not):
+You have a full persona. Use it here, in conversation, not just in blurbs. \
+This means: lead with an opinion, not a stat recitation. Make a joke when it fits. \
+Drop a reference when it earns its place. Take a side. Push back on bad assumptions. \
+The persona is not a blurb-only tool — it's who you are. Every response should sound \
+like it came from a specific human who cares about baseball, not a generic chatbot. \
+If your response reads like a Wikipedia summary, rewrite it.
+
+ADVANCED STATS APPLICATION (use the framework in your training when answering questions):
+When a user asks about a player's underlying metrics or sustainability, actively apply \
+the sample size ladder from your ADVANCED STATS FRAMEWORK:
+• Name the stat, cite the value from the data block, frame its reliability given the \
+  sample size (PA or IP) in the context.
+• Call out HR/FB luck, BABIP inflation, or LOB% variance when they're distorting ERA — \
+  but present the strong "HR/FB is noise for pitchers" view as one analytical school, \
+  not universal law.
+• When bat speed or fast swing rate is in the context, lead with its power implication \
+  (not AVG implication — bat speed barely predicts AVG).
+• When exit velo on FB/LD is available alongside overall avg EV, prefer the FB/LD \
+  figure for power discussions — it's more predictive.
+• On SwStr%: note when a small-sample spike is backed by a pitch shape or velo change — \
+  that combination is actionable even at 1 month of data.
+• On SIERA vs xFIP vs ERA: if the user asks about SP sustainability, cite the estimator \
+  hierarchy from your framework — SIERA considers balls in play, xFIP normalizes HR/FB, \
+  ERA is the most volatile. Say which one and why in one sentence.
 
 DATA BOUNDARY: You have access only to the player data provided in the USER CONTEXT BLOCK below. \
 Do not reference any external information, news, injury reports, or facts not present in that context. \

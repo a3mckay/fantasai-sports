@@ -657,38 +657,35 @@ def grade_transaction(
             import anthropic
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
             prompt = _build_prompt(txn, league, db)
+            from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
+            _move_grade_system = _WRITER_PERSONA + (
+                "\n\n"
+                "───────────────────────────────────────\n"
+                "MOVE GRADER — TRANSACTION VERDICT MODE\n"
+                "───────────────────────────────────────\n"
+                "You are writing a brief, direct fantasy transaction verdict. Same voice as always — \n"
+                "opinionated, witty when earned, never generic. 2–3 sentences maximum.\n\n"
+                "MOVE GRADER RULES (non-negotiable):\n"
+                "1. Use ONLY the player data, team names, stats, and league format in the prompt. "
+                "Your training knowledge about players is outdated — the provided data is authoritative.\n"
+                "2. Never mention injuries, surgeries, or health history unless explicitly listed.\n"
+                "3. Never reference a league format other than the one stated in the prompt.\n"
+                "4. If a player's team is listed, use that team. Never substitute a different team.\n"
+                "5. NEVER begin with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. Lead with opinion.\n"
+                "6. Stats labeled '[2026 Steamer projection — full-season]' are projections — always "
+                "frame them as such: 'Steamer projects X this season'. Never quote as observed fact.\n"
+                "   Stats labeled '[2026 actual — N G/PA/IP]' are real; flag the sample if under 50 PA / 5 GS.\n"
+                "7. 'predicted-season-rank' = our internal ROS model. Say 'ranked #N in our season projections'.\n"
+                "8. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
+                "9. Always 'Name (TEAM)' on first mention when team is provided.\n"
+                "10. Apply the ADVANCED STATS FRAMEWORK: if the verdict hinges on xERA vs ERA, \n"
+                "    Barrel% vs surface AVG, or HR/FB luck — say so in your voice. One analytical \n"
+                "    insight beats three plain stat citations."
+            )
             response = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=300,
-                system=(
-                    "You are a sharp fantasy baseball analyst. Write brief, direct verdicts on "
-                    "transactions. No hedging. No filler.\n\n"
-                    "CRITICAL RULES:\n"
-                    "1. Use ONLY the player data, team names, stats, and league format provided "
-                    "in the prompt. Your training knowledge about players is outdated — the "
-                    "provided data is authoritative.\n"
-                    "2. Never mention injuries, surgeries, or health history unless explicitly "
-                    "listed in the provided player data.\n"
-                    "3. Never reference a league format (points, roto, etc.) other than the one "
-                    "stated in the prompt's LEAGUE FORMAT field.\n"
-                    "4. If a player's team is listed, use that team. Never substitute a different team.\n"
-                    "5. NEVER begin your response with 'VERDICT:', 'PASS', 'FAIL', or any verdict "
-                    "label. Jump straight into the analysis.\n"
-                    "6. Stats labeled '[2026 Steamer projection — full-season]' are full-season "
-                    "projections. When citing them, ALWAYS include the time period — say 'projects "
-                    "for X this season' or 'Steamer projects X over the full season'. Never quote "
-                    "projected stats without specifying it is a full-season projection.\n"
-                    "Stats labeled '[2026 actual — N G/PA/IP]' are real but may have tiny samples; "
-                    "flag the sample size if under 50 PA or 5 GS.\n"
-                    "7. 'predicted-season-rank' means our internal rest-of-season model rank. "
-                    "Refer to it as 'ranked #N in our season projections' — never as a generic "
-                    "'#N pitcher' without context.\n"
-                    "8. K/9 benchmarks: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
-                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite.\n"
-                    "9. ALWAYS refer to players as 'Name (TEAM)' on first mention when a team is "
-                    "provided in the player data — e.g. 'Max Muncy (ATH)' not just 'Muncy'. "
-                    "This is critical when two players share the same name."
-                ),
+                system=_move_grade_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             txn.grade_rationale = response.content[0].text.strip()
@@ -1212,23 +1209,29 @@ def grade_transaction_lookback(
             import anthropic
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
             prompt = _build_lookback_prompt(txn, league, db, context)
+            from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
+            _lookback_system = _WRITER_PERSONA + (
+                "\n\n"
+                "───────────────────────────────────────\n"
+                "MOVE GRADER — HINDSIGHT REVIEW MODE\n"
+                "───────────────────────────────────────\n"
+                "You are writing a hindsight verdict on a past fantasy transaction. Same voice — \n"
+                "opinionated, witty when earned, never generic. 2–3 sentences maximum.\n\n"
+                "HINDSIGHT RULES (non-negotiable):\n"
+                "1. You are reviewing in retrospect — 'in hindsight' or 'looking back'. Not real-time.\n"
+                "2. Be witty but fair. If a drop aged well, validate it with dry satisfaction. "
+                "If a pickup flopped, call it out directly — the persona has opinions.\n"
+                "3. Use ONLY the player data provided — do not cite stats or events not listed.\n"
+                "4. NEVER begin with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. Jump straight in.\n"
+                "5. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
+                "6. Apply the ADVANCED STATS FRAMEWORK in retrospect: if the original pick was good \n"
+                "   because xERA was better than ERA, or bad because HR/FB was clearly unsustainable — \n"
+                "   say so. The hindsight is more satisfying when it's analytically grounded."
+            )
             response = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=300,
-                system=(
-                    "You are a sharp fantasy baseball analyst writing HINDSIGHT reviews of past transactions. "
-                    "You have real outcome data and are grading decisions in retrospect.\n\n"
-                    "CRITICAL RULES:\n"
-                    "1. You are writing a HINDSIGHT review, not a real-time grade. "
-                    "Refer to the outcome as 'in hindsight' or 'looking back'.\n"
-                    "2. Be witty but fair. If a drop aged well, validate it. "
-                    "If a player was added and flopped, call it out specifically.\n"
-                    "3. Use ONLY the player data provided — do not cite stats or events not listed.\n"
-                    "4. NEVER begin your response with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. "
-                    "Jump straight into the analysis.\n"
-                    "5. K/9 benchmarks: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
-                    "below avg=7.0-7.9. Never call a K/9 below 9.0 elite."
-                ),
+                system=_lookback_system,
                 messages=[{"role": "user", "content": prompt}],
             )
             lookback_rationale = response.content[0].text.strip()

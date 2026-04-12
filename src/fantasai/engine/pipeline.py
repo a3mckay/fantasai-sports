@@ -690,7 +690,11 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
 
     Batting advanced stats populated:
       xwOBA (est_woba), xBA (est_ba), xSLG (est_slg),
-      Barrel% (brl_percent), HardHit% (ev95percent), EV (avg_hit_speed)
+      Barrel% (brl_percent), HardHit% (ev95percent), EV (avg_hit_speed),
+      EV_FBLD (fbld — exit velo on fly balls/line drives, better power predictor),
+      MaxEV (max_hit_speed), EV50 (ev50 — avg of top 50% batted balls),
+      BatSpeed (avg_bat_speed), FastSwing% (hard_swing_rate), Blast% (blast_per_swing),
+      SprintSpeed (sprint_speed)
 
     Pitching advanced stats populated:
       xERA (xera), Barrel% (brl_percent), HardHit% (ev95percent), EV (avg_hit_speed)
@@ -769,9 +773,79 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
                 "Barrel%":  _fval_sc(d, "brl_percent"),
                 "HardHit%": _fval_sc(d, "ev95percent"),
                 "EV":       _fval_sc(d, "avg_hit_speed"),
+                # More predictive power metrics (per advanced stats framework)
+                "EV_FBLD":  _fval_sc(d, "fbld"),        # EV on fly balls / line drives
+                "MaxEV":    _fval_sc(d, "max_hit_speed"),
+                "EV50":     _fval_sc(d, "ev50"),         # avg of top 50% batted balls
             })
     except Exception:
         logger.warning("Statcast batter exit velo fetch failed", exc_info=True)
+
+    # Bat tracking: bat speed, fast swing rate, blast rate (Hawkeye, 2023+)
+    try:
+        import csv, io
+        import urllib.request
+        _bt_url = (
+            "https://baseballsavant.mlb.com/leaderboard/bat-tracking"
+            "?attackZone=&batSide=&contactType=&count=&dateStart="
+            f"{season}-03-20&dateEnd={season}-12-01&gameType=&isHardHit="
+            f"&minSwings=25&minGroupSwings=1&pitchType=&seasonEnd={season}"
+            f"&seasonStart={season}&team=&type=batter&csv=true"
+        )
+        req = urllib.request.Request(_bt_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(raw))
+        bt_count = 0
+        for row in reader:
+            mlbam_raw = row.get("id") or row.get("player_id")
+            if not mlbam_raw:
+                continue
+            try:
+                mlbam = int(float(str(mlbam_raw).strip()))
+            except (TypeError, ValueError):
+                continue
+
+            def _fv_bt(key: str) -> Optional[float]:
+                v = row.get(key, "").strip()
+                if not v:
+                    return None
+                try:
+                    import math
+                    f = float(v)
+                    return None if (math.isnan(f) or math.isinf(f)) else round(f, 4)
+                except (TypeError, ValueError):
+                    return None
+
+            batter_adv.setdefault(mlbam, {}).update({
+                "BatSpeed":   _fv_bt("avg_bat_speed"),
+                "FastSwing%": _fv_bt("hard_swing_rate"),
+                "Blast%":     _fv_bt("blast_per_swing"),
+                "SquaredUp%": _fv_bt("squared_up_per_swing"),
+            })
+            bt_count += 1
+        logger.info("Statcast bat tracking: %d rows", bt_count)
+    except Exception:
+        logger.warning("Statcast bat tracking fetch failed (non-fatal)", exc_info=True)
+
+    # Sprint speed
+    try:
+        ss_df = pybaseball.statcast_sprint_speed(season)
+        logger.info("Statcast sprint speed: %d rows", len(ss_df))
+        for _, row in ss_df.iterrows():
+            mlbam = row.get("player_id")
+            if mlbam is None:
+                continue
+            try:
+                mlbam = int(float(mlbam))
+            except (TypeError, ValueError):
+                continue
+            d = row.to_dict()
+            batter_adv.setdefault(mlbam, {}).update({
+                "SprintSpeed": _fval_sc(d, "sprint_speed"),
+            })
+    except Exception:
+        logger.warning("Statcast sprint speed fetch failed (non-fatal)", exc_info=True)
 
     for mlbam, adv in batter_adv.items():
         player_id = mlbam_to_player_id.get(mlbam)
