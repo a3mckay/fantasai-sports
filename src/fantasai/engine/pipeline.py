@@ -722,8 +722,8 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
             return None
 
     # Build MLBAM → player_id reverse map (only players with mlbam_id set)
-    rows = db.query(Player.id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
-    mlbam_to_player_id: dict[int, int] = {row.mlbam_id: row.id for row in rows}
+    rows = db.query(Player.player_id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
+    mlbam_to_player_id: dict[int, int] = {row.mlbam_id: row.player_id for row in rows}
     if not mlbam_to_player_id:
         logger.warning("sync_statcast_advanced_stats: no players with mlbam_id — skipping")
         return 0
