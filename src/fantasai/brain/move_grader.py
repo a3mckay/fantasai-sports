@@ -428,7 +428,287 @@ def _league_format_str(league: "League") -> str:
     return "H2H categories"  # safe default
 
 
-def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
+# ---------------------------------------------------------------------------
+# Streaming detection
+# ---------------------------------------------------------------------------
+
+def _detect_stream(
+    txn: "Transaction",
+    db: "Session",
+) -> Optional[dict]:
+    """Return streaming context dict if any added player has a start today or tomorrow.
+
+    For pitchers: checks whether the added pitcher is the probable SP in today's or
+    tomorrow's game (requires mlbam_id match in schedule data).
+    For batters: checks whether the added batter's team has a game today AND the
+    team's category needs suggest the batter can help.
+
+    Returns None if no stream is detected, or a dict with keys:
+        is_stream: True
+        player_id: int
+        player_name: str
+        stat_type: "pitching" | "batting"
+        start_date: "today" | "tomorrow"
+        opponent: str | None
+        is_home: bool | None
+        park: str | None
+        park_factor: float | None
+        today_sp_name: str | None        # opposing SP (batters only)
+        today_sp_throws: str | None      # opposing SP handedness (batters only)
+        weather_hr_factor: float
+        vegas_run_factor: float
+        week_context_text: str | None
+    """
+    from datetime import date, timedelta
+    from fantasai.models.player import Player
+
+    participants = txn.participants or []
+    adds = [p for p in participants if p.get("action") == "add"]
+    if not adds:
+        return None
+
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    today_iso = today.isoformat()
+    tomorrow_iso = tomorrow.isoformat()
+
+    # Try to get the week schedule from cache (warm) or skip (non-fatal)
+    try:
+        from fantasai.api.v1.recommendations import get_cached_week_schedule
+        week_sched = get_cached_week_schedule()
+    except Exception:
+        week_sched = {}
+
+    try:
+        from fantasai.engine.schedule import PARK_FACTORS
+    except Exception:
+        PARK_FACTORS = {}
+
+    for p in adds:
+        player_id = p.get("player_id")
+        player_name = p.get("player_name", "?")
+        if not player_id:
+            continue
+
+        player = db.get(Player, player_id)
+        if not player:
+            continue
+
+        positions = player.positions or []
+        is_pitcher = any(pos in ("SP", "RP", "P") for pos in positions)
+        mlbam_id = player.mlbam_id
+
+        ps = week_sched.get(player_id)
+        if ps is None:
+            continue
+
+        game_log = ps.batter_game_log or []
+
+        if is_pitcher and mlbam_id:
+            # SP stream: pitcher must be the probable starter today or tomorrow
+            for check_date, label in [(today_iso, "today"), (tomorrow_iso, "tomorrow")]:
+                entry = next(
+                    (g for g in game_log
+                     if g.get("date") == check_date and g.get("sp_mlbam_id") == mlbam_id),
+                    None,
+                )
+                if entry:
+                    opponent = entry.get("opponent_abbr")
+                    is_home = entry.get("is_home", True)
+                    park = (ps.home_park or opponent) if is_home else opponent
+                    park_factor = PARK_FACTORS.get(park, 1.0) if park else 1.0
+                    try:
+                        from fantasai.engine.schedule import build_player_week_context
+                        week_ctx = build_player_week_context(ps, "pitching", positions)
+                    except Exception:
+                        week_ctx = None
+                    return {
+                        "is_stream": True,
+                        "player_id": player_id,
+                        "player_name": player_name,
+                        "stat_type": "pitching",
+                        "start_date": label,
+                        "opponent": opponent,
+                        "is_home": is_home,
+                        "park": park,
+                        "park_factor": park_factor,
+                        "today_sp_name": None,
+                        "today_sp_throws": None,
+                        "weather_hr_factor": ps.weather_hr_factor,
+                        "vegas_run_factor": ps.vegas_run_factor,
+                        "week_context_text": week_ctx,
+                    }
+
+        elif not is_pitcher:
+            # Batter stream: team has a game today
+            entry = next((g for g in game_log if g.get("date") == today_iso), None)
+            if entry:
+                opponent = entry.get("opponent_abbr")
+                is_home = entry.get("is_home", True)
+                park = (ps.home_park or opponent) if is_home else opponent
+                park_factor = PARK_FACTORS.get(park, 1.0) if park else 1.0
+                # Look up opposing SP for batter matchup
+                today_sp_name = None
+                today_sp_throws = None
+                sp_mlbam = entry.get("sp_mlbam_id")
+                if sp_mlbam:
+                    try:
+                        sp_player = db.query(Player).filter(Player.mlbam_id == sp_mlbam).first()
+                        if sp_player:
+                            today_sp_name = sp_player.name
+                            today_sp_throws = sp_player.throws
+                    except Exception:
+                        pass
+                try:
+                    from fantasai.engine.schedule import build_player_week_context
+                    week_ctx = build_player_week_context(ps, "batting", positions)
+                except Exception:
+                    week_ctx = None
+                return {
+                    "is_stream": True,
+                    "player_id": player_id,
+                    "player_name": player_name,
+                    "stat_type": "batting",
+                    "start_date": "today",
+                    "opponent": opponent,
+                    "is_home": is_home,
+                    "park": park,
+                    "park_factor": park_factor,
+                    "today_sp_name": today_sp_name,
+                    "today_sp_throws": today_sp_throws,
+                    "weather_hr_factor": ps.weather_hr_factor,
+                    "vegas_run_factor": ps.vegas_run_factor,
+                    "week_context_text": week_ctx,
+                }
+
+    return None
+
+
+def _get_matchup_context(
+    txn: "Transaction",
+    league: "League",
+    db: "Session",
+) -> Optional[str]:
+    """Return a formatted string describing the transacting team's current H2H position.
+
+    Finds the most recent MatchupAnalysis for the team making the transaction
+    and returns a compact summary of which categories they're winning/losing,
+    so the LLM can assess whether a stream helps in the right spots.
+
+    Returns None if no matchup data is available or the league is not H2H.
+    """
+    lt = (league.league_type or "").lower()
+    if "roto" in lt or "point" in lt:
+        return None  # H2H only
+
+    try:
+        from fantasai.models.matchup import MatchupAnalysis
+        from fantasai.engine.schedule import get_current_week_bounds
+        from datetime import date
+
+        # Find which team key belongs to the transacting manager
+        participants = txn.participants or []
+        team_key: Optional[str] = None
+        team_name: Optional[str] = None
+        for p in participants:
+            if p.get("action") in ("add", "drop") or txn.transaction_type == "trade":
+                team_key = p.get("team_key") or p.get("manager_team_key")
+                team_name = p.get("manager_name")
+                if team_key:
+                    break
+        if not team_key:
+            return None
+
+        # Get current week number
+        _, week_end = get_current_week_bounds()
+        # Approximate week number: days since April 1 / 7
+        days_since_start = (date.today() - date(2026, 3, 30)).days
+        current_week = max(1, days_since_start // 7 + 1)
+
+        # Find the matchup that includes this team
+        matchup = (
+            db.query(MatchupAnalysis)
+            .filter(
+                MatchupAnalysis.league_id == league.league_id,
+                MatchupAnalysis.season == 2026,
+                MatchupAnalysis.week == current_week,
+            )
+            .filter(
+                (MatchupAnalysis.team1_key == team_key) |
+                (MatchupAnalysis.team2_key == team_key)
+            )
+            .first()
+        )
+        if not matchup:
+            return None
+
+        is_team1 = matchup.team1_key == team_key
+        my_key = "team1" if is_team1 else "team2"
+        opp_key = "team2" if is_team1 else "team1"
+        opp_name = matchup.team2_name if is_team1 else matchup.team1_name
+
+        # Prefer live stats (mid-week actuals); fall back to projections
+        stats = matchup.live_stats or matchup.category_projections or {}
+        if not stats:
+            return None
+
+        winning: list[str] = []
+        losing: list[str] = []
+        close: list[str] = []  # within ~5% or tied
+
+        for cat, vals in stats.items():
+            if not isinstance(vals, dict):
+                continue
+            my_val = vals.get(my_key)
+            opp_val = vals.get(opp_key)
+            if my_val is None or opp_val is None:
+                continue
+            try:
+                my_f = float(my_val)
+                opp_f = float(opp_val)
+            except (TypeError, ValueError):
+                continue
+
+            # For rate stats (AVG, ERA, WHIP, OBP), small absolute diff is still meaningful
+            avg_abs = (abs(my_f) + abs(opp_f)) / 2
+            pct_diff = abs(my_f - opp_f) / max(avg_abs, 0.001)
+
+            # Determine if "higher is better" — ERA and WHIP invert this
+            lower_is_better = cat.upper() in ("ERA", "WHIP", "BB", "BB9", "BB/9")
+            my_winning = (my_f > opp_f) if not lower_is_better else (my_f < opp_f)
+
+            if pct_diff < 0.05:  # within 5% — effectively tied
+                close.append(cat)
+            elif my_winning:
+                winning.append(cat)
+            else:
+                losing.append(cat)
+
+        parts = [f"H2H matchup context (Week {current_week} vs {opp_name}):"]
+        if winning:
+            parts.append(f"  Winning: {', '.join(winning)}")
+        if losing:
+            parts.append(f"  Losing / need help: {', '.join(losing)}")
+        if close:
+            parts.append(f"  Too close to call: {', '.join(close)}")
+        parts.append(
+            "  (streaming SP most directly impacts: W, IP, K — "
+            "streaming batter most directly impacts counting stats in their sport)"
+        )
+        return "\n".join(parts)
+
+    except Exception:
+        _log.debug("_get_matchup_context failed (non-fatal)", exc_info=True)
+        return None
+
+
+def _build_prompt(
+    txn: "Transaction",
+    league: "League",
+    db: "Session",
+    stream_ctx: Optional[dict] = None,
+    matchup_ctx: Optional[str] = None,
+) -> str:
     """Build a Claude prompt for the move grade rationale."""
     categories = league.scoring_categories or []
     cat_str = ", ".join(str(c) for c in categories[:8]) if categories else "H/AB, R, HR, RBI, SB, AVG, OPS, IP"
@@ -501,6 +781,49 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
         "catcher regardless of what you know about their history."
     )
 
+    # ── Stream context block ─────────────────────────────────────────────────
+    stream_block = ""
+    if stream_ctx and stream_ctx.get("is_stream"):
+        sc = stream_ctx
+        home_away = "vs" if sc.get("is_home") else "@"
+        opponent = sc.get("opponent") or "?"
+        park = sc.get("park")
+        park_factor = sc.get("park_factor")
+        weather = sc.get("weather_hr_factor", 1.0)
+        vegas = sc.get("vegas_run_factor", 1.0)
+        when = sc.get("start_date", "today")
+        stat_type = sc.get("stat_type", "pitching")
+
+        env_parts = []
+        if park_factor is not None and abs(park_factor - 1.0) >= 0.05:
+            pct = int(round((park_factor - 1.0) * 100))
+            sign = "+" if pct > 0 else ""
+            env_parts.append(f"park factor {sign}{pct}% HR ({park})")
+        if abs(vegas - 1.0) >= 0.05:
+            implied = round(4.4 * vegas, 1)
+            sign = "+" if vegas > 1 else ""
+            env_parts.append(f"Vegas {implied} R/G implied ({sign}{int(round((vegas-1)*100))}% vs avg)")
+        if abs(weather - 1.0) >= 0.05:
+            sign = "+" if weather > 1 else ""
+            env_parts.append(f"weather {sign}{int(round((weather-1)*100))}% HR environment")
+        if stat_type == "batting":
+            sp = sc.get("today_sp_name")
+            hand = sc.get("today_sp_throws")
+            if sp:
+                env_parts.append(f"vs {sp}{' (' + hand + ')' if hand else ''}")
+        env_str = f" | {', '.join(env_parts)}" if env_parts else ""
+
+        stream_block = (
+            f"\nSTREAM DETECTION: This appears to be a streaming pickup — "
+            f"{sc.get('player_name')} has a {'start' if stat_type == 'pitching' else 'game'} "
+            f"{when} ({home_away} {opponent}{env_str}).\n"
+        )
+        if sc.get("week_context_text"):
+            stream_block += f"Week context: {sc['week_context_text']}\n"
+
+    # ── Matchup context block ────────────────────────────────────────────────
+    matchup_block = f"\n{matchup_ctx}\n" if matchup_ctx else ""
+
     # ── Per-type prompt bodies ────────────────────────────────────────────────
     if txn_type == "add":
         adds = [p for p in participants if p.get("action") == "add"]
@@ -508,11 +831,24 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
         manager = adds[0].get("manager_name", "A manager") if adds else "A manager"
         added_names = ", ".join(p.get("player_name", "?") for p in adds)
 
-        if drops:
-            # Add+drop: frame as a roster swap with net-value context
+        # ── Stream verdict instructions ──────────────────────────────────────
+        if stream_ctx and stream_ctx.get("is_stream"):
+            is_sp_stream = stream_ctx.get("stat_type") == "pitching"
+            start_label = "today's start" if is_sp_stream else "today's game"
+            cite_label = "matchup, park factor, and Vegas environment" if is_sp_stream else "matchup and relevant categories"
+            verdict_instructions = (
+                f"This is a STREAMING pickup. Write 3 sentences structured as:\n"
+                f"SHORT-TERM: Is this a reasonable stream for {start_label}? "
+                f"Cite the {cite_label}. "
+                f"One sentence — verdict first.\n"
+                f"LONG-TERM: Is {added_names} a keeper or a drop-after-today arm? "
+                f"Use the ROS ranking and underlying stats. One sentence.\n"
+                f"MATCHUP: If H2H matchup context is provided, one sentence on whether this stream "
+                f"specifically helps the categories where the team is losing — or wastes a roster move."
+            )
+        elif drops:
             drop_names = ", ".join(p.get("player_name", "?") for p in drops)
 
-            # Build position context — detect same-position upgrade vs rebalancing
             def _positions_for(pid: Optional[int], pname: str) -> list[str]:
                 if not pid:
                     return []
@@ -533,36 +869,46 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
                     f"SWAP CONTEXT: Roster rebalancing — adding {add_pos_str} depth, "
                     f"dropping {drop_pos_str} depth. Consider whether this addresses a team need."
                 )
-
-            prompt = (
-                f"{data_block}{early_season_note}\n\n"
-                f"TRANSACTION: {manager} drops {drop_names} to add {added_names}\n"
-                f"GRADE: {txn.grade_letter}\n\n"
+            verdict_instructions = (
                 f"{swap_context}\n\n"
-                f"{stat_instructions}\n\n"
                 f"Write a 2-sentence verdict on this roster swap. "
                 f"Judge whether {added_names} is worth more than {drop_names} for the rest of the season, "
-                f"and whether the positional trade-off makes sense for this team. "
-                f"Use ONLY the player data above — never cite team, stats, or injuries "
-                f"not listed there. Direct, specific, no hedging."
+                f"and whether the positional trade-off makes sense for this team."
             )
         else:
-            prompt = (
-                f"{data_block}{early_season_note}\n\n"
-                f"TRANSACTION: {manager} adds {added_names}\n"
-                f"GRADE: {txn.grade_letter}\n\n"
-                f"{stat_instructions}\n\n"
-                f"Write a 2-sentence verdict on this add. "
-                f"Use ONLY the player data above — never cite team, stats, or injuries "
-                f"not listed there. Direct, specific, no hedging."
+            verdict_instructions = (
+                f"Write a 2-sentence verdict on this add."
             )
+
+        if drops and stream_ctx and stream_ctx.get("is_stream"):
+            drop_names = ", ".join(p.get("player_name", "?") for p in drops)
+            txn_line = f"TRANSACTION: {manager} drops {drop_names} to add {added_names} (streaming pickup)"
+        elif stream_ctx and stream_ctx.get("is_stream"):
+            txn_line = f"TRANSACTION: {manager} adds {added_names} (streaming pickup)"
+        elif drops:
+            drop_names = ", ".join(p.get("player_name", "?") for p in drops)
+            txn_line = f"TRANSACTION: {manager} drops {drop_names} to add {added_names}"
+        else:
+            txn_line = f"TRANSACTION: {manager} adds {added_names}"
+
+        prompt = (
+            f"{data_block}{early_season_note}"
+            f"{stream_block}{matchup_block}\n"
+            f"{txn_line}\n"
+            f"GRADE: {txn.grade_letter}\n\n"
+            f"{stat_instructions}\n\n"
+            f"{verdict_instructions}\n"
+            f"Use ONLY the player data above — never cite team, stats, or injuries "
+            f"not listed there. Direct, specific, no hedging."
+        )
 
     elif txn_type == "drop":
         manager = participants[0].get("manager_name", "A manager") if participants else "A manager"
         drop_names = ", ".join(p.get("player_name", "?") for p in participants)
 
         prompt = (
-            f"{data_block}{early_season_note}\n\n"
+            f"{data_block}{early_season_note}"
+            f"{matchup_block}\n"
             f"TRANSACTION: {manager} drops {drop_names}\n"
             f"GRADE: {txn.grade_letter}\n\n"
             f"{stat_instructions}\n\n"
@@ -580,7 +926,8 @@ def _build_prompt(txn: "Transaction", league: "League", db: "Session") -> str:
             side_lines.append(f"{mgr} receives: {added} | gives up: {dropped}")
 
         prompt = (
-            f"{data_block}{early_season_note}\n\n"
+            f"{data_block}{early_season_note}"
+            f"{matchup_block}\n"
             f"TRANSACTION (trade):\n" + "\n".join(side_lines) + "\n"
             f"OVERALL GRADE: {txn.grade_letter}\n\n"
             f"{stat_instructions}\n\n"
@@ -613,6 +960,13 @@ def grade_transaction(
     participants = txn.participants or []
     txn_type = txn.transaction_type
 
+    # ── Detect streaming pickup ────────────────────────────────────────────────
+    stream_ctx: Optional[dict] = None
+    matchup_ctx: Optional[str] = None
+    if txn_type == "add":
+        stream_ctx = _detect_stream(txn, db)
+        matchup_ctx = _get_matchup_context(txn, league, db)
+
     # Compute grade score
     if txn_type == "add":
         adds = [p for p in participants if p.get("action") == "add"]
@@ -628,6 +982,40 @@ def grade_transaction(
             # Simple add (no drop): score on the added player's rank alone
             add_scores = [_compute_add_score(p.get("player_id"), db, categories) for p in adds]
             grade_score = sum(add_scores) / len(add_scores) if add_scores else 2.0
+
+        # ── Stream grade boost ────────────────────────────────────────────────
+        # A streaming pickup with a good matchup earns a contextual bonus.
+        # A fringe arm (rank 280–350) streaming into a great matchup can
+        # be a legitimate C+/B- decision even though ROS value alone says C/D.
+        # Cap: streaming can lift by at most 1 full grade tier (0.7 points),
+        # and never above B (3.0) — we don't want a streaming fringe arm
+        # graded as an A just because the park is friendly today.
+        if stream_ctx and stream_ctx.get("is_stream") and stream_ctx.get("stat_type") == "pitching":
+            park_factor = stream_ctx.get("park_factor", 1.0) or 1.0
+            vegas = stream_ctx.get("vegas_run_factor", 1.0) or 1.0
+            # Pitcher-friendly environment: low park factor (pitcher's park) and low Vegas total
+            # park_factor > 1 = hitter's park (bad for streaming SP)
+            # vegas > 1 = high-scoring game (bad for streaming SP)
+            env_score = (2.0 - park_factor) * 0.3 + (2.0 - vegas) * 0.3  # ~0 neutral, up to 0.6 ideal
+            # Also factor in matchup category urgency from matchup_ctx
+            # Simple heuristic: if losing W, IP, or K, boost by 0.1 each
+            cat_urgency = 0.0
+            if matchup_ctx:
+                mc_lower = matchup_ctx.lower()
+                for cat in ("wins", " w,", "ip", "k,", "strikeouts", " k "):
+                    if cat in mc_lower and "losing" in mc_lower:
+                        cat_urgency = min(cat_urgency + 0.1, 0.3)
+                        break
+            stream_boost = min(env_score + cat_urgency, 0.7)
+            grade_score = min(grade_score + stream_boost, 3.0)  # cap at B
+        elif stream_ctx and stream_ctx.get("is_stream") and stream_ctx.get("stat_type") == "batting":
+            # Smaller boost for batter streams — less reliable/impactful than SP streams
+            cat_urgency = 0.0
+            if matchup_ctx:
+                # Check if team is losing categories this batter would help
+                cat_urgency = 0.2
+            stream_boost = min(0.3 + cat_urgency, 0.5)
+            grade_score = min(grade_score + stream_boost, 2.7)  # cap at B-
 
     elif txn_type == "drop":
         all_scores = [_compute_drop_score(p.get("player_id"), db, categories) for p in participants]
@@ -656,7 +1044,7 @@ def grade_transaction(
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            prompt = _build_prompt(txn, league, db)
+            prompt = _build_prompt(txn, league, db, stream_ctx=stream_ctx, matchup_ctx=matchup_ctx)
             from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
             _move_grade_system = _WRITER_PERSONA + (
                 "\n\n"
