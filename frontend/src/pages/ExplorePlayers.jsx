@@ -126,8 +126,8 @@ function PlayerCard({ context, onRemove }) {
         </div>
       </div>
 
-      {/* Ownership badge */}
-      <div>
+      {/* Ownership + injury badges */}
+      <div className="flex flex-wrap items-center gap-1.5">
         {context.owned_by ? (
           <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5">
             {context.owned_by}
@@ -137,7 +137,56 @@ function PlayerCard({ context, onRemove }) {
             Available
           </span>
         )}
+        {context.injury?.status && (
+          <span className="text-[10px] font-semibold text-stitch-300 bg-stitch-950/40 border border-stitch-800/50 rounded px-1.5 py-0.5 uppercase">
+            {context.injury.status.replace(/_/g, '-')}
+          </span>
+        )}
+        {!context.injury?.status && context.injury?.risk_flag && (
+          <span className="text-[10px] font-semibold text-amber-400 bg-amber-950/30 border border-amber-800/40 rounded px-1.5 py-0.5">
+            {context.injury.risk_flag === 'fragile' ? 'Fragile' : 'Post-Surgery Risk'}
+          </span>
+        )}
       </div>
+
+      {/* Injury details */}
+      {context.injury && (context.injury.description || context.injury.expected_return) && (
+        <div className="text-[10px] text-slate-500 space-y-0.5">
+          {context.injury.description && <p>{context.injury.description}</p>}
+          {context.injury.expected_return && (
+            <p className="text-slate-600">ETA: {context.injury.expected_return}</p>
+          )}
+        </div>
+      )}
+
+      {/* This week schedule */}
+      {context.schedule && (
+        <div>
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1">
+            This Week
+          </p>
+          <div className="space-y-0.5">
+            <p className="text-xs text-slate-400">
+              {context.schedule.games_this_week} game{context.schedule.games_this_week !== 1 ? 's' : ''}
+              {context.schedule.probable_starts > 0 && (
+                <> · <span className="text-slate-300">{context.schedule.future_starts} start{context.schedule.future_starts !== 1 ? 's' : ''} remaining</span></>
+              )}
+            </p>
+            {context.schedule.today_opponent && (
+              <p className="text-xs text-slate-400">
+                <span className="text-slate-300">Today:</span>{' '}
+                {context.schedule.today_is_home ? 'vs' : '@'} {context.schedule.today_opponent}
+                {context.schedule.today_sp_name && (
+                  <span className="text-slate-500"> — {context.schedule.today_sp_name}{context.schedule.today_sp_throws ? ` (${context.schedule.today_sp_throws})` : ''}</span>
+                )}
+              </p>
+            )}
+            {context.schedule.week_context_text && (
+              <p className="text-[10px] text-slate-600 leading-relaxed">{context.schedule.week_context_text}</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 2026 Actuals */}
       <div>
@@ -262,12 +311,20 @@ function generatePrompts(players, contexts) {
     const xera = Number(ctx.actual_stats?.xERA || 0)
     const kp9 = Number(ctx.actual_stats?.['K/9'] || 0)
     const isAvailable = !ctx.owned_by
+    const hasToday = !!ctx.schedule?.today_opponent
+    const isInjured = !!ctx.injury?.status
 
-    if (ctx.is_prospect) {
+    if (isInjured) {
+      prompts.push(`Is ${first.name} worth holding through his injury?`)
+      prompts.push(`What should I expect from ${first.name} when he comes back?`)
+    } else if (ctx.is_prospect) {
       prompts.push(`How close is ${first.name} to the majors?`)
       prompts.push(`What's ${first.name}'s realistic ceiling?`)
     } else if (isBatter) {
-      if (pa > 0 && pa < 80) {
+      if (hasToday) {
+        const opp = ctx.schedule.today_opponent
+        prompts.push(`Is ${first.name} a good start today vs. ${opp}?`)
+      } else if (pa > 0 && pa < 80) {
         prompts.push(`Is ${first.name}'s early-season performance sustainable?`)
       } else if (avg > 0.335 && pa >= 80) {
         prompts.push(`What's the regression risk on ${first.name}'s average?`)
@@ -277,7 +334,10 @@ function generatePrompts(players, contexts) {
       prompts.push(isAvailable ? `Should I add ${first.name} off waivers?` : `What are the risks of rostering ${first.name}?`)
     } else {
       // Pitcher
-      if (era > 4.5 && xera > 0 && xera < era - 0.75) {
+      if (hasToday && ctx.schedule.future_starts > 0) {
+        const opp = ctx.schedule.today_opponent
+        prompts.push(`Is ${first.name} a good start today vs. ${opp}?`)
+      } else if (era > 4.5 && xera > 0 && xera < era - 0.75) {
         prompts.push(`Is ${first.name}'s ERA about to improve?`)
       } else if (kp9 >= 10) {
         prompts.push(`What's ${first.name}'s strikeout upside?`)

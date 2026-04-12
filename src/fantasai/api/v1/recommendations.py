@@ -58,6 +58,25 @@ def _rankings_cache_key(categories: list[str], horizon: ProjectionHorizon) -> st
     return f"{','.join(sorted(categories))}|{horizon.value}"
 
 
+def get_cached_week_schedule() -> dict:
+    """Return the cached {player_id: PlayerSchedule} for the current week.
+
+    Returns {} if the cache is cold — callers should handle gracefully.
+    Does not fetch; read-only access to the warm rankings cache.
+    """
+    import time as _time
+    from fantasai.engine.schedule import get_current_week_bounds
+    week_start, _ = get_current_week_bounds()
+    cache_key = week_start.isoformat()
+    entry = _SCHEDULE_CACHE.get(cache_key)
+    if entry is not None:
+        ts, cached_pair = entry
+        if _time.monotonic() - ts <= _SCHEDULE_TTL:
+            _, week_schedule = cached_pair
+            return week_schedule or {}
+    return {}
+
+
 def _current_rankings_cache_key(categories: list[str]) -> str:
     return f"current|{','.join(sorted(categories))}"
 

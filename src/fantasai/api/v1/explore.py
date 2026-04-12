@@ -15,12 +15,22 @@ from fantasai.models.prospect import ProspectProfile
 from fantasai.schemas.explore import (
     ChatMessage,
     ExploreChatRequest,
+    InjuryContext,
     PavComponents,
     PlayerContextResponse,
+    ScheduleContext,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/explore", tags=["explore"])
+
+# Schedule / park / injury imports — lazy-loaded to avoid circular imports at module level
+from fantasai.engine.schedule import (
+    PARK_FACTORS,
+    build_player_week_context,
+    get_current_week_bounds,
+    fetch_weekly_schedule,
+)
 
 # Which ranking list name to show in the stat card UI
 _RANK_LIST_NAME = "Predictive Rankings (Rest of Season)"
@@ -161,6 +171,12 @@ def _get_player_context(
         except Exception:
             logger.debug("PAV component calculation failed for player %s", player_id, exc_info=True)
 
+    # Injury / health context
+    injury_ctx = _get_injury_context(player)
+
+    # Schedule context (non-fatal — returns None if schedule not available)
+    schedule_ctx = _get_schedule_context(player_id, positions, stat_type, db)
+
     return PlayerContextResponse(
         player_id=player_id,
         name=player.name,
@@ -168,6 +184,8 @@ def _get_player_context(
         positions=positions,
         stat_type=stat_type,
         mlbam_id=player.mlbam_id,
+        bats=player.bats,
+        throws=player.throws,
         actual_stats=actual_stats,
         projection_stats=projection_stats,
         overall_rank=overall_rank,
@@ -177,6 +195,127 @@ def _get_player_context(
         pav_score=pav_score,
         pav_components=pav_components,
         owned_by=owned_by_map.get(player_id),
+        injury=injury_ctx,
+        schedule=schedule_ctx,
+    )
+
+
+def _get_injury_context(player) -> Optional[InjuryContext]:
+    """Build InjuryContext from Player ORM object.
+
+    Returns None if the player has no active injury record and no risk flag.
+    """
+    has_injury = player.injury_record is not None
+    has_risk = bool(player.risk_flag)
+    if not has_injury and not has_risk:
+        return None
+    ir = player.injury_record
+    return InjuryContext(
+        status=ir.status if ir else None,
+        description=ir.injury_description if ir else None,
+        expected_return=ir.return_date.isoformat() if ir and ir.return_date else None,
+        risk_flag=player.risk_flag,
+        risk_note=player.risk_note,
+    )
+
+
+def _get_schedule_context(
+    player_id: int,
+    positions: list[str],
+    stat_type: str,
+    db,
+) -> Optional[ScheduleContext]:
+    """Build ScheduleContext for a player from the cached weekly schedule.
+
+    Uses the schedule already fetched by the rankings pipeline (warm cache).
+    Falls back to a fresh fetch if the cache is cold (non-fatal).
+    Returns None if no schedule data is available.
+    """
+    from datetime import date as _date
+    from fantasai.models.player import Player as _Player
+
+    # Try warm cache first
+    try:
+        from fantasai.api.v1.recommendations import get_cached_week_schedule
+        week_sched = get_cached_week_schedule()
+    except Exception:
+        week_sched = {}
+
+    ps = week_sched.get(player_id)
+
+    # Cache cold — attempt a fresh fetch (non-fatal)
+    if ps is None:
+        try:
+            from fantasai.config import settings as _settings
+            week_start, week_end = get_current_week_bounds()
+            fresh = fetch_weekly_schedule(
+                week_start, week_end, db,
+                vegas_api_key=_settings.the_odds_api_key or None,
+            )
+            ps = fresh.get(player_id)
+        except Exception:
+            logger.debug("Schedule fetch failed for player %s (non-fatal)", player_id, exc_info=True)
+
+    if ps is None:
+        return None
+
+    today = _date.today()
+
+    # Find today's game in batter_game_log
+    today_opponent = None
+    today_is_home = None
+    today_park = None
+    today_park_factor = None
+    today_sp_name = None
+    today_sp_throws = None
+
+    today_entry = next(
+        (g for g in (ps.batter_game_log or []) if g.get("date") == today.isoformat()),
+        None,
+    )
+    if today_entry:
+        today_opponent = today_entry.get("opponent_abbr")
+        today_is_home = today_entry.get("is_home", True)
+        # Home park: our park if home game, opponent's park if away
+        today_park = (ps.home_park or today_opponent) if today_is_home else today_opponent
+        if today_park:
+            today_park_factor = PARK_FACTORS.get(today_park, 1.0)
+
+        # Look up opposing SP for batters
+        if stat_type == "batting":
+            sp_mlbam = today_entry.get("sp_mlbam_id")
+            if sp_mlbam:
+                try:
+                    sp_player = db.query(_Player).filter(_Player.mlbam_id == sp_mlbam).first()
+                    if sp_player:
+                        today_sp_name = sp_player.name
+                        today_sp_throws = sp_player.throws
+                except Exception:
+                    pass
+
+    # Build the pre-formatted week context text (notable items only)
+    week_context_text = None
+    try:
+        week_context_text = build_player_week_context(ps, stat_type, positions)
+    except Exception:
+        pass
+
+    return ScheduleContext(
+        games_this_week=ps.team_games,
+        probable_starts=ps.probable_starts,
+        future_starts=ps.future_starts,
+        opponent_teams=list(ps.opponent_teams or []),
+        today_opponent=today_opponent,
+        today_is_home=today_is_home,
+        today_park=today_park,
+        today_park_factor=today_park_factor,
+        today_sp_name=today_sp_name,
+        today_sp_throws=today_sp_throws,
+        weather_hr_factor=ps.weather_hr_factor,
+        weather_temp_f=ps.weather_temp_f,
+        weather_wind_mph=ps.weather_wind_mph,
+        vegas_run_factor=ps.vegas_run_factor,
+        week_context_text=week_context_text,
     )
 
 
@@ -444,6 +583,76 @@ def _build_rag_context(contexts: list[PlayerContextResponse], horizon: Optional[
                 parts.append(f"    ETA Proximity: {c.eta_proximity}/100")
             parts.append("")
 
+        # Injury / health context
+        if ctx.injury:
+            inj = ctx.injury
+            inj_lines = ["Injury / Health Status:"]
+            if inj.status:
+                status_display = {
+                    "il_10": "10-Day IL",
+                    "il_60": "60-Day IL",
+                    "day_to_day": "Day-to-Day (not on formal IL)",
+                    "out_for_season": "Out for Season",
+                }.get(inj.status, inj.status)
+                inj_lines.append(f"  Current status: {status_display}")
+            if inj.description:
+                inj_lines.append(f"  Description: {inj.description}")
+            if inj.expected_return:
+                inj_lines.append(f"  Expected return: {inj.expected_return}")
+            if inj.risk_flag:
+                risk_display = {
+                    "fragile": "Fragile — chronically injury-prone; availability discounted in projections",
+                    "recent_surgery": "Post-major-surgery risk — availability discounted in projections",
+                }.get(inj.risk_flag, inj.risk_flag)
+                inj_lines.append(f"  Risk profile: {risk_display}")
+                if inj.risk_note:
+                    inj_lines.append(f"  Note: {inj.risk_note}")
+            parts.append("\n".join(inj_lines) + "\n")
+
+        # This week's schedule context
+        if ctx.schedule:
+            sc = ctx.schedule
+            sched_lines = ["This Week Schedule:"]
+            sched_lines.append(f"  Games this week: {sc.games_this_week}")
+            if ctx.stat_type == "pitching" and "SP" in ctx.positions:
+                sched_lines.append(f"  Probable starts: {sc.probable_starts} total, {sc.future_starts} remaining")
+                if sc.opponent_teams:
+                    sched_lines.append(f"  Opponents: {', '.join(sc.opponent_teams)}")
+            if sc.today_opponent:
+                home_away = "vs" if sc.today_is_home else "@"
+                today_line = f"  Today: {home_away} {sc.today_opponent}"
+                if sc.today_park_factor is not None and abs(sc.today_park_factor - 1.0) >= 0.05:
+                    pct = int(round((sc.today_park_factor - 1.0) * 100))
+                    direction = "+" if pct > 0 else ""
+                    today_line += f" | Park: {sc.today_park} ({direction}{pct}% HR factor)"
+                if sc.today_sp_name:
+                    throws_str = f" ({sc.today_sp_throws})" if sc.today_sp_throws else ""
+                    today_line += f" | Probable SP: {sc.today_sp_name}{throws_str}"
+                sched_lines.append(today_line)
+            # Handedness matchup note for batters
+            if ctx.stat_type == "batting" and ctx.bats and sc.today_sp_throws:
+                sched_lines.append(f"  Handedness: bats {ctx.bats} vs throws {sc.today_sp_throws}")
+            if sc.vegas_run_factor != 1.0:
+                implied = round(4.4 * sc.vegas_run_factor, 1)
+                sched_lines.append(f"  Vegas run environment: {implied} R/G implied ({'+' if sc.vegas_run_factor > 1 else ''}{int(round((sc.vegas_run_factor-1)*100))}% vs avg)")
+            if sc.weather_temp_f > 0 or sc.weather_wind_mph > 0:
+                wx_parts = []
+                if sc.weather_temp_f > 0:
+                    wx_parts.append(f"{int(round(sc.weather_temp_f))}°F")
+                if sc.weather_wind_mph >= 5:
+                    wx_parts.append(f"{int(round(sc.weather_wind_mph))}mph wind")
+                if wx_parts:
+                    hr_delta = int(round((sc.weather_hr_factor - 1.0) * 100))
+                    direction = "+" if hr_delta >= 0 else ""
+                    sched_lines.append(f"  Weather: {', '.join(wx_parts)} ({direction}{hr_delta}% HR environment)")
+            if sc.week_context_text:
+                sched_lines.append(f"  Week note: {sc.week_context_text}")
+            parts.append("\n".join(sched_lines) + "\n")
+
+        # Handedness (for pitcher context — batter handedness in schedule block above)
+        if ctx.stat_type == "pitching" and ctx.throws:
+            parts.append(f"Pitcher handedness: throws {ctx.throws}\n")
+
         parts.append("")
 
     # Append horizon framing block when a time horizon was detected
@@ -501,6 +710,20 @@ acknowledge that the pace is for illustration only — do not cite it as a predi
 HORIZON: If the context includes an ANALYSIS FRAME block, use the specified ranking blend and guidance \
 to calibrate which signals to emphasise. Always name the horizon explicitly in your answer \
 (e.g. "for ROS value…", "as a streamer this week…").
+
+MATCHUP QUESTIONS: When the context includes a "This Week Schedule" block with today's opponent, \
+probable SP, park factor, weather, or Vegas run environment — use ALL of it. For start/sit verdicts: \
+(1) state the recommendation in the first sentence, (2) cite the 2–3 most relevant factors \
+(park, SP handedness advantage, Vegas environment, weather), (3) one sentence on the risk. \
+Never waffle — give a verdict.
+
+INJURY QUESTIONS: When the context includes an "Injury / Health Status" block, \
+lead with the current status and expected return, then frame the fantasy impact \
+(how many games missed, what the projections assume about availability).
+
+TRADE QUESTIONS: When evaluating a trade, address both sides explicitly. \
+For each player: 3-year trajectory (age + Steamer), current health, schedule strength. \
+Give a clear recommendation: accept, decline, or negotiate.
 """
     return _WRITER_PERSONA + extra
 
