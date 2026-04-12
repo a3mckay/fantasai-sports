@@ -391,6 +391,98 @@ def clear_rankings_cache() -> dict:
     return {"cleared": n, "status": "ok"}
 
 
+@router.post("/sync-statcast-now", tags=["admin"])
+def sync_statcast_now(
+    season: int = Query(default=2026, ge=2020, le=2030),
+    sample_player_id: int = Query(default=15640, description="Player ID to spot-check after sync (default: Aaron Judge)"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Run Statcast advanced stats sync synchronously and return detailed diagnostics.
+
+    Unlike /sync-fangraphs (background), this runs inline so errors surface immediately.
+    Returns a report showing how many rows were updated and a before/after spot-check
+    for the given sample_player_id.
+
+    Default sample: Aaron Judge (player_id=15640, mlbam=592450).
+    """
+    import traceback
+    from fantasai.models.player import Player, PlayerStats
+
+    result: dict = {"season": season, "status": "ok", "errors": []}
+
+    # Before snapshot
+    before_stats: dict = {}
+    try:
+        ps_before = (
+            db.query(PlayerStats)
+            .filter(
+                PlayerStats.player_id == sample_player_id,
+                PlayerStats.season == season,
+                PlayerStats.stat_type == "batting",
+                PlayerStats.data_source == "actual",
+            )
+            .first()
+        )
+        if ps_before:
+            before_stats = dict(ps_before.advanced_stats or {})
+    except Exception as e:
+        result["errors"].append(f"Before snapshot error: {e}")
+
+    # Check mlbam_id mapping
+    mlbam_count = db.query(Player).filter(Player.mlbam_id.isnot(None)).count()
+    sample_player = db.get(Player, sample_player_id)
+    result["players_with_mlbam_id"] = mlbam_count
+    result["sample_player"] = {
+        "player_id": sample_player_id,
+        "name": sample_player.name if sample_player else "NOT FOUND",
+        "mlbam_id": sample_player.mlbam_id if sample_player else None,
+    }
+
+    # Run sync
+    rows_updated = 0
+    try:
+        from fantasai.engine.pipeline import sync_statcast_advanced_stats
+        rows_updated = sync_statcast_advanced_stats(db, season=season)
+    except Exception as e:
+        result["errors"].append(f"Sync error: {traceback.format_exc()}")
+        result["status"] = "error"
+
+    result["rows_updated"] = rows_updated
+
+    # After snapshot — re-query fresh
+    db.expire_all()
+    after_stats: dict = {}
+    try:
+        ps_after = (
+            db.query(PlayerStats)
+            .filter(
+                PlayerStats.player_id == sample_player_id,
+                PlayerStats.season == season,
+                PlayerStats.stat_type == "batting",
+                PlayerStats.data_source == "actual",
+            )
+            .first()
+        )
+        if ps_after:
+            after_stats = dict(ps_after.advanced_stats or {})
+    except Exception as e:
+        result["errors"].append(f"After snapshot error: {e}")
+
+    result["advanced_stats_before"] = before_stats
+    result["advanced_stats_after"] = after_stats
+    result["advanced_stats_changed"] = before_stats != after_stats
+
+    # Clear cache
+    try:
+        from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+        _RANKINGS_CACHE.clear()
+        _RANKINGS_RAW_CACHE.clear()
+    except Exception:
+        pass
+
+    return result
+
+
 @router.post("/sync-current-stats", tags=["admin"])
 def sync_current_stats(
     season: int = Query(default=2026, ge=2020, le=2030),
