@@ -36,16 +36,20 @@ from fantasai.engine.schedule import (
 _RANK_LIST_NAME = "Predictive Rankings (Rest of Season)"
 
 # Stat labels for the RAG context block (batting)
+# Note: xwOBA/xBA/Barrel%/HardHit%/EV come from Statcast; wRC+ from FanGraphs (when accessible)
 _BATTING_STAT_LABELS = {
     "PA": "Plate Appearances", "R": "Runs", "HR": "HR", "RBI": "RBI",
     "SB": "SB", "AVG": "AVG", "OPS": "OPS", "OBP": "OBP",
-    "xwOBA": "xwOBA", "Barrel%": "Barrel%", "HardHit%": "HardHit%",
+    "xwOBA": "xwOBA", "xBA": "xBA", "xSLG": "xSLG",
+    "Barrel%": "Barrel%", "HardHit%": "HardHit%", "EV": "Avg Exit Velo",
     "wRC+": "wRC+",
 }
+# Note: xERA/Barrel%/HardHit%/EV come from Statcast; SIERA/Stuff+/CSW%/SwStr% from FanGraphs (when accessible)
 _PITCHING_STAT_LABELS = {
     "IP": "IP", "W": "W", "SV": "SV", "SO": "K", "ERA": "ERA", "WHIP": "WHIP",
     "xERA": "xERA", "K/9": "K/9", "BB/9": "BB/9", "FIP": "FIP",
-    "Stuff+": "Stuff+", "SIERA": "SIERA",
+    "Barrel%": "Barrel% allowed", "HardHit%": "HardHit% allowed", "EV": "Avg Exit Velo allowed",
+    "Stuff+": "Stuff+", "SIERA": "SIERA", "CSW%": "CSW%",
 }
 
 

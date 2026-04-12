@@ -55,19 +55,22 @@ _log = logging.getLogger(__name__)
 def _nightly_stats_refresh() -> None:
     """Nightly 4am EST: fetch current-season stats + update projections, recompute rankings.
 
-    Runs three syncs in order:
+    Runs four syncs in order:
       1. Steamer/consensus projections — picks up new callups who weren't in the
-         pre-season run (Baldwin, Rodríguez, etc.). Runs first so actuals can
-         properly blend with projections in the ranking formula.
-      2. FanGraphs actuals via pybaseball — canonical source for advanced stats
-         the user verifies against (xwOBA, Barrel%, etc.).
-      3. MLB Stats API — real-time counting stats; patches any players that
-         FanGraphs doesn't have yet (very new call-ups, etc.)
+         pre-season run. Runs first so actuals can properly blend with projections.
+      2. MLB Stats API — real-time counting/rate stats (same day, ~2h after games).
+         Does NOT touch advanced_stats.
+      3. Statcast (Baseball Savant) — advanced stats: xwOBA, xBA, xSLG, Barrel%,
+         HardHit%, EV (batters) and xERA, Barrel%, HardHit%, EV (pitchers).
+         Uses a different URL than FanGraphs so it's more reliable.
+      4. FanGraphs via pybaseball — if accessible, overwrites with FanGraphs-canonical
+         versions (wRC+, SIERA, Stuff+, CSW%, SwStr%).  Optional; skipped on 403/failure.
     """
     from fantasai.database import SessionLocal
     from fantasai.engine.pipeline import (
         sync_current_season_stats,
         sync_mlb_api_current_season,
+        sync_statcast_advanced_stats,
         sync_steamer_projections,
     )
 
@@ -82,18 +85,23 @@ def _nightly_stats_refresh() -> None:
         except Exception:
             _log.warning("Nightly refresh: Steamer sync failed, existing projections retained", exc_info=True)
 
-        # 2. MLB Stats API — real-time counting stats for all players
+        # 2. MLB Stats API — real-time counting/rate stats for all players
         count = sync_mlb_api_current_season(db, season=2026)
         _log.info("Nightly refresh: MLB API upserted %d stat rows", count)
 
-        # 3. FanGraphs actuals — overwrites with authoritative advanced stats
-        # (xwOBA, Barrel%, etc.) and corrected counting stats. FanGraphs is
-        # the source users verify against, so it takes final precedence.
+        # 3. Statcast — advanced stats from Baseball Savant (reliable, different host than FanGraphs)
+        try:
+            sc_count = sync_statcast_advanced_stats(db, season=2026)
+            _log.info("Nightly refresh: Statcast advanced stats updated %d rows", sc_count)
+        except Exception:
+            _log.warning("Nightly refresh: Statcast sync failed, no advanced stats this cycle", exc_info=True)
+
+        # 4. FanGraphs — optional; adds wRC+, SIERA, Stuff+, CSW%, SwStr% if accessible
         try:
             fg_count = sync_current_season_stats(db, season=2026)
             _log.info("Nightly refresh: FanGraphs upserted %d stat rows", fg_count)
         except Exception:
-            _log.warning("Nightly refresh: FanGraphs sync failed, MLB API stats retained", exc_info=True)
+            _log.warning("Nightly refresh: FanGraphs sync failed (likely 403), Statcast advanced stats retained", exc_info=True)
 
         # Clear rankings cache so next request recomputes with fresh data
         try:

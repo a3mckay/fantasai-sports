@@ -426,23 +426,35 @@ def sync_fangraphs(
     background_tasks: BackgroundTasks,
     season: int = Query(default=2026, ge=2020, le=2030),
 ) -> dict:
-    """Fetch current-season stats from FanGraphs via pybaseball and upsert advanced stats.
+    """Fetch advanced stats from Statcast (Baseball Savant) + FanGraphs and upsert.
 
-    This is the authoritative source for xwOBA, Barrel%, HardHit%, wRC+ (batters)
-    and xERA, SIERA, Stuff+, CSW%, SwStr% (pitchers).  Run this any time you need
-    to repair or refresh advanced stats without doing a full three-step refresh.
+    Primary source: Baseball Savant (Statcast) — always accessible, provides
+    xwOBA, xBA, xSLG, Barrel%, HardHit%, EV (batters) and xERA, Barrel%,
+    HardHit%, EV (pitchers).
 
-    Runs in the background (pybaseball calls can take 30–90 s).
-    Returns 202 immediately — check server logs for progress.
+    Secondary source: FanGraphs via pybaseball — adds wRC+, SIERA, Stuff+,
+    CSW%, SwStr% if accessible (may return 403 if FanGraphs is blocking).
+
+    Use this to repair or refresh advanced stats without a full three-step refresh.
+    Runs in the background. Returns 202 immediately — check logs for progress.
     """
     from fantasai.database import SessionLocal
-    from fantasai.engine.pipeline import sync_current_season_stats
+    from fantasai.engine.pipeline import sync_current_season_stats, sync_statcast_advanced_stats
 
     def _run() -> None:
         db = SessionLocal()
         try:
-            count = sync_current_season_stats(db, season=season)
-            logger.info("sync-fangraphs: upserted %d rows for season %s", count, season)
+            # Primary: Statcast (always works)
+            sc_count = sync_statcast_advanced_stats(db, season=season)
+            logger.info("sync-fangraphs: Statcast updated %d rows for season %s", sc_count, season)
+
+            # Secondary: FanGraphs (adds wRC+, SIERA, Stuff+ if accessible)
+            try:
+                fg_count = sync_current_season_stats(db, season=season)
+                logger.info("sync-fangraphs: FanGraphs upserted %d rows for season %s", fg_count, season)
+            except Exception:
+                logger.warning("sync-fangraphs: FanGraphs unavailable (likely 403), Statcast stats retained", exc_info=True)
+
             from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
             _RANKINGS_CACHE.clear()
             _RANKINGS_RAW_CACHE.clear()
@@ -457,8 +469,8 @@ def sync_fangraphs(
     return {
         "status": "accepted",
         "season": season,
-        "message": "FanGraphs sync running in background — check logs for progress. "
-                   "Advanced stats (xwOBA, Barrel%, xERA, Stuff+, etc.) will be refreshed.",
+        "message": "Advanced stats sync running in background (Statcast primary, FanGraphs optional). "
+                   "Check logs for progress. xwOBA, Barrel%, xERA etc. will be refreshed.",
     }
 
 
@@ -469,10 +481,11 @@ def force_full_refresh(
 ) -> dict:
     """Run the full nightly stats refresh immediately in the background.
 
-    Runs all three syncs in order:
+    Runs all four syncs in order:
       1. Steamer/consensus projections (picks up new callups)
-      2. MLB Stats API actuals
-      3. FanGraphs actuals (authoritative advanced stats)
+      2. MLB Stats API actuals (counting/rate stats)
+      3. Statcast / Baseball Savant advanced stats (xwOBA, Barrel%, xERA, etc.)
+      4. FanGraphs actuals (adds wRC+, SIERA, Stuff+ if accessible)
 
     Clears rankings cache after completion. Returns 202 immediately — check
     server logs for progress. Typically takes 2–5 minutes.
@@ -481,6 +494,7 @@ def force_full_refresh(
     from fantasai.engine.pipeline import (
         sync_current_season_stats,
         sync_mlb_api_current_season,
+        sync_statcast_advanced_stats,
         sync_steamer_projections,
     )
 
@@ -497,10 +511,16 @@ def force_full_refresh(
             logger.info("force-full-refresh: MLB API upserted %d rows", mlb_count)
 
             try:
+                sc_count = sync_statcast_advanced_stats(db, season=season)
+                logger.info("force-full-refresh: Statcast advanced stats updated %d rows", sc_count)
+            except Exception:
+                logger.warning("force-full-refresh: Statcast sync failed", exc_info=True)
+
+            try:
                 fg_count = sync_current_season_stats(db, season=season)
                 logger.info("force-full-refresh: FanGraphs upserted %d rows", fg_count)
             except Exception:
-                logger.warning("force-full-refresh: FanGraphs sync failed", exc_info=True)
+                logger.warning("force-full-refresh: FanGraphs sync failed (likely 403), Statcast stats retained", exc_info=True)
 
             from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
             _RANKINGS_CACHE.clear()

@@ -679,6 +679,205 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
     return total_upserted
 
 
+def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
+    """Fetch advanced stats from Baseball Savant (Statcast) and upsert to PlayerStats.
+
+    Uses pybaseball's Statcast endpoints which pull from baseballsavant.mlb.com —
+    a different URL than FanGraphs, so it works even when FanGraphs is unavailable.
+
+    Populates advanced_stats for each player who has an MLBAM ID and an existing
+    PlayerStats "actual" row. Does NOT touch counting_stats or rate_stats.
+
+    Batting advanced stats populated:
+      xwOBA (est_woba), xBA (est_ba), xSLG (est_slg),
+      Barrel% (brl_percent), HardHit% (ev95percent), EV (avg_hit_speed)
+
+    Pitching advanced stats populated:
+      xERA (xera), Barrel% (brl_percent), HardHit% (ev95percent), EV (avg_hit_speed)
+
+    Returns:
+        Number of PlayerStats rows with advanced_stats updated.
+    """
+    import math
+
+    try:
+        import pybaseball
+    except ImportError:
+        logger.error("pybaseball not installed — cannot sync Statcast advanced stats")
+        return 0
+
+    try:
+        pybaseball.cache.disable()
+    except Exception:
+        pass
+
+    def _fval_sc(row: dict, key: str) -> Optional[float]:
+        v = row.get(key)
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (math.isnan(f) or math.isinf(f)) else round(f, 4)
+        except (TypeError, ValueError):
+            return None
+
+    # Build MLBAM → player_id reverse map (only players with mlbam_id set)
+    rows = db.query(Player.id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
+    mlbam_to_player_id: dict[int, int] = {row.mlbam_id: row.id for row in rows}
+    if not mlbam_to_player_id:
+        logger.warning("sync_statcast_advanced_stats: no players with mlbam_id — skipping")
+        return 0
+
+    logger.info("sync_statcast_advanced_stats: %d players with mlbam_id", len(mlbam_to_player_id))
+    total_updated = 0
+
+    # ── Batting ──────────────────────────────────────────────────────────────
+    batter_adv: dict[int, dict] = {}  # mlbam_id → partial advanced_stats
+
+    try:
+        exp_df = pybaseball.statcast_batter_expected_stats(season)
+        logger.info("Statcast batter expected stats: %d rows", len(exp_df))
+        for _, row in exp_df.iterrows():
+            mlbam = row.get("player_id")
+            if mlbam is None:
+                continue
+            try:
+                mlbam = int(float(mlbam))
+            except (TypeError, ValueError):
+                continue
+            batter_adv.setdefault(mlbam, {}).update({
+                "xwOBA": _fval_sc(row.to_dict(), "est_woba"),
+                "xBA":   _fval_sc(row.to_dict(), "est_ba"),
+                "xSLG":  _fval_sc(row.to_dict(), "est_slg"),
+            })
+    except Exception:
+        logger.warning("Statcast batter expected stats fetch failed", exc_info=True)
+
+    try:
+        ev_df = pybaseball.statcast_batter_exitvelo_barrels(season)
+        logger.info("Statcast batter exit velo: %d rows", len(ev_df))
+        for _, row in ev_df.iterrows():
+            mlbam = row.get("player_id")
+            if mlbam is None:
+                continue
+            try:
+                mlbam = int(float(mlbam))
+            except (TypeError, ValueError):
+                continue
+            d = row.to_dict()
+            batter_adv.setdefault(mlbam, {}).update({
+                "Barrel%":  _fval_sc(d, "brl_percent"),
+                "HardHit%": _fval_sc(d, "ev95percent"),
+                "EV":       _fval_sc(d, "avg_hit_speed"),
+            })
+    except Exception:
+        logger.warning("Statcast batter exit velo fetch failed", exc_info=True)
+
+    for mlbam, adv in batter_adv.items():
+        player_id = mlbam_to_player_id.get(mlbam)
+        if not player_id:
+            continue
+        existing = (
+            db.query(PlayerStats)
+            .filter(
+                and_(
+                    PlayerStats.player_id == player_id,
+                    PlayerStats.season == season,
+                    PlayerStats.week.is_(None),
+                    PlayerStats.stat_type == "batting",
+                    PlayerStats.data_source == "actual",
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            continue  # No base stats row yet — MLB API sync must run first
+        # Merge: preserve any existing keys not in this update (e.g. wRC+ if FanGraphs ran)
+        merged = dict(existing.advanced_stats or {})
+        merged.update({k: v for k, v in adv.items() if v is not None})
+        existing.advanced_stats = merged
+        total_updated += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("sync_statcast_advanced_stats: batting commit failed", exc_info=True)
+
+    # ── Pitching ─────────────────────────────────────────────────────────────
+    pitcher_adv: dict[int, dict] = {}
+
+    try:
+        exp_df = pybaseball.statcast_pitcher_expected_stats(season)
+        logger.info("Statcast pitcher expected stats: %d rows", len(exp_df))
+        for _, row in exp_df.iterrows():
+            mlbam = row.get("player_id")
+            if mlbam is None:
+                continue
+            try:
+                mlbam = int(float(mlbam))
+            except (TypeError, ValueError):
+                continue
+            pitcher_adv.setdefault(mlbam, {}).update({
+                "xERA": _fval_sc(row.to_dict(), "xera"),
+            })
+    except Exception:
+        logger.warning("Statcast pitcher expected stats fetch failed", exc_info=True)
+
+    try:
+        ev_df = pybaseball.statcast_pitcher_exitvelo_barrels(season)
+        logger.info("Statcast pitcher exit velo: %d rows", len(ev_df))
+        for _, row in ev_df.iterrows():
+            mlbam = row.get("player_id")
+            if mlbam is None:
+                continue
+            try:
+                mlbam = int(float(mlbam))
+            except (TypeError, ValueError):
+                continue
+            d = row.to_dict()
+            pitcher_adv.setdefault(mlbam, {}).update({
+                "Barrel%":  _fval_sc(d, "brl_percent"),
+                "HardHit%": _fval_sc(d, "ev95percent"),
+                "EV":       _fval_sc(d, "avg_hit_speed"),
+            })
+    except Exception:
+        logger.warning("Statcast pitcher exit velo fetch failed", exc_info=True)
+
+    for mlbam, adv in pitcher_adv.items():
+        player_id = mlbam_to_player_id.get(mlbam)
+        if not player_id:
+            continue
+        existing = (
+            db.query(PlayerStats)
+            .filter(
+                and_(
+                    PlayerStats.player_id == player_id,
+                    PlayerStats.season == season,
+                    PlayerStats.week.is_(None),
+                    PlayerStats.stat_type == "pitching",
+                    PlayerStats.data_source == "actual",
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            continue
+        merged = dict(existing.advanced_stats or {})
+        merged.update({k: v for k, v in adv.items() if v is not None})
+        existing.advanced_stats = merged
+        total_updated += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("sync_statcast_advanced_stats: pitching commit failed", exc_info=True)
+
+    logger.info("sync_statcast_advanced_stats: updated %d stat rows for season %s", total_updated, season)
+    return total_updated
+
+
 def write_ranking_snapshots(
     db: Session,
     rankings: list,
