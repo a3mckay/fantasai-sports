@@ -402,6 +402,10 @@ def sync_current_stats(
     deployment to backfill the current 2026 season, or any time you need fresh
     data immediately without waiting for the scheduled run.
 
+    NOTE: This endpoint only updates counting/rate stats from the MLB Stats API.
+    It does NOT populate advanced stats (xwOBA, Barrel%, xERA, Stuff+ etc.) — use
+    /sync-fangraphs for that.
+
     Clears the rankings cache so the next request reflects the new stats.
     Returns the number of rows upserted.
     """
@@ -415,6 +419,47 @@ def sync_current_stats(
     _RANKINGS_RAW_CACHE.clear()
 
     return {"season": season, "rows_upserted": rows, "status": "ok"}
+
+
+@router.post("/sync-fangraphs", tags=["admin"])
+def sync_fangraphs(
+    background_tasks: BackgroundTasks,
+    season: int = Query(default=2026, ge=2020, le=2030),
+) -> dict:
+    """Fetch current-season stats from FanGraphs via pybaseball and upsert advanced stats.
+
+    This is the authoritative source for xwOBA, Barrel%, HardHit%, wRC+ (batters)
+    and xERA, SIERA, Stuff+, CSW%, SwStr% (pitchers).  Run this any time you need
+    to repair or refresh advanced stats without doing a full three-step refresh.
+
+    Runs in the background (pybaseball calls can take 30–90 s).
+    Returns 202 immediately — check server logs for progress.
+    """
+    from fantasai.database import SessionLocal
+    from fantasai.engine.pipeline import sync_current_season_stats
+
+    def _run() -> None:
+        db = SessionLocal()
+        try:
+            count = sync_current_season_stats(db, season=season)
+            logger.info("sync-fangraphs: upserted %d rows for season %s", count, season)
+            from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+            _RANKINGS_CACHE.clear()
+            _RANKINGS_RAW_CACHE.clear()
+            logger.info("sync-fangraphs: rankings cache cleared")
+        except Exception:
+            logger.error("sync-fangraphs: failed", exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "accepted",
+        "season": season,
+        "message": "FanGraphs sync running in background — check logs for progress. "
+                   "Advanced stats (xwOBA, Barrel%, xERA, Stuff+, etc.) will be refreshed.",
+    }
 
 
 @router.post("/force-full-refresh", status_code=202, tags=["admin"])

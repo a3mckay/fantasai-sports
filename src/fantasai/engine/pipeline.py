@@ -882,12 +882,14 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                 data_source="actual",
                 counting_stats=counting_stats,
                 rate_stats=rate_stats,
-                advanced_stats={},
+                advanced_stats={},  # FanGraphs sync will populate these later
             ))
         else:
             existing.counting_stats = counting_stats
             existing.rate_stats = rate_stats
-            existing.advanced_stats = {}
+            # Do NOT overwrite advanced_stats — MLB Stats API doesn't provide
+            # xwOBA, Barrel%, HardHit%, wRC+ etc.  FanGraphs sync owns these.
+            # Preserve whatever FanGraphs already wrote.
         total_upserted += 1
 
     try:
@@ -987,12 +989,14 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
                 data_source="actual",
                 counting_stats=counting_stats,
                 rate_stats=rate_stats,
-                advanced_stats={},
+                advanced_stats={},  # FanGraphs sync will populate these later
             ))
         else:
             existing.counting_stats = counting_stats
             existing.rate_stats = rate_stats
-            existing.advanced_stats = {}
+            # Do NOT overwrite advanced_stats — MLB Stats API doesn't provide
+            # xERA, SIERA, Stuff+, CSW%, SwStr% etc.  FanGraphs sync owns these.
+            # Preserve whatever FanGraphs already wrote.
         total_upserted += 1
 
     try:
