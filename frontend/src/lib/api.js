@@ -115,7 +115,7 @@ export const explorePlayerContext = (playerId, leagueId) => {
  * Streaming explore chat. Returns a ReadableStream of SSE events.
  * The caller reads the stream and handles {"type":"text","text":"..."} events.
  */
-export async function exploreChatStream({ playerIds, messages, userMessage, leagueId }) {
+export async function exploreChatStream({ playerIds, messages, userMessage, leagueId, myTeamId }) {
   const headers = { 'Content-Type': 'application/json' }
   const token = await _getIdToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -129,6 +129,7 @@ export async function exploreChatStream({ playerIds, messages, userMessage, leag
       messages,
       user_message: userMessage,
       league_id: leagueId ?? null,
+      my_team_id: myTeamId ?? null,
     }),
   })
 

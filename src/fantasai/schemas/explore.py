@@ -85,3 +85,4 @@ class ExploreChatRequest(BaseModel):
     messages: list[ChatMessage] = []   # conversation history — last 5 pairs
     user_message: str
     league_id: Optional[str] = None
+    my_team_id: Optional[int] = None   # user's own team_id — enables "help my team?" context

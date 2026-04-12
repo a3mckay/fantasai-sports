@@ -297,11 +297,12 @@ function ChatBubble({ msg }) {
 // ---------------------------------------------------------------------------
 // Suggested prompts — context-aware, generated from player stat data
 // ---------------------------------------------------------------------------
-function generatePrompts(players, contexts) {
+function generatePrompts(players, contexts, myTeamId) {
   if (!players.length) return []
   const first = players[0]
   const ctx = contexts?.[first.player_id]
   const prompts = []
+  const hasLeague = !!myTeamId
 
   if (ctx) {
     const isBatter = ctx.stat_type === 'batting'
@@ -322,8 +323,7 @@ function generatePrompts(players, contexts) {
       prompts.push(`What's ${first.name}'s realistic ceiling?`)
     } else if (isBatter) {
       if (hasToday) {
-        const opp = ctx.schedule.today_opponent
-        prompts.push(`Is ${first.name} a good start today vs. ${opp}?`)
+        prompts.push(`Is ${first.name} a good start today vs. ${ctx.schedule.today_opponent}?`)
       } else if (pa > 0 && pa < 80) {
         prompts.push(`Is ${first.name}'s early-season performance sustainable?`)
       } else if (avg > 0.335 && pa >= 80) {
@@ -331,12 +331,15 @@ function generatePrompts(players, contexts) {
       } else {
         prompts.push(`Make the bull case for ${first.name}`)
       }
-      prompts.push(isAvailable ? `Should I add ${first.name} off waivers?` : `What are the risks of rostering ${first.name}?`)
+      if (hasLeague && isAvailable) {
+        prompts.push(`Will ${first.name} help my team if I add him?`)
+      } else {
+        prompts.push(isAvailable ? `Should I add ${first.name} off waivers?` : `What are the risks of rostering ${first.name}?`)
+      }
     } else {
       // Pitcher
-      if (hasToday && ctx.schedule.future_starts > 0) {
-        const opp = ctx.schedule.today_opponent
-        prompts.push(`Is ${first.name} a good start today vs. ${opp}?`)
+      if (hasToday) {
+        prompts.push(`Is ${first.name} a good start today vs. ${ctx.schedule.today_opponent}?`)
       } else if (era > 4.5 && xera > 0 && xera < era - 0.75) {
         prompts.push(`Is ${first.name}'s ERA about to improve?`)
       } else if (kp9 >= 10) {
@@ -344,25 +347,42 @@ function generatePrompts(players, contexts) {
       } else {
         prompts.push(`Make the bull case for ${first.name}`)
       }
-      prompts.push(isAvailable ? `Should I stream ${first.name} this week?` : `What are the risks of rostering ${first.name}?`)
+      if (hasLeague && isAvailable) {
+        prompts.push(`Will ${first.name} help my pitching staff?`)
+      } else {
+        prompts.push(isAvailable ? `Should I stream ${first.name} this week?` : `What are the risks of rostering ${first.name}?`)
+      }
     }
   } else {
-    // Context not loaded yet — generic fallbacks
-    prompts.push(`Tell me about ${first.name}`)
-    prompts.push(`Make the bull case for ${first.name}`)
+    // Context not yet loaded — use position data from the basic player object for smarter fallback
+    const isPitcher = first.positions?.some(p => ['SP', 'RP', 'P'].includes(p))
+    if (isPitcher) {
+      prompts.push(`Make the bull case for ${first.name}`)
+      prompts.push(`Is ${first.name} a good streaming option this week?`)
+    } else {
+      prompts.push(`Make the bull case for ${first.name}`)
+      prompts.push(hasLeague ? `Will ${first.name} help my team?` : `Should I add ${first.name} off waivers?`)
+    }
     prompts.push(`What are the risks of rostering ${first.name}?`)
   }
 
+  // Multi-player prompts
   if (players.length >= 2) {
-    prompts.push(`Compare ${players[0].name} and ${players[1].name} for the rest of the season`)
+    const p1 = players[0].name
+    const p2 = players[1].name
+    prompts.push(
+      hasLeague
+        ? `Should I trade ${p1} for ${p2}?`
+        : `Compare ${p1} and ${p2} for the rest of the season`
+    )
   }
 
   return prompts.slice(0, 4)
 }
 
-function SuggestedPrompts({ players, contexts, onSelect }) {
+function SuggestedPrompts({ players, contexts, myTeamId, onSelect }) {
   if (!players.length) return null
-  const prompts = generatePrompts(players, contexts)
+  const prompts = generatePrompts(players, contexts, myTeamId)
   return (
     <div className="flex flex-wrap gap-2 justify-center">
       {prompts.map(p => (
@@ -383,9 +403,10 @@ function SuggestedPrompts({ players, contexts, onSelect }) {
 // ---------------------------------------------------------------------------
 export default function ExplorePlayers() {
   const [searchParams] = useSearchParams()
-  const { league } = useLeague() || {}
+  const { league, myTeam } = useLeague() || {}
 
   const leagueId = league?.league_id ?? null
+  const myTeamId = myTeam?.team_id ?? null
 
   // ---- Zone A: player selection ----
   const [selectedPlayers, setSelectedPlayers] = useState([])  // [{player_id, name, ...}]
@@ -518,6 +539,7 @@ export default function ExplorePlayers() {
         messages: chatHistory,
         userMessage: msg,
         leagueId,
+        myTeamId,
       })
 
       const reader = stream.getReader()
@@ -722,7 +744,7 @@ export default function ExplorePlayers() {
             {chatMessages.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <p className="text-sm text-slate-500">Ask the analyst anything about {selectedPlayers.map(p => p.name).join(', ')}.</p>
-                <SuggestedPrompts players={selectedPlayers} contexts={contexts} onSelect={t => { setInputText(t); inputRef.current?.focus() }} />
+                <SuggestedPrompts players={selectedPlayers} contexts={contexts} myTeamId={myTeamId} onSelect={t => { setInputText(t); inputRef.current?.focus() }} />
               </div>
             ) : (
               chatMessages.map(msg => (

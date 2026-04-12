@@ -175,7 +175,7 @@ def _get_player_context(
     injury_ctx = _get_injury_context(player)
 
     # Schedule context (non-fatal — returns None if schedule not available)
-    schedule_ctx = _get_schedule_context(player_id, positions, stat_type, db)
+    schedule_ctx = _get_schedule_context(player_id, positions, stat_type, db, mlbam_id=player.mlbam_id)
 
     return PlayerContextResponse(
         player_id=player_id,
@@ -224,6 +224,7 @@ def _get_schedule_context(
     positions: list[str],
     stat_type: str,
     db,
+    mlbam_id: Optional[int] = None,
 ) -> Optional[ScheduleContext]:
     """Build ScheduleContext for a player from the cached weekly schedule.
 
@@ -260,6 +261,7 @@ def _get_schedule_context(
         return None
 
     today = _date.today()
+    today_iso = today.isoformat()
 
     # Find today's game in batter_game_log
     today_opponent = None
@@ -269,10 +271,23 @@ def _get_schedule_context(
     today_sp_name = None
     today_sp_throws = None
 
-    today_entry = next(
-        (g for g in (ps.batter_game_log or []) if g.get("date") == today.isoformat()),
-        None,
-    )
+    game_log = ps.batter_game_log or []
+
+    if stat_type == "pitching" and mlbam_id is not None:
+        # For SPs: only mark "today" if they are the probable pitcher in today's entry.
+        # The batter_game_log tracks the team's games; sp_mlbam_id identifies the probable SP.
+        today_entry = next(
+            (g for g in game_log
+             if g.get("date") == today_iso and g.get("sp_mlbam_id") == mlbam_id),
+            None,
+        )
+    else:
+        # For batters (and pitchers without mlbam_id): any team game today is relevant
+        today_entry = next(
+            (g for g in game_log if g.get("date") == today_iso),
+            None,
+        )
+
     if today_entry:
         today_opponent = today_entry.get("opponent_abbr")
         today_is_home = today_entry.get("is_home", True)
@@ -341,6 +356,167 @@ def _build_owned_by_map(league_id: Optional[str], db: Session) -> dict[int, str]
     except Exception:
         logger.debug("Could not build owned_by_map for league %s", league_id, exc_info=True)
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Team context builder — "help my team?" use case
+# ---------------------------------------------------------------------------
+
+def _build_team_context_block(my_team_id: int, db: Session) -> str:
+    """Return a formatted text block summarising the user's team's 2026 season stats.
+
+    Aggregates batting and pitching totals across the rostered players, computes
+    weighted-average rate stats, and flags rough category strengths/weaknesses so
+    the LLM can answer "will X help my team?" and trade evaluation questions.
+    Returns "" if the team or its stats cannot be loaded.
+    """
+    try:
+        from fantasai.models.league import Team
+        team = db.get(Team, my_team_id)
+        if not team:
+            return ""
+
+        roster_ids = [int(pid) for pid in (team.roster or []) if pid is not None]
+        if not roster_ids:
+            return ""
+
+        team_name = team.team_name or f"Team {my_team_id}"
+        manager = team.manager_name or "Unknown"
+
+        # ── aggregate stats ──────────────────────────────────────────────────
+        bat_totals: dict[str, float] = {"R": 0, "HR": 0, "RBI": 0, "SB": 0}
+        bat_rate_pairs: dict[str, list] = {"AVG": [], "OPS": []}
+        bat_players: list[str] = []
+        bat_pa_total = 0.0
+
+        pit_totals: dict[str, float] = {"IP": 0, "W": 0, "SV": 0, "K": 0}
+        pit_rate_pairs: dict[str, list] = {"ERA": [], "WHIP": []}
+        pit_players: list[str] = []
+        pit_ip_total = 0.0
+
+        for pid in roster_ids:
+            player = db.get(Player, pid)
+            if not player:
+                continue
+            positions = player.positions or []
+            is_pitcher = any(p in ("SP", "RP", "P") for p in positions)
+            stat_type = "pitching" if is_pitcher else "batting"
+
+            row = (
+                db.query(PlayerStats)
+                .filter(
+                    PlayerStats.player_id == pid,
+                    PlayerStats.season == 2026,
+                    PlayerStats.stat_type == stat_type,
+                    PlayerStats.data_source == "actual",
+                )
+                .first()
+            )
+            if row is None:
+                continue
+
+            cnt = row.counting_stats or {}
+            rate = row.rate_stats or {}
+
+            if stat_type == "batting":
+                pa = float(cnt.get("PA") or 0)
+                bat_totals["R"]   += float(cnt.get("R")   or 0)
+                bat_totals["HR"]  += float(cnt.get("HR")  or 0)
+                bat_totals["RBI"] += float(cnt.get("RBI") or 0)
+                bat_totals["SB"]  += float(cnt.get("SB")  or 0)
+                if pa > 0:
+                    bat_rate_pairs["AVG"].append((float(rate.get("AVG") or 0), pa))
+                    bat_rate_pairs["OPS"].append((float(rate.get("OPS") or 0), pa))
+                    bat_pa_total += pa
+                bat_players.append(player.name)
+            else:
+                ip = float(cnt.get("IP") or 0)
+                pit_totals["IP"] += ip
+                pit_totals["W"]  += float(cnt.get("W")  or 0)
+                pit_totals["SV"] += float(cnt.get("SV") or 0)
+                # SO and K are both used depending on data source
+                pit_totals["K"]  += float(cnt.get("SO") or cnt.get("K") or 0)
+                if ip > 0:
+                    pit_rate_pairs["ERA"].append((float(rate.get("ERA")  or 0), ip))
+                    pit_rate_pairs["WHIP"].append((float(rate.get("WHIP") or 0), ip))
+                    pit_ip_total += ip
+                pit_players.append(player.name)
+
+        def _wavg(pairs: list) -> Optional[float]:
+            if not pairs:
+                return None
+            total_w = sum(w for _, w in pairs)
+            return sum(v * w for v, w in pairs) / total_w if total_w > 0 else None
+
+        team_avg  = _wavg(bat_rate_pairs["AVG"])
+        team_ops  = _wavg(bat_rate_pairs["OPS"])
+        team_era  = _wavg(pit_rate_pairs["ERA"])
+        team_whip = _wavg(pit_rate_pairs["WHIP"])
+
+        # ── identify strengths / weaknesses (per-game rate heuristics) ────────
+        # Use HR/game and SB/game to be season-length agnostic.
+        # League averages for a 12-team roto: ~0.05 HR/PA, ~0.025 SB/PA
+        hr_per_pa  = bat_totals["HR"]  / bat_pa_total  if bat_pa_total > 0 else 0
+        sb_per_pa  = bat_totals["SB"]  / bat_pa_total  if bat_pa_total > 0 else 0
+        r_per_pa   = bat_totals["R"]   / bat_pa_total  if bat_pa_total > 0 else 0
+        k_per_ip   = pit_totals["K"]   / pit_ip_total  if pit_ip_total > 0 else 0
+
+        strengths: list[str] = []
+        weaknesses: list[str] = []
+
+        if hr_per_pa >= 0.055:  strengths.append("HR")
+        elif hr_per_pa <= 0.030: weaknesses.append("HR")
+
+        if sb_per_pa >= 0.030:  strengths.append("SB")
+        elif sb_per_pa <= 0.012: weaknesses.append("SB")
+
+        if r_per_pa >= 0.130:   strengths.append("R")
+        elif r_per_pa <= 0.080: weaknesses.append("R")
+
+        if team_avg is not None:
+            if team_avg >= 0.275:  strengths.append("AVG")
+            elif team_avg <= 0.240: weaknesses.append("AVG")
+
+        if team_era is not None:
+            if team_era <= 3.60:  strengths.append("ERA")
+            elif team_era >= 4.80: weaknesses.append("ERA")
+
+        if team_whip is not None:
+            if team_whip <= 1.20:  strengths.append("WHIP")
+            elif team_whip >= 1.38: weaknesses.append("WHIP")
+
+        if k_per_ip >= 9.5:  strengths.append("K")
+        elif k_per_ip <= 7.5: weaknesses.append("K")
+
+        # ── build text block ──────────────────────────────────────────────────
+        lines = [
+            f"=== MY TEAM: {team_name} (Manager: {manager}) ===",
+            "2026 Season Stats (YTD totals across active roster):",
+            f"  BATTING — R: {int(bat_totals['R'])}, HR: {int(bat_totals['HR'])}, "
+            f"RBI: {int(bat_totals['RBI'])}, SB: {int(bat_totals['SB'])}",
+        ]
+        if team_avg is not None:
+            lines.append(f"             AVG: {team_avg:.3f}, OPS: {team_ops:.3f}")
+        lines.append(
+            f"  PITCHING — IP: {pit_totals['IP']:.1f}, W: {int(pit_totals['W'])}, "
+            f"SV: {int(pit_totals['SV'])}, K: {int(pit_totals['K'])}"
+        )
+        if team_era is not None:
+            lines.append(f"              ERA: {team_era:.2f}, WHIP: {team_whip:.3f}")
+        if strengths:
+            lines.append(f"  Category strengths: {', '.join(strengths)}")
+        if weaknesses:
+            lines.append(f"  Category weaknesses: {', '.join(weaknesses)}")
+        if bat_players:
+            lines.append(f"  Batters ({len(bat_players)}): {', '.join(bat_players)}")
+        if pit_players:
+            lines.append(f"  Pitchers ({len(pit_players)}): {', '.join(pit_players)}")
+        lines.append("=== END MY TEAM ===")
+        return "\n".join(lines) + "\n"
+
+    except Exception:
+        logger.debug("Could not build team context for team %s", my_team_id, exc_info=True)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +711,11 @@ def _format_horizon_block(horizon: str) -> str:
     )
 
 
-def _build_rag_context(contexts: list[PlayerContextResponse], horizon: Optional[str] = None) -> str:
+def _build_rag_context(
+    contexts: list[PlayerContextResponse],
+    horizon: Optional[str] = None,
+    team_context: str = "",
+) -> str:
     """Build the full RAG context block string for all selected players."""
     parts: list[str] = ["=== PLAYER DATA (source: FanGraphs / FantasAI engine) ===\n"]
 
@@ -655,6 +835,10 @@ def _build_rag_context(contexts: list[PlayerContextResponse], horizon: Optional[
 
         parts.append("")
 
+    # My-team context block (enables "will X help my team?" analysis)
+    if team_context:
+        parts.append(team_context)
+
     # Append horizon framing block when a time horizon was detected
     if horizon:
         parts.append(_format_horizon_block(horizon))
@@ -724,6 +908,12 @@ lead with the current status and expected return, then frame the fantasy impact 
 TRADE QUESTIONS: When evaluating a trade, address both sides explicitly. \
 For each player: 3-year trajectory (age + Steamer), current health, schedule strength. \
 Give a clear recommendation: accept, decline, or negotiate.
+
+TEAM CONTEXT: If a MY TEAM block is present in the context, use it to answer roster questions. \
+"Will X help my team?" → compare X's projected contributions against the team's identified weaknesses. \
+"Should I add/drop?" → factor in category needs explicitly. \
+"Evaluate this trade" → assess both sides against the team's current strengths and gaps. \
+Always name the specific categories where the move helps or hurts.
 """
     return _WRITER_PERSONA + extra
 
@@ -787,7 +977,13 @@ async def explore_chat(
     player_names = [c.name for c in contexts]
     horizon = _detect_horizon(body.user_message)
     system_prompt = _build_system_prompt(player_names)
-    rag_context = _build_rag_context(contexts, horizon=horizon)
+
+    # Build team context block when user's team_id is provided
+    team_context = ""
+    if body.my_team_id:
+        team_context = _build_team_context_block(body.my_team_id, db)
+
+    rag_context = _build_rag_context(contexts, horizon=horizon, team_context=team_context)
 
     # Build message list: [user_context_block (as first user msg), history, current message]
     # The RAG context is prepended to the very first user message in the thread.
