@@ -225,7 +225,178 @@ def _format_stats_block(stats: dict, stat_type: str, label: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_rag_context(contexts: list[PlayerContextResponse]) -> str:
+# ---------------------------------------------------------------------------
+# Pace projection helpers
+# ---------------------------------------------------------------------------
+
+def _pace_adjust(stats: dict, stat_type: str) -> tuple[dict, str]:
+    """Return (pace_dict, sample_note) for inclusion in the RAG context.
+
+    Pace scales current counting stats to a full-season equivalent:
+      - Batters: per 600 PA
+      - Pitchers: per 180 IP
+
+    The sample_note describes the reliability of the projection so the
+    LLM can calibrate how much weight to give the pace numbers.
+    """
+    if stat_type == "batting":
+        pa = float(stats.get("PA") or 0)
+        if pa < 5:
+            return {}, ""
+        scale = 600.0 / pa
+        pace = {}
+        for key in ("R", "HR", "RBI", "SB"):
+            val = stats.get(key)
+            if val is not None:
+                pace[key] = int(round(float(val) * scale))
+        if pa < 20:
+            note = f"EXTREME small sample ({int(pa)} PA) — pace numbers are almost certainly misleading; acknowledge the absurdity if asked"
+        elif pa < 60:
+            note = f"Small sample ({int(pa)} PA) — directional only, treat with scepticism"
+        elif pa < 150:
+            note = f"Moderate sample ({int(pa)} PA) — pace is a reasonable estimate, not gospel"
+        else:
+            note = f"{int(pa)} PA — pace estimate is reasonably stable"
+        return pace, note
+
+    else:  # pitching
+        ip = float(stats.get("IP") or 0)
+        if ip < 3:
+            return {}, ""
+        scale = 180.0 / ip
+        pace = {}
+        for key in ("W", "SO", "SV", "HLD"):
+            val = stats.get(key)
+            if val is not None:
+                pace[key] = int(round(float(val) * scale))
+        if ip < 10:
+            note = f"EXTREME small sample ({ip:.1f} IP) — pace numbers are almost certainly misleading"
+        elif ip < 30:
+            note = f"Small sample ({ip:.1f} IP) — directional only, treat with scepticism"
+        elif ip < 60:
+            note = f"Moderate sample ({ip:.1f} IP) — pace is a reasonable estimate"
+        else:
+            note = f"{ip:.1f} IP — pace estimate is reasonably stable"
+        return pace, note
+
+
+# ---------------------------------------------------------------------------
+# Time-horizon detection
+# ---------------------------------------------------------------------------
+
+def _detect_horizon(user_message: str) -> Optional[str]:
+    """Heuristically detect the user's intended time horizon.
+
+    Returns one of: "week", "month", "season", "dynasty", "current", None.
+    """
+    msg = user_message.lower()
+
+    # Dynasty / multi-year (check first — most specific)
+    if any(k in msg for k in [
+        "next year", "dynasty", "2027", "2028", "long term", "long-term",
+        "future seasons", "career", "keeper", "age curve", "farm system",
+    ]):
+        return "dynasty"
+
+    # Rest of season
+    if any(k in msg for k in [
+        "rest of season", "rest of the season", "rest of year", " ros ",
+        "full season", "going forward", "season-long", "season long",
+    ]):
+        return "season"
+
+    # This month (~1–3 weeks out)
+    if any(k in msg for k in [
+        "this month", "next month", "next few weeks", "next couple weeks",
+        "next 3 weeks", "next 4 weeks", "short term", "short-term",
+    ]):
+        return "month"
+
+    # This week / start-sit
+    if any(k in msg for k in [
+        "this week", "today", "tonight", "start him", "start her", "start them",
+        "stream", "tomorrow", "this weekend", "this start", "start or sit",
+        "start/sit", "should i start", "should i sit", "plug in",
+    ]):
+        return "week"
+
+    # Current season retrospective
+    if any(k in msg for k in [
+        "so far this year", "so far this season", "ytd", "2026 stats",
+        "through today", "this season so far", "year to date", "so far",
+    ]):
+        return "current"
+
+    return None
+
+
+# Horizon framing blocks injected into the RAG context
+_HORIZON_FRAMES: dict[str, dict] = {
+    "week": {
+        "label": "This Week",
+        "blend": "65% YTD actuals / 35% talent (Steamer)",
+        "volume": "~26 PA per hitter / ~6 IP per SP",
+        "guidance": (
+            "Recent form dominates. Weight YTD rate stats and current streaks heavily. "
+            "Matchup and health context is critical at this horizon."
+        ),
+    },
+    "month": {
+        "label": "This Month",
+        "blend": "40% YTD actuals / 60% talent (Steamer + xStats)",
+        "volume": "~100 PA per hitter / ~28 IP per SP",
+        "guidance": (
+            "Balanced window. Steamer talent signal (60%) anchors the projection "
+            "but YTD performance (40%) carries real signal. xStats are stabilising at this sample range."
+        ),
+    },
+    "season": {
+        "label": "Rest of Season",
+        "blend": "15% YTD actuals / 85% talent (Steamer + xStats)",
+        "volume": "~540 PA per hitter / ~170 IP per SP",
+        "guidance": (
+            "Steamer projections and process metrics (xwOBA, xERA) drive ROS value. "
+            "YTD actuals are a small correction signal (15%). "
+            "Reference the Predictive Rest of Season ranking as the primary composite."
+        ),
+    },
+    "dynasty": {
+        "label": "Dynasty / Beyond 2026",
+        "blend": "Age curve + Steamer long-term trajectory + prospect PAV",
+        "volume": "Multi-year",
+        "guidance": (
+            "Weight age curve (batter peak: 26–27; pitcher peak: 27–28), "
+            "Steamer long-term projections, and PAV score for prospects. "
+            "2026 YTD stats are near-noise at this horizon. "
+            "Identify whether this player is ascending, peaking, or entering decline."
+        ),
+    },
+    "current": {
+        "label": "2026 Season — YTD Performance",
+        "blend": "100% YTD actuals (lookback z-scores)",
+        "volume": "Season to date",
+        "guidance": (
+            "Focus on what has actually happened. Reference Current Season rankings. "
+            "Note sample size limitations explicitly if PA < 150 or IP < 40."
+        ),
+    },
+}
+
+
+def _format_horizon_block(horizon: str) -> str:
+    frame = _HORIZON_FRAMES.get(horizon)
+    if not frame:
+        return ""
+    return (
+        "=== ANALYSIS FRAME ===\n"
+        f"Detected question horizon: {frame['label']}\n"
+        f"Ranking blend: {frame['blend']}\n"
+        f"Volume window: {frame['volume']}\n"
+        f"Guidance: {frame['guidance']}\n"
+    )
+
+
+def _build_rag_context(contexts: list[PlayerContextResponse], horizon: Optional[str] = None) -> str:
     """Build the full RAG context block string for all selected players."""
     parts: list[str] = ["=== PLAYER DATA (source: FanGraphs / FantasAI engine) ===\n"]
 
@@ -244,6 +415,16 @@ def _build_rag_context(contexts: list[PlayerContextResponse]) -> str:
         # Actual stats
         parts.append("")
         parts.append(_format_stats_block(ctx.actual_stats, ctx.stat_type, "2026 Season Stats (FanGraphs actuals)"))
+
+        # Pace-adjusted season projection
+        pace, sample_note = _pace_adjust(ctx.actual_stats, ctx.stat_type)
+        if pace:
+            scale_label = "per 600 PA" if ctx.stat_type == "batting" else "per 180 IP"
+            pace_parts = [f"Season Pace ({scale_label}):"]
+            for k, v in pace.items():
+                pace_parts.append(f"  {k}: {v}")
+            pace_parts.append(f"  Sample note: {sample_note}")
+            parts.append("\n".join(pace_parts) + "\n")
 
         # Projections
         if ctx.projection_stats:
@@ -264,6 +445,10 @@ def _build_rag_context(contexts: list[PlayerContextResponse]) -> str:
             parts.append("")
 
         parts.append("")
+
+    # Append horizon framing block when a time horizon was detected
+    if horizon:
+        parts.append(_format_horizon_block(horizon))
 
     parts.append("=== END PLAYER DATA ===")
     return "\n".join(parts)
@@ -300,9 +485,22 @@ and offer a related question you CAN answer from the available data.
 MULTI-PLAYER: Discuss players independently by default. \
 Only compare head-to-head when the user explicitly asks for a comparison.
 
-RESPONSE LENGTH: Match length to question complexity. \
-A quick "who should I start?" deserves 2-3 sentences. A deep dynasty breakdown warrants more. \
-Never pad. Never repeat information already given in this conversation.
+RESPONSE LENGTH (HARD RULES — not guidelines, rules):
+- Single-player question: ≤ 120 words. Count before sending.
+- Multi-player comparison: ≤ 180 words.
+- Start/sit or quick verdict: 1–2 sentences only. Lead with the answer first.
+- Never restate the question. Never open with filler ("Great question", "Sure!", "Absolutely", etc.).
+- Never end with a summary paragraph. Stop when the point is made.
+- Bullet points only when listing 3 or more distinct items. Use prose otherwise.
+- One tight paragraph is almost always the right format.
+
+PACE STATS: When context includes "Season Pace" numbers, use them to frame what counting stats \
+a player might finish with. If the sample note warns of an extreme small sample (< 20 PA / < 10 IP), \
+acknowledge that the pace is for illustration only — do not cite it as a prediction.
+
+HORIZON: If the context includes an ANALYSIS FRAME block, use the specified ranking blend and guidance \
+to calibrate which signals to emphasise. Always name the horizon explicitly in your answer \
+(e.g. "for ROS value…", "as a streamer this week…").
 """
     return _WRITER_PERSONA + extra
 
@@ -364,8 +562,9 @@ async def explore_chat(
         raise HTTPException(status_code=404, detail="No valid players found")
 
     player_names = [c.name for c in contexts]
+    horizon = _detect_horizon(body.user_message)
     system_prompt = _build_system_prompt(player_names)
-    rag_context = _build_rag_context(contexts)
+    rag_context = _build_rag_context(contexts, horizon=horizon)
 
     # Build message list: [user_context_block (as first user msg), history, current message]
     # The RAG context is prepended to the very first user message in the thread.

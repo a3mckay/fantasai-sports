@@ -246,17 +246,63 @@ function ChatBubble({ msg }) {
 }
 
 // ---------------------------------------------------------------------------
-// Suggested prompts
+// Suggested prompts — context-aware, generated from player stat data
 // ---------------------------------------------------------------------------
-function SuggestedPrompts({ players, onSelect }) {
+function generatePrompts(players, contexts) {
+  if (!players.length) return []
+  const first = players[0]
+  const ctx = contexts?.[first.player_id]
+  const prompts = []
+
+  if (ctx) {
+    const isBatter = ctx.stat_type === 'batting'
+    const pa = Number(ctx.actual_stats?.PA || 0)
+    const avg = Number(ctx.actual_stats?.AVG || 0)
+    const era = Number(ctx.actual_stats?.ERA || 0)
+    const xera = Number(ctx.actual_stats?.xERA || 0)
+    const kp9 = Number(ctx.actual_stats?.['K/9'] || 0)
+    const isAvailable = !ctx.owned_by
+
+    if (ctx.is_prospect) {
+      prompts.push(`How close is ${first.name} to the majors?`)
+      prompts.push(`What's ${first.name}'s realistic ceiling?`)
+    } else if (isBatter) {
+      if (pa > 0 && pa < 80) {
+        prompts.push(`Is ${first.name}'s early-season performance sustainable?`)
+      } else if (avg > 0.335 && pa >= 80) {
+        prompts.push(`What's the regression risk on ${first.name}'s average?`)
+      } else {
+        prompts.push(`Make the bull case for ${first.name}`)
+      }
+      prompts.push(isAvailable ? `Should I add ${first.name} off waivers?` : `What are the risks of rostering ${first.name}?`)
+    } else {
+      // Pitcher
+      if (era > 4.5 && xera > 0 && xera < era - 0.75) {
+        prompts.push(`Is ${first.name}'s ERA about to improve?`)
+      } else if (kp9 >= 10) {
+        prompts.push(`What's ${first.name}'s strikeout upside?`)
+      } else {
+        prompts.push(`Make the bull case for ${first.name}`)
+      }
+      prompts.push(isAvailable ? `Should I stream ${first.name} this week?` : `What are the risks of rostering ${first.name}?`)
+    }
+  } else {
+    // Context not loaded yet — generic fallbacks
+    prompts.push(`Tell me about ${first.name}`)
+    prompts.push(`Make the bull case for ${first.name}`)
+    prompts.push(`What are the risks of rostering ${first.name}?`)
+  }
+
+  if (players.length >= 2) {
+    prompts.push(`Compare ${players[0].name} and ${players[1].name} for the rest of the season`)
+  }
+
+  return prompts.slice(0, 4)
+}
+
+function SuggestedPrompts({ players, contexts, onSelect }) {
   if (!players.length) return null
-  const first = players[0].name
-  const prompts = [
-    `Tell me about ${first}`,
-    `Make the bull case for ${first}`,
-    `What are the risks of rostering ${first} right now?`,
-    ...(players.length >= 2 ? [`Compare the upside of ${players[0].name} and ${players[1].name}`] : []),
-  ]
+  const prompts = generatePrompts(players, contexts)
   return (
     <div className="flex flex-wrap gap-2 justify-center">
       {prompts.map(p => (
@@ -616,7 +662,7 @@ export default function ExplorePlayers() {
             {chatMessages.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-8 gap-4">
                 <p className="text-sm text-slate-500">Ask the analyst anything about {selectedPlayers.map(p => p.name).join(', ')}.</p>
-                <SuggestedPrompts players={selectedPlayers} onSelect={t => { setInputText(t); inputRef.current?.focus() }} />
+                <SuggestedPrompts players={selectedPlayers} contexts={contexts} onSelect={t => { setInputText(t); inputRef.current?.focus() }} />
               </div>
             ) : (
               chatMessages.map(msg => (
@@ -674,6 +720,46 @@ export default function ExplorePlayers() {
           </p>
         </div>
       )}
+
+      {/* ── Methodology Note ── */}
+      <details className="mt-8 border-t border-navy-800 pt-4 group">
+        <summary className="text-[10px] text-slate-700 cursor-pointer hover:text-slate-500 select-none flex items-center gap-1.5 w-fit">
+          <span className="group-open:rotate-90 transition-transform inline-block">▸</span>
+          How rankings &amp; analysis work
+        </summary>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-[10px] text-slate-600 max-w-3xl">
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Fantasy Categories</p>
+            <p>Batting: R, HR, RBI, SB, AVG, OPS</p>
+            <p>Pitching: IP, W, SV, K, ERA, WHIP</p>
+          </div>
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Ranking Formula</p>
+            <p>Z-scores across all categories, summed into a composite. ERA/WHIP/BB/9 inverted (lower is better). Capped at ±3.5σ to prevent single-category dominance.</p>
+          </div>
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Horizon Weights (talent / actuals)</p>
+            <p>This Week: 35% / 65%</p>
+            <p>This Month: 60% / 40%</p>
+            <p>Rest of Season: 85% / 15%</p>
+          </div>
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Advanced Stats Used</p>
+            <p>Batting: xwOBA, xBA, xSLG, Barrel%, HardHit%, EV, wRC+, BB%, K%, SwStr%, LD%, Spd</p>
+            <p className="mt-1">Pitching: xERA, xFIP, SIERA, Stuff+, CSW%, K%, BB%, GB%, HR/9</p>
+          </div>
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Statcast Overlay</p>
+            <p>Process metrics (xwOBA, xERA) ramp from 0% weight at 0 PA/IP to a max of 35% at 150+ PA / 30+ IP. Below those thresholds, Steamer projections carry more weight.</p>
+          </div>
+          <div>
+            <p className="text-slate-500 font-semibold uppercase tracking-wide mb-1">Data Sources</p>
+            <p>Actuals &amp; advanced stats: FanGraphs (via pybaseball)</p>
+            <p>Projections: Steamer rest-of-season</p>
+            <p>Statcast: Baseball Savant aggregates</p>
+          </div>
+        </div>
+      </details>
     </div>
   )
 }
