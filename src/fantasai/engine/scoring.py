@@ -93,6 +93,15 @@ RP_CATEGORY_WEIGHTS: dict[str, float] = {
     "ERA": 1.0, "WHIP": 1.0, "W": 0.25, "QS": 0.10,
 }
 
+# Bayesian update priors for the Steamer component.
+# The Steamer projection acts as a prior belief (strength = these PA/IP).
+# As a player accumulates actual-season evidence, the posterior blends toward
+# their real-world performance.  At 57 PA (Walker), actual_w = 57/357 = 16%.
+# At 300 PA, actual_w = 50%.  The update is applied to rate stats and per-PA
+# counting rates — projected PA/IP volume is unchanged.
+_STEAMER_PRIOR_PA = 300.0   # batter: "Steamer is worth 300 PA of prior evidence"
+_STEAMER_PRIOR_IP = 50.0    # pitcher: "Steamer is worth 50 IP of prior evidence"
+
 # Meaningful xStat gap thresholds for outperformer flag
 # Values below these are noise; above → flag as outperformer
 _OUTPERFORMER_THRESHOLDS = {
@@ -1121,16 +1130,93 @@ def _score_accumulated(
     return composite.tolist()
 
 
+def _bayesian_blend_steamer(
+    steamer: NormalizedPlayerData,
+    player: NormalizedPlayerData,
+    is_pitcher: bool,
+) -> NormalizedPlayerData:
+    """Return a Steamer projection blended toward actual in-season performance.
+
+    Treats the Steamer projection as a Bayesian prior with strength equal to
+    _STEAMER_PRIOR_PA (batters) or _STEAMER_PRIOR_IP (pitchers).  The player's
+    actual stats update that prior as evidence accumulates:
+
+        posterior_rate = (PA × actual_rate + PRIOR_PA × steamer_rate)
+                         / (PA + PRIOR_PA)
+
+    Examples:
+        Walker at 57 PA  → actual_w = 57/357 = 16%
+                           posterior OPS ≈ 0.720 (vs raw Steamer 0.649)
+        Soto   at 300 PA → actual_w = 300/600 = 50%
+        Full   at 550 PA → actual_w = 550/850 = 65%  (actual dominates)
+
+    Only *quality* signals are blended (rate stats, per-PA counting rates).
+    The projected PA/IP *volume* is intentionally unchanged — playing-time
+    discounts are handled separately by _availability_multiplier.
+    """
+    from dataclasses import replace as _dc_replace
+
+    if is_pitcher:
+        actual_ip = float((player.counting_stats or {}).get("IP") or 0)
+        if actual_ip < 1.0:
+            return steamer  # no evidence yet; use pure Steamer
+        actual_w = actual_ip / (actual_ip + _STEAMER_PRIOR_IP)
+        steamer_w = 1.0 - actual_w
+
+        new_rate = dict(steamer.rate_stats or {})
+        rate_p = player.rate_stats or {}
+        for key in ("ERA", "WHIP", "K/9"):
+            sv = new_rate.get(key)
+            av = rate_p.get(key)
+            if sv is not None and av is not None:
+                new_rate[key] = steamer_w * sv + actual_w * av
+
+        return _dc_replace(steamer, rate_stats=new_rate)
+
+    else:
+        actual_pa = float((player.counting_stats or {}).get("PA") or 0)
+        if actual_pa < 1.0:
+            return steamer  # no evidence yet; use pure Steamer
+        actual_w = actual_pa / (actual_pa + _STEAMER_PRIOR_PA)
+        steamer_w = 1.0 - actual_w
+
+        new_rate = dict(steamer.rate_stats or {})
+        rate_p = player.rate_stats or {}
+        for key in ("AVG", "OBP", "SLG"):
+            sv = new_rate.get(key)
+            av = rate_p.get(key)
+            if sv is not None and av is not None:
+                new_rate[key] = steamer_w * sv + actual_w * av
+
+        # Blend per-PA counting rates so HR/PA, SB/PA, BB/PA also reflect actual
+        new_cnt = dict(steamer.counting_stats or {})
+        steamer_pa = float(new_cnt.get("PA") or 1.0)
+        cnt_p = player.counting_stats or {}
+        for key in ("HR", "SB", "BB"):
+            sv = new_cnt.get(key)
+            if sv is not None and steamer_pa > 0:
+                steamer_rate = sv / steamer_pa
+                actual_rate = float(cnt_p.get(key) or 0) / actual_pa
+                blended_rate = steamer_w * steamer_rate + actual_w * actual_rate
+                new_cnt[key] = blended_rate * steamer_pa
+
+        return _dc_replace(steamer, rate_stats=new_rate, counting_stats=new_cnt)
+
+
 def _score_steamer_component(
     players: list[NormalizedPlayerData],
     categories: list[str],
     steamer_lookup: dict[int, NormalizedPlayerData],
     is_pitcher: bool,
 ) -> tuple[list[float], list[dict[str, float]]]:
-    """Z-score Steamer full-season projections (no actual blending).
+    """Z-score Steamer full-season projections with Bayesian early-season blend.
 
     Uses project_hitter_stats / project_pitcher_stats with actual_weight=0
-    to get pure Steamer projections, then z-scores those across the pool.
+    (no within-projection blending), but applies _bayesian_blend_steamer first
+    to adjust the Steamer *input data* toward actual in-season performance based
+    on sample size.  This prevents early-season breakouts (Walker: 1.092 OPS
+    at 57 PA vs Steamer .649) from being dragged below replacement level while
+    maintaining Steamer dominance for players with very few PA.
 
     Returns (composite_scores, per_player_category_contributions).
     category_contributions is keyed by fantasy category name and used for
@@ -1149,6 +1235,11 @@ def _score_steamer_component(
     projected: list[dict[str, float]] = []
     for p in players:
         steamer = steamer_lookup.get(p.player_id)
+        # Bayesian update: blend Steamer projection toward actual in-season stats
+        # proportional to sample size.  At 57 PA the prior still dominates (84%),
+        # but the nudge is enough to surface breakouts like Walker above replacement.
+        if steamer is not None:
+            steamer = _bayesian_blend_steamer(steamer, p, is_pitcher)
         if is_pitcher:
             player_is_sp = "SP" in (p.positions or [])
             projected.append(project_pitcher_stats(p, steamer_config, is_sp=player_is_sp, steamer_data=steamer))
