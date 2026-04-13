@@ -411,7 +411,12 @@ def _generate_find_player_blurb(
     position_slot: str,
     db: Optional[Session] = None,
 ) -> str:
-    """Generate a 'why now' framing blurb for a find-player suggestion."""
+    """Generate a 'why now' framing blurb for a find-player suggestion.
+
+    The blurb is framed around the specific roster slot being filled so the
+    LLM can explain *why this player fits that need* rather than writing a
+    generic positional preview.
+    """
     from fantasai.brain.blurb_generator import get_blurb_generator
 
     if not settings.anthropic_api_key:
@@ -425,11 +430,24 @@ def _generate_find_player_blurb(
         if db is not None:
             stats_map = _fetch_raw_stats_map(db, [ranking.player_id])
             raw_stats = stats_map.get(ranking.player_id)
+
+        # Build roster context so the model frames the recommendation around
+        # the specific slot (e.g. "Filling roster slot: SP — frame the blurb
+        # around why this pitcher fills a starting-pitching need").
+        roster_ctx: Optional[str] = None
+        if position_slot:
+            roster_ctx = (
+                f"Filling roster slot: {position_slot} — frame the blurb around "
+                f"why this player fills the manager's {position_slot} need, "
+                f"not just as a generic waiver pickup."
+            )
+
         return gen.generate_blurb(
             ranking=ranking,
             ranking_type="predictive_season",
             scoring_categories=categories,
             raw_stats=raw_stats,
+            roster_context=roster_ctx,
         )
     except Exception as exc:
         logger.warning("Find-player blurb generation failed: %s", exc)
@@ -1061,13 +1079,34 @@ def _generate_keeper_eval_blurb(
         lines.append(
             f"Keepers below threshold (wasted slots): {evaluation.n_below_threshold}"
         )
-        # Include each keeper's overall rank so the LLM can reason about quality
-        keeper_rank_strs = []
-        for r in evaluation.keepers:
+
+        # Per-keeper detail: rank, positions, top category contributions.
+        # This gives the LLM enough to describe WHY each keeper is valuable
+        # (or not) rather than just naming them and their rank number.
+        _CAT_TIERS = [(2.0, "elite"), (1.0, "strong"), (0.3, "avg"), (-0.3, "neutral"),
+                      (-1.0, "below avg"), (float("-inf"), "drag")]
+
+        def _cat_tier(z: float) -> str:
+            for thr, lbl in _CAT_TIERS:
+                if z >= thr:
+                    return lbl
+            return "drag"
+
+        lines.append(f"Keepers ({len(evaluation.keepers)}) — name | rank | positions | top category signals:")
+        for r in evaluation.keepers[:8]:
             rank_label = f"#{r.overall_rank}" if r.overall_rank > 0 else "unranked"
             below = " ⚠ below threshold" if r.overall_rank > evaluation.keeper_threshold else ""
-            keeper_rank_strs.append(f"{r.name} ({rank_label}{below})")
-        lines.append(f"Keepers ({len(evaluation.keepers)}): {', '.join(keeper_rank_strs[:8])}")
+            pos_str = "/".join(r.positions) if r.positions else "UTIL"
+            # Show the 3 categories with the largest absolute contribution
+            top_cats = sorted(
+                r.category_contributions.items(), key=lambda kv: -abs(kv[1])
+            )[:3]
+            cat_str = ", ".join(
+                f"{cat}: {_cat_tier(z)} ({'+' if z >= 0 else ''}{z:.1f})"
+                for cat, z in top_cats
+            ) if top_cats else "no signal data"
+            lines.append(f"  {r.name} | {rank_label}{below} | {pos_str} | {cat_str}")
+
         if evaluation.cuts:
             lines.append(f"Cuts ({len(evaluation.cuts)}): {', '.join(r.name for r in evaluation.cuts[:5])}")
         lines.append(f"Category gaps: {', '.join(evaluation.category_gaps[:5]) or 'none'}")
@@ -1100,11 +1139,17 @@ def _generate_keeper_eval_blurb(
         if context:
             instruction += f" Address user context: {context}"
 
+        instruction += (
+            " Use the per-keeper category signals to explain WHY specific keepers are "
+            "valuable or risky — not just their rank. Mandatory: use your voice. "
+            "This is an opinion piece, not a stat printout."
+        )
+
         lines.append(instruction)
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=350,
+            max_tokens=400,
             system=[{"type": "text", "text": _ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n".join(lines)}],
         )
@@ -1215,11 +1260,15 @@ def _generate_league_power_blurb(
 
     try:
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
-        lines.append("League Power Rankings (predictive roster strength):")
+        lines.append(
+            "League Power Rankings (predictive roster strength — "
+            "power_score=sum of roster z-scores, avg_score=mean per-player z-score):"
+        )
         for i, snap in enumerate(report.power_rankings, 1):
             weak_str = (", ".join(snap.weak_cats[:2])) if snap.weak_cats else "none"
+            avg_score_str = f", avg_depth={snap.average_score:.3f}" if snap.average_score else ""
             lines.append(
-                f"  #{i} {snap.team_name} (power={snap.power_score:.2f}) | "
+                f"  #{i} {snap.team_name} (power={snap.power_score:.2f}{avg_score_str}) | "
                 f"strong={', '.join(snap.strong_cats[:3])} | weak={weak_str}"
             )
         lines.append("")
@@ -1247,7 +1296,9 @@ def _generate_league_power_blurb(
             "Write a 4–6 sentence league power rankings narrative. "
             "Name specific teams when describing each tier — explain WHY each contender is strong "
             "(which categories they dominate) and WHY rebuilding teams are struggling "
-            "(specific weak spots). Mention which middle-pack teams are closest to breaking into "
+            "(specific weak spots). Use avg_depth to distinguish teams with elite stars but shallow "
+            "rosters from teams with genuine top-to-bottom quality. "
+            "Mention which middle-pack teams are closest to breaking into "
             "the top tier and what's holding them back. "
             "Do NOT mention trades or trade opportunities — this is a pure power ranking summary. "
             "Mandatory: use your voice. This is an opinion piece, not a standings printout. "

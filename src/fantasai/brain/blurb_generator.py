@@ -136,17 +136,64 @@ _RANKING_TYPE_LABELS: dict[str, tuple[str, str]] = {
 }
 
 
+def _format_injury_context(ranking: PlayerRanking) -> str:
+    """Return an injury/risk note from the PlayerRanking fields.
+
+    PlayerRanking carries injury_status, injury_return_date, risk_flag, and
+    risk_note populated at scoring time from the DB. We extract these here so
+    blurbs generated without a DB session (e.g. on-demand via rankings endpoint)
+    still have accurate availability context.
+
+    Returns empty string when the player is fully healthy with no risk flags.
+    """
+    parts: list[str] = []
+
+    status = getattr(ranking, "injury_status", None) or "active"
+    if status and status != "active":
+        status_label = {
+            "il_10": "⚠ 10-Day IL",
+            "il_60": "⚠ 60-Day IL",
+            "day_to_day": "⚠ Day-to-day",
+            "out_for_season": "⚠ Out for season",
+        }.get(status, f"⚠ {status}")
+        return_date = getattr(ranking, "injury_return_date", None)
+        if return_date:
+            parts.append(f"{status_label}, expected back {return_date.strftime('%b %-d')}")
+        else:
+            parts.append(f"{status_label}, return date unknown")
+
+    risk_flag = getattr(ranking, "risk_flag", None)
+    risk_note = getattr(ranking, "risk_note", None)
+    if risk_flag:
+        risk_label = {
+            "fragile": "chronically injury-prone (career IP/PA discount applies)",
+            "recent_surgery": "recovering from major surgery (availability discount applies)",
+        }.get(risk_flag, risk_flag)
+        if risk_note:
+            parts.append(f"Risk profile: {risk_label} — {risk_note}")
+        else:
+            parts.append(f"Risk profile: {risk_label}")
+
+    return "\n  ".join(parts)
+
+
 def _make_user_prompt(
     ranking: PlayerRanking,
     ranking_type: str,
     scoring_categories: list[str],
     raw_stats: Optional[dict[str, float]] = None,
     rolling_windows: Optional[dict[str, dict[str, float]]] = None,
+    roster_context: Optional[str] = None,
 ) -> str:
     """Build the per-player prompt for blurb generation.
 
     All facts the model may cite must appear in this prompt. The DATA BLOCK
     header signals to the model that only these figures are in-bounds.
+
+    Args:
+        roster_context: Optional framing note injected at the top of the data
+            block — e.g. "Filling roster slot: SP" for find-player blurbs so
+            the model frames the recommendation around that specific roster need.
     """
     positions_str = ", ".join(ranking.positions) if ranking.positions else "UTIL"
     rank_label, ranking_desc = _RANKING_TYPE_LABELS.get(
@@ -161,6 +208,22 @@ def _make_user_prompt(
         f"Stat type: {ranking.stat_type} | Ranking type: {ranking_desc}",
         f"{rank_label}: #{ranking.overall_rank} (among all rostered + available players)",
         f"League scoring categories: {', '.join(scoring_categories)}",
+    ]
+
+    if roster_context:
+        lines.append(f"Roster context: {roster_context}")
+
+    # Injury / availability context — injected from PlayerRanking fields so
+    # even on-demand blurbs (no DB session) reflect current IL status and risk.
+    injury_ctx = _format_injury_context(ranking)
+    if injury_ctx:
+        lines += [
+            "",
+            "INJURY/RISK CONTEXT (authoritative — factor into your blurb):",
+            f"  {injury_ctx}",
+        ]
+
+    lines += [
         "",
         "Category signals (season-to-date):",
         signals_str,
@@ -273,6 +336,7 @@ class BlurbGenerator:
         scoring_categories: list[str],
         raw_stats: Optional[dict[str, float]] = None,
         rolling_windows: Optional[dict[str, dict[str, float]]] = None,
+        roster_context: Optional[str] = None,
     ) -> str:
         """Generate a single blurb synchronously.
 
@@ -285,12 +349,16 @@ class BlurbGenerator:
             raw_stats: Optional {stat: value} for the season-to-date data block.
             rolling_windows: Optional {"Last 14 days": {stat: value}, ...} for
                 recent performance windows. Keys become section headers.
+            roster_context: Optional framing injected at the top of the data block
+                (e.g. "Filling roster slot: SP"). Used by find-player blurbs to
+                frame the recommendation around the specific roster need.
 
         Returns:
             2–4 sentence analyst blurb as a string.
         """
         user_prompt = _make_user_prompt(
-            ranking, ranking_type, scoring_categories, raw_stats, rolling_windows
+            ranking, ranking_type, scoring_categories, raw_stats, rolling_windows,
+            roster_context=roster_context,
         )
 
         response = self._client.messages.create(

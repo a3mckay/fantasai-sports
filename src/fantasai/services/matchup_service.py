@@ -553,7 +553,9 @@ def generate_matchup_narrative(
 
     Args:
         matchup_data: Dict with keys team1_name, team2_name, manager1_name,
-                      manager2_name, category_projections (from compare_category_projections).
+                      manager2_name, category_projections (from compare_category_projections),
+                      and optionally live_stats ({cat: {team1: val, team2: val}} from Yahoo
+                      scoreboard — actual accumulated totals so far this week).
         league_categories: Ordered list of scoring categories.
         anthropic_api_key: Anthropic API key.
 
@@ -565,6 +567,7 @@ def generate_matchup_narrative(
     manager1 = matchup_data.get("manager1_name") or "Manager 1"
     manager2 = matchup_data.get("manager2_name") or "Manager 2"
     cat_proj = matchup_data.get("category_projections", {})
+    live_stats: dict = matchup_data.get("live_stats") or {}
 
     # Summarize edges
     team1_edges: list[str] = []
@@ -602,20 +605,43 @@ def generate_matchup_narrative(
         projected_winner_edge = team1_edge_count
         projected_loser_edge = team2_edge_count
 
+    # Build the live-stats section if we have actual accumulated data.
+    # live_stats format: {cat_name: {team1: float, team2: float}}
+    live_stats_lines: list[str] = []
+    if live_stats:
+        live_stats_lines.append(
+            "\nActual stats accumulated so far this week (from Yahoo scoreboard — "
+            "these are REAL numbers, not projections):"
+        )
+        for cat, vals in live_stats.items():
+            t1_live = vals.get("team1")
+            t2_live = vals.get("team2")
+            if t1_live is not None and t2_live is not None:
+                live_stats_lines.append(
+                    f"  {cat}: {team1_name} {t1_live} vs {team2_name} {t2_live}"
+                )
+        live_stats_lines.append(
+            "Use the live stats to ground the narrative — if the week is underway, "
+            "acknowledge what's actually happened and frame what's still at stake."
+        )
+
     user_prompt = (
         f"Matchup preview for this week's fantasy baseball H2H:\n\n"
         f"Team 1: {team1_name} (manager: {manager1})\n"
         f"Team 2: {team2_name} (manager: {manager2})\n\n"
-        f"Category edges for {team1_name}: "
+        f"Projected category edges for {team1_name}: "
         f"{', '.join(team1_edges) if team1_edges else 'none'}\n"
-        f"Category edges for {team2_name}: "
+        f"Projected category edges for {team2_name}: "
         f"{', '.join(team2_edges) if team2_edges else 'none'}\n"
         f"Toss-up categories: {', '.join(toss_ups) if toss_ups else 'none'}\n\n"
         f"Projected winner: {projected_winner} "
-        f"({projected_winner_edge} vs {projected_loser_edge} category edges)\n\n"
-        f"Write a 3-5 sentence matchup preview. Highlight the key narrative (who has the edge "
-        f"and why), call out the biggest single-category advantage, and name the most contested "
-        f"toss-up categories where either team could swing the result. Be punchy and specific."
+        f"({projected_winner_edge} vs {projected_loser_edge} category edges)"
+        + ("\n" + "\n".join(live_stats_lines) if live_stats_lines else "")
+        + "\n\nWrite a 3-5 sentence matchup preview. Highlight the key narrative (who has the edge "
+        "and why), call out the biggest single-category advantage, and name the most contested "
+        "toss-up categories where either team could swing the result. "
+        "If live stats are provided and the week is underway, weave in the actual scoreline — "
+        "what's locked up, what's still in play. Be punchy and specific."
     )
 
     from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
@@ -859,6 +885,7 @@ def analyze_league_matchups(
             "manager1_name": mgr1,
             "manager2_name": mgr2,
             "category_projections": cat_proj,
+            "live_stats": live_stats,  # actual accumulated stats mid-week from Yahoo
         }
         try:
             narrative = generate_matchup_narrative(
