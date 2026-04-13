@@ -420,6 +420,74 @@ def backfill_mlbam_ids(db: Session) -> int:
         except Exception:
             logger.warning("backfill_mlbam_ids: name-based fallback failed", exc_info=True)
 
+    # Pass 3: bulk MLB Stats API 40-man roster pull for players still unmatched.
+    # Pulls every team's 40-man roster (covers all rostered players including those
+    # who haven't appeared in a game yet), builds a name → mlbam_id map, and
+    # assigns unambiguous matches.  Much more complete than the sports/players
+    # endpoint which only returns players who've already appeared in games.
+    still_missing_after_p2 = [p for p in still_missing if p.mlbam_id is None]
+    if still_missing_after_p2:
+        try:
+            import requests as _req
+            import unicodedata as _ud
+
+            def _norm(s: str) -> str:
+                """Lowercase, strip accents, collapse whitespace."""
+                s = _ud.normalize("NFD", s)
+                s = "".join(c for c in s if _ud.category(c) != "Mn")
+                return " ".join(s.lower().split())
+
+            # Fetch all 30 teams
+            teams_resp = _req.get(
+                "https://statsapi.mlb.com/api/v1/teams",
+                params={"sportId": 1, "season": 2026},
+                timeout=15.0,
+            )
+            teams_resp.raise_for_status()
+            teams = [t.get("id") for t in teams_resp.json().get("teams", []) if t.get("id")]
+
+            # Build name → list[mlbam_id] from all 40-man rosters
+            name_to_mlbam: dict[str, list[int]] = {}
+            for team_id in teams:
+                try:
+                    r = _req.get(
+                        f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
+                        params={"rosterType": "40Man", "season": 2026},
+                        timeout=10.0,
+                    )
+                    r.raise_for_status()
+                    for entry in r.json().get("roster", []):
+                        person = entry.get("person", {})
+                        mlbam = person.get("id")
+                        full_name = person.get("fullName", "")
+                        if mlbam and full_name:
+                            key = _norm(full_name)
+                            if mlbam not in name_to_mlbam.get(key, []):
+                                name_to_mlbam.setdefault(key, []).append(mlbam)
+                except Exception:
+                    pass
+
+            mlbam_pass3 = 0
+            for player in still_missing_after_p2:
+                key = _norm(player.name)
+                matches = name_to_mlbam.get(key, [])
+                if len(matches) == 1:
+                    player.mlbam_id = matches[0]
+                    updated += 1
+                    mlbam_pass3 += 1
+                    logger.info(
+                        "backfill_mlbam_ids: mlb-api-match %s → mlbam_id=%d",
+                        player.name, player.mlbam_id,
+                    )
+                # len > 1: genuinely ambiguous name, skip
+
+            logger.info(
+                "backfill_mlbam_ids: MLB Stats API (40-man) pass resolved %d / %d remaining",
+                mlbam_pass3, len(still_missing_after_p2),
+            )
+        except Exception:
+            logger.warning("backfill_mlbam_ids: MLB Stats API fallback failed", exc_info=True)
+
     if updated:
         db.commit()
     return updated
