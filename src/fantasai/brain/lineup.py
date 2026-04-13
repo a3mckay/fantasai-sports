@@ -228,8 +228,12 @@ def build_roster_notes(
         w   = weights.get(pid, 1.0)
         if pid in il_ids:
             il_players.append(r.name)
-        elif w < 0.99:
-            # bench overflow (weight < 1.0 but not IL)
+        elif w < 0.5:
+            # genuinely bench-locked: less than half a slot's worth of starts.
+            # Players with 0.5–0.99 weights are slightly discounted due to
+            # position group congestion but still receive regular playing time.
+            # A threshold of < 0.5 avoids mislabelling stars who merely share a
+            # crowded OF/1B group as "bench players."
             bench_overflow.append(r.name)
         elif inj.get(pid):
             # starts but is hurt

@@ -1021,10 +1021,14 @@ def _generate_team_eval_blurb(
             if roster_notes.get("active_injured"):
                 lines.append(f"Hurt but starting (discounted): {', '.join(roster_notes['active_injured'])}")
             if roster_notes.get("bench_overflow"):
-                lines.append(f"Bench-only (can't start regularly): {', '.join(roster_notes['bench_overflow'])}")
+                lines.append(
+                    f"Roster-locked players (scoring model gave <50% weight — "
+                    f"these players genuinely cannot get regular at-bats/starts given roster construction): "
+                    f"{', '.join(roster_notes['bench_overflow'])}"
+                )
             if roster_notes.get("position_surplus"):
                 surplus_str = ", ".join(f"{p} (+{n})" for p, n in roster_notes["position_surplus"].items())
-                lines.append(f"Position depth surplus: {surplus_str}")
+                lines.append(f"Position depth surplus (too many eligible players for available slots): {surplus_str}")
             if roster_notes.get("position_deficit"):
                 deficit_str = ", ".join(f"{p} (-{n})" for p, n in roster_notes["position_deficit"].items())
                 lines.append(f"Position depth deficit: {deficit_str}")
@@ -1038,7 +1042,11 @@ def _generate_team_eval_blurb(
             "Use the actual standings to describe current strengths, and only flag projected weakness "
             "if it diverges significantly from actual (e.g. 'Currently 2nd in SBs but projected to weaken'). "
             "If players are on the IL, note the impact. "
-            "If there's a bench overflow or position depth imbalance, mention it. "
+            "If there's a position depth imbalance or players genuinely roster-locked, mention it as a structural issue — "
+            "describe the surplus/deficit by POSITION GROUP, not by naming individual stars as benched. "
+            "HARD RULE: NEVER state that a specific named player is 'on the bench', 'not starting', or 'sitting' "
+            "unless they appear in the IL list. Position congestion is a structural roster issue, "
+            "not a fact about any individual player's lineup deployment. "
             "Mandatory: use your voice — this is not a stat recitation. Lead with an opinion or observation. "
             "One analogy, signature phrase, or cultural reference that fits naturally. "
             + (f"Address user context: {context}" if context else "")
@@ -1214,7 +1222,7 @@ def _generate_compare_teams_blurb(
                 if notes.get("il_players"):
                     note_parts.append(f"IL: {', '.join(notes['il_players'])}")
                 if notes.get("bench_overflow"):
-                    note_parts.append(f"bench-only: {', '.join(notes['bench_overflow'])}")
+                    note_parts.append(f"roster-locked (<50% weight): {', '.join(notes['bench_overflow'])}")
                 if notes.get("position_surplus"):
                     surplus_str = ", ".join(f"{p}+{n}" for p, n in notes["position_surplus"].items())
                     note_parts.append(f"depth surplus: {surplus_str}")
@@ -1230,6 +1238,9 @@ def _generate_compare_teams_blurb(
             "If the projected data says a team is weak in SV but their actual SV z-score is positive, "
             "they are NOT weak in SV — describe it accurately based on what has actually happened. "
             "Note any IL players or roster construction issues (position gluts, thin spots). "
+            "HARD RULE: NEVER state that a specific named player is 'on the bench', 'not starting', or 'sitting' "
+            "unless they appear in the IL list. Roster congestion is a structural issue — describe it by position "
+            "group, not by claiming individual stars are sitting. "
             "Mandatory: use your voice — one analogy, signature phrase, or cultural reference that fits. "
             + (f"Address user context: {context}" if context else "")
         )
