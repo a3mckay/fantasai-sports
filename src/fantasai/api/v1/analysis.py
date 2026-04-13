@@ -945,6 +945,8 @@ def _generate_team_eval_blurb(
     categories: list[str],
     context: Optional[str],
     roster_notes: Optional[dict] = None,
+    actual_category_percentiles: Optional[dict[str, float]] = None,
+    grading_basis: str = "absolute_pool",
 ) -> str:
     """Generate a team evaluation narrative blurb via Anthropic API."""
     client = _llm_client()
@@ -961,6 +963,11 @@ def _generate_team_eval_blurb(
         )
         lines.append(f"Strong categories: {', '.join(evaluation.strong_categories) or 'none'}")
         lines.append(f"Weak categories: {', '.join(evaluation.weak_categories) or 'none'}")
+        if actual_category_percentiles:
+            pct_parts = [f"{c}: {v:.0f}%" for c, v in sorted(actual_category_percentiles.items(), key=lambda x: -x[1])]
+            lines.append(f"Actual YTD category standings (percentile vs league): {', '.join(pct_parts)}")
+        if grading_basis == "absolute_pool":
+            lines.append("Note: grade is vs full player pool (no league_id provided), not vs this specific league.")
         lines.append("")
         lines.append("Position breakdown (score | assessment):")
         for g in evaluation.position_breakdown[:8]:
@@ -987,15 +994,18 @@ def _generate_team_eval_blurb(
         lines.append(
             "Write a 3–5 sentence team evaluation. State the grade, what the team "
             "does well, where they're vulnerable, and one key improvement priority. "
-            "If players are on the IL, note the impact on the team. "
-            "If there's a bench overflow (can't start regularly) or position depth imbalance, "
-            "mention it as a roster construction issue. "
+            "IMPORTANT: Actual YTD standings take precedence over projected weaknesses — "
+            "do NOT say a team is weak in a category if their actual YTD percentile is above 50%. "
+            "Use the actual standings to describe current strengths, and only flag projected weakness "
+            "if it diverges significantly from actual (e.g. 'Currently 2nd in SBs but projected to weaken'). "
+            "If players are on the IL, note the impact. "
+            "If there's a bench overflow or position depth imbalance, mention it. "
             + (f"Address user context: {context}" if context else "")
         )
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=350,
+            max_tokens=400,
             system=[{"type": "text", "text": _ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n".join(lines)}],
         )
@@ -1216,6 +1226,7 @@ def _snapshot_to_read(snap) -> TeamSnapshotRead:  # TeamSnapshot → schema
         team_id=snap.team_id,
         team_name=snap.team_name,
         power_score=snap.power_score,
+        average_score=snap.average_score,
         category_strengths=snap.category_strengths,
         strong_cats=snap.strong_cats,
         weak_cats=snap.weak_cats,
@@ -1378,6 +1389,7 @@ def team_eval_endpoint(
     league_team_scores: Optional[list[float]] = None
     league_position_mean_scores: Optional[dict[str, list[float]]] = None
     _league_category_scores: dict[str, list[float]] = {}
+    _lb_league_category_scores: dict[str, list[float]] = {}
 
     if league:
         from fantasai.brain.team_evaluator import _compute_group_scores as _cgs
@@ -1421,6 +1433,27 @@ def team_eval_endpoint(
         if _lp_means:
             league_position_mean_scores = _lp_means
 
+        # Compute lookback (actual YTD) category scores for league_category_percentiles.
+        # Using lookback means percentiles reflect real standings, not Steamer projections.
+        lb_ranking_map = {r.player_id: r for r in lookback} if lookback else {}
+        for t in (league.teams or []):
+            t_raw_lb = [lb_ranking_map[pid] for pid in (t.roster or []) if pid in lb_ranking_map]
+            if not t_raw_lb:
+                continue
+            if roster_positions:
+                t_w_lb = compute_roster_weights(
+                    t_raw_lb, roster_positions,
+                    list(t.il_player_ids or []),
+                    {int(k): v for k, v in (t.injured_player_statuses or {}).items()},
+                )
+                t_rankings_lb = apply_weights(t_raw_lb, t_w_lb)
+            else:
+                t_rankings_lb = t_raw_lb
+            if not t_rankings_lb:
+                continue
+            for cat, score in _compute_team_strengths(t_rankings_lb, categories).items():
+                _lb_league_category_scores.setdefault(cat, []).append(score)
+
     evaluation = evaluate_team(
         roster_rankings=roster_rankings,
         categories=categories,
@@ -1431,9 +1464,35 @@ def team_eval_endpoint(
         context=body.context,
     )
 
-    # Per-category league percentile rank (computed post-evaluation)
+    # Compute actual YTD category strengths for the focal team (lookback source)
+    lb_raw_multi: dict = defaultdict(list)
+    for r in (lookback or []):
+        lb_raw_multi[r.player_id].append(r)
+
+    lb_roster_rankings: list[PlayerRanking] = []
+    for pid in player_ids:
+        entries = lb_raw_multi.get(pid, [])
+        if entries:
+            lb_roster_rankings.append(max(entries, key=lambda r: r.score))
+
+    actual_category_strengths: Optional[dict[str, float]] = None
+    if lb_roster_rankings:
+        actual_category_strengths = _compute_team_strengths(lb_roster_rankings, categories)
+
+    # Per-category league percentile rank — use lookback (actual YTD), not predictive
     league_category_percentiles: Optional[dict[str, float]] = None
-    if _league_category_scores:
+    if _lb_league_category_scores and actual_category_strengths:
+        league_category_percentiles = {}
+        for cat, team_score in actual_category_strengths.items():
+            scores = _lb_league_category_scores.get(cat, [])
+            if scores:
+                rank = sum(1 for s in scores if s < team_score)
+                pct = round(rank / len(scores) * 100, 1)
+            else:
+                pct = 50.0
+            league_category_percentiles[cat] = pct
+    elif _league_category_scores:
+        # Fallback to predictive if no lookback data
         league_category_percentiles = {}
         for cat, team_score in evaluation.category_strengths.items():
             scores = _league_category_scores.get(cat, [])
@@ -1444,7 +1503,13 @@ def team_eval_endpoint(
                 pct = 50.0
             league_category_percentiles[cat] = pct
 
-    blurb = _generate_team_eval_blurb(evaluation, categories, body.context, _roster_notes)
+    grading_basis = "league_relative" if (league and league_team_scores) else "absolute_pool"
+
+    blurb = _generate_team_eval_blurb(
+        evaluation, categories, body.context, _roster_notes,
+        actual_category_percentiles=league_category_percentiles,
+        grading_basis=grading_basis,
+    )
 
     return TeamEvalResponse(
         overall_score=evaluation.overall_score,
@@ -1467,6 +1532,8 @@ def team_eval_endpoint(
         cons=evaluation.cons,
         analysis_blurb=blurb,
         league_category_percentiles=league_category_percentiles,
+        grading_basis=grading_basis,
+        actual_category_strengths=actual_category_strengths,
     )
 
 

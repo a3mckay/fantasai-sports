@@ -92,6 +92,17 @@ class TeamEvalResponse(BaseModel):
             "instead of raw z-score conversion."
         ),
     )
+    grading_basis: str = Field(
+        default="absolute_pool",
+        description=(
+            '"league_relative" when league_id was provided (grade = percentile vs other teams). '
+            '"absolute_pool" when no league context (grade = absolute z-score vs full player pool).'
+        ),
+    )
+    actual_category_strengths: Optional[dict[str, float]] = Field(
+        default=None,
+        description="YTD actual category z-scores summed across roster. Reflects real standings.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +278,10 @@ class TeamSnapshotRead(BaseModel):
     team_id: int
     team_name: str
     power_score: float
+    average_score: float = Field(
+        default=0.0,
+        description="Mean composite z-score per roster player (talent density).",
+    )
     category_strengths: dict[str, float]
     strong_cats: list[str]
     weak_cats: list[str]

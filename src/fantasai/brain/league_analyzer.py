@@ -41,6 +41,7 @@ class TeamSnapshot:
     team_id: int
     team_name: str
     power_score: float                  # sum of all roster composite z-scores
+    average_score: float                # mean composite z-score per player (talent density)
     category_strengths: dict[str, float]
     strong_cats: list[str]              # top third of categories by strength
     weak_cats: list[str]                # bottom third / auto-detected weak
@@ -99,6 +100,7 @@ def _build_team_snapshot(
             team_id=team_id,
             team_name=team_name,
             power_score=0.0,
+            average_score=0.0,
             category_strengths={c: 0.0 for c in categories},
             strong_cats=[],
             weak_cats=list(categories),
@@ -106,6 +108,7 @@ def _build_team_snapshot(
         )
 
     power_score = round(sum(r.score for r in roster_rankings), 3)
+    average_score = round(sum(r.score for r in roster_rankings) / len(roster_rankings), 3)
     category_strengths = _compute_team_strengths(roster_rankings, categories)
     weak_cats, punted_cats = _identify_weak_categories(category_strengths, league_type)
 
@@ -119,6 +122,7 @@ def _build_team_snapshot(
         team_id=team_id,
         team_name=team_name,
         power_score=power_score,
+        average_score=average_score,
         category_strengths=category_strengths,
         strong_cats=strong_cats,
         weak_cats=weak_cats + punted_cats,
