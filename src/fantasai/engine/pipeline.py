@@ -352,6 +352,14 @@ def backfill_mlbam_ids(db: Session) -> int:
     IDs from the pybaseball Chadwick Bureau register.  Only updates rows where
     mlbam_id is currently NULL to avoid overwriting manually-set values.
 
+    Two-pass strategy:
+      1. Chadwick FG-ID match (fast, bulk).
+      2. Name-based fallback via pybaseball.playerid_lookup for players whose
+         FanGraphs ID isn't yet in the Chadwick register (common for in-season
+         callups like Mike Burrows whose key_fangraphs=-1 until the register
+         is refreshed).  Only auto-assigns when exactly one MLB-active match
+         is found to avoid collisions.
+
     Returns:
         Number of rows updated.
     """
@@ -365,11 +373,52 @@ def backfill_mlbam_ids(db: Session) -> int:
     mapping = _build_fg_to_mlbam(fg_ids)  # {fangraphs_id: mlbam_id}
 
     updated = 0
+    still_missing: list[Player] = []
     for player in players_without_mlbam:
         mlbam = mapping.get(player.player_id)
         if mlbam:
             player.mlbam_id = mlbam
             updated += 1
+        else:
+            still_missing.append(player)
+
+    # Pass 2: name-based fallback for players not matched by FanGraphs ID.
+    # The Chadwick register lags new callups by weeks or months; pybaseball's
+    # playerid_lookup queries the same register but allows name-only search.
+    if still_missing:
+        try:
+            import pybaseball as pb
+            import pandas as _pd
+            for player in still_missing:
+                parts = player.name.strip().split()
+                if len(parts) < 2:
+                    continue
+                first_name, last_name = parts[0], parts[-1]
+                try:
+                    result = pb.playerid_lookup(last_name, first_name)
+                    if result is None or result.empty:
+                        continue
+                    # Only consider rows with a valid MLBAM ID
+                    valid = result[
+                        result["key_mlbam"].notna()
+                        & (result["key_mlbam"].astype(float) > 0)
+                    ]
+                    if valid.empty:
+                        continue
+                    # Prefer MLB-active rows (played recently); single match = safe
+                    recent = valid[valid["mlb_played_last"] >= 2022] if "mlb_played_last" in valid.columns else valid
+                    candidates = recent if not recent.empty else valid
+                    if len(candidates) == 1:
+                        player.mlbam_id = int(candidates.iloc[0]["key_mlbam"])
+                        updated += 1
+                        logger.info(
+                            "backfill_mlbam_ids: name-match %s → mlbam_id=%d",
+                            player.name, player.mlbam_id,
+                        )
+                except Exception:
+                    pass  # individual lookup failure is non-fatal
+        except Exception:
+            logger.warning("backfill_mlbam_ids: name-based fallback failed", exc_info=True)
 
     if updated:
         db.commit()

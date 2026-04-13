@@ -826,12 +826,34 @@ def _build_rag_context(
             sched_lines = ["This Week Schedule:"]
             sched_lines.append(f"  Games this week: {sc.games_this_week}")
             if ctx.stat_type == "pitching" and "SP" in ctx.positions:
-                sched_lines.append(f"  Probable starts: {sc.probable_starts} total, {sc.future_starts} remaining")
-                if sc.opponent_teams:
-                    sched_lines.append(f"  Opponents: {', '.join(sc.opponent_teams)}")
+                # today_opponent for a pitcher is only set when the player is confirmed
+                # as the probable SP for today's game (or when mlbam_id is missing and
+                # the team has a game today — still highly likely to be a start for a
+                # rostered SP/RP).  When probable_starts hasn't caught up (e.g. a late
+                # callup whose mlbam_id hasn't been backfilled yet), use today's
+                # confirmed start as the floor so the LLM isn't told "0 starts".
+                today_is_start = bool(sc.today_opponent)
+                effective_total = max(sc.probable_starts, 1 if today_is_start else 0)
+                effective_remaining = max(sc.future_starts, 1 if today_is_start else 0)
+                sched_lines.append(
+                    f"  Probable starts this week: {effective_total} total, "
+                    f"{effective_remaining} remaining (including today if applicable)"
+                )
+                # Merge today's opponent into the opponents list if it isn't there yet
+                opponents = list(sc.opponent_teams or [])
+                if today_is_start and sc.today_opponent:
+                    opp_upper = sc.today_opponent.upper()
+                    if opp_upper not in [o.upper() for o in opponents]:
+                        opponents = [sc.today_opponent] + opponents
+                if opponents:
+                    sched_lines.append(f"  Starting opponents: {', '.join(opponents)}")
             if sc.today_opponent:
                 home_away = "vs" if sc.today_is_home else "@"
-                today_line = f"  Today: {home_away} {sc.today_opponent}"
+                # For pitchers, be explicit that this is a START — not just any team game.
+                if ctx.stat_type == "pitching":
+                    today_line = f"  TODAY'S START: {home_away} {sc.today_opponent}"
+                else:
+                    today_line = f"  Today: {home_away} {sc.today_opponent}"
                 if sc.today_park_factor is not None and abs(sc.today_park_factor - 1.0) >= 0.05:
                     pct = int(round((sc.today_park_factor - 1.0) * 100))
                     direction = "+" if pct > 0 else ""
