@@ -109,13 +109,23 @@ def _to_read(
     )
 
 
-def _current_week(db: Session, league_id: str) -> int:
-    """Return the most recent week stored for this league, or 1 if none."""
+def _current_week(db: Session, league_id: str, season: int = 2026) -> int:
+    """Return the most recent fantasy week stored for this league/season, or 1 if none.
+
+    Filters by season so stale rows from previous seasons (or rows stored with
+    wrong ISO week numbers) don't pollute the result.  Fantasy weeks are always
+    small integers (1–26); ISO calendar weeks in April are ~14–15, so without
+    this filter users would see incorrect week-15 matchups in early April.
+    """
     from sqlalchemy import func
 
     result = (
         db.query(func.max(MatchupAnalysis.week))
-        .filter(MatchupAnalysis.league_id == league_id)
+        .filter(
+            MatchupAnalysis.league_id == league_id,
+            MatchupAnalysis.season == season,
+            MatchupAnalysis.week <= 26,   # sanity cap: fantasy seasons never exceed 26 weeks
+        )
         .scalar()
     )
     return result if result is not None else 1

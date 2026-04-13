@@ -618,12 +618,28 @@ def generate_matchup_narrative(
         f"toss-up categories where either team could swing the result. Be punchy and specific."
     )
 
+    from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
     system_prompt = (
-        "You are a sharp, entertaining fantasy baseball analyst. Write punchy matchup previews "
-        "— knowledgeable and fun, like a sports radio host who also knows advanced stats. "
-        "Be specific about the categories. "
-        "IMPORTANT: Plain prose only. No markdown — no headers (#), no bold (**), no bullets, "
-        "no special formatting of any kind. Just clean sentences."
+        _WRITER_PERSONA
+        + "\n\n"
+        "You are writing a MATCHUP PREVIEW — not a player blurb. "
+        "Same voice, same persona, but focused on the head-to-head battle between two teams.\n\n"
+        "MATCHUP WRITING RULES:\n"
+        "• Plain prose only. No markdown — no headers (#), no bold (**), no bullets.\n"
+        "• 3–5 sentences. Punchy. Specific. Every sentence earns its place.\n"
+        "• Lead with the narrative, not the scoreline.\n"
+        "• BANNED phrases (do not use under any circumstances):\n"
+        "  - 'not particularly close'\n"
+        "  - 'it's not particularly close'\n"
+        "  - 'comfortable margin'\n"
+        "  - 'clear advantage'\n"
+        "  - 'significant gap'\n"
+        "  - 'dominant performance'\n"
+        "  - 'commanding lead'\n"
+        "  Instead: reach for specific, vivid language about the categories, "
+        "the teams, or the matchup stakes. Say WHY one team has the edge, not just THAT they do.\n"
+        "• The persona applies: Canadian references, pop culture (approved list), "
+        "signature phrases, opinions — all available when they fit naturally."
     )
 
     try:
@@ -697,9 +713,44 @@ def analyze_league_matchups(
         return 0
 
     # Extract the fantasy week number from the first scoreboard entry.
-    # Yahoo returns the actual fantasy week (e.g. 3), not the ISO calendar
-    # week (e.g. 14), so this is always correct regardless of calendar date.
-    week_num: int = int(scoreboard[0].get("week") or 0) or date.today().isocalendar()[1]
+    # Yahoo returns the actual fantasy week (e.g. 4), NOT the ISO calendar
+    # week (e.g. 15 in mid-April).  Never fall back to ISO week — ISO week 15
+    # in early April would overwrite valid week-4 data with the wrong week number,
+    # causing users to see stale matchups from "week 15" instead of the current week.
+    week_num: int = int(scoreboard[0].get("week") or 0)
+    if week_num == 0:
+        logger.error(
+            "Yahoo returned week=0 for league %s — aborting to prevent stale data corruption. "
+            "Click Refresh again once the Yahoo API is responsive.",
+            league.league_id,
+        )
+        return 0
+
+    # Purge any rows for this league+season where the week number looks like an
+    # ISO calendar week rather than a real fantasy week.  ISO weeks in April are
+    # typically 14–15; fantasy week 4 would never legitimately produce week>13
+    # this early in the season.  We clean up anything > week_num + 5 to be safe.
+    try:
+        stale = (
+            db.query(MatchupAnalysis)
+            .filter(
+                MatchupAnalysis.league_id == league.league_id,
+                MatchupAnalysis.season == season,
+                MatchupAnalysis.week > week_num + 5,
+            )
+            .all()
+        )
+        if stale:
+            logger.warning(
+                "Purging %d stale MatchupAnalysis rows for league %s "
+                "(stored week > %d + 5, likely ISO-week corruption)",
+                len(stale), league.league_id, week_num,
+            )
+            for row in stale:
+                db.delete(row)
+            db.flush()
+    except Exception as exc:
+        logger.warning("Stale matchup cleanup failed (non-fatal): %s", exc)
 
     # 4. Weekly schedule for weather/Vegas enrichment
     week_schedule: dict = {}

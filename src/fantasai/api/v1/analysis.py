@@ -111,11 +111,32 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 # rankings.py exactly so that overall_rank values are consistent across
 # the Rankings page and every analysis endpoint (compare, trade, etc.).
 
-# System prompt for analysis-type LLM calls (compare, trade verdict).
-# Different persona from per-player blurbs — this is the "analyst making
-# a call" rather than "writer describing a player's stats".
-# Import the shared writer persona so all LLM calls share one voice.
-_ANALYSIS_SYSTEM_PROMPT = _WRITER_PERSONA
+# System prompt for analysis-type LLM calls (compare, trade verdict, team eval, etc.).
+# Shares the writer persona voice — same Canadian easter eggs, pop culture refs,
+# signature phrases, and opinionated tone. Extended with analysis-specific rules.
+_ANALYSIS_SYSTEM_PROMPT = (
+    _WRITER_PERSONA
+    + "\n\n"
+    "ANALYSIS WRITING RULES (applies to all team/league analysis — NOT player blurbs):\n"
+    "• You are writing team or league analysis, not a player blurb. Same voice, "
+    "same persona. Broader lens.\n"
+    "• Personality is MANDATORY here too. At least one of the following must appear: "
+    "a specific voice marker, an analogy (baseball culture, pop culture, or Canadian "
+    "reference), a dry/irreverent observation, or an opinion the writer actually holds. "
+    "Generic stat recitation is a failure mode.\n"
+    "• BANNED phrases — do not use under any circumstances:\n"
+    "  - 'not particularly close' / 'it's not particularly close'\n"
+    "  - 'comfortable margin'\n"
+    "  - 'clear advantage' (say WHY the advantage exists instead)\n"
+    "  - 'significant gap'\n"
+    "  - 'dominant performance'\n"
+    "  - 'commanding lead'\n"
+    "  These phrases describe gaps without explaining them. Replace with specifics: "
+    "which categories, which players, what the edge actually means for the matchup.\n"
+    "• Plain prose only. No markdown, no headers, no bullets. Just clean sentences.\n"
+    "• Canadian references, approved pop culture, signature phrases — all available. "
+    "One per piece, only when they fit naturally."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1021,8 @@ def _generate_team_eval_blurb(
             "if it diverges significantly from actual (e.g. 'Currently 2nd in SBs but projected to weaken'). "
             "If players are on the IL, note the impact. "
             "If there's a bench overflow or position depth imbalance, mention it. "
+            "Mandatory: use your voice — this is not a stat recitation. Lead with an opinion or observation. "
+            "One analogy, signature phrase, or cultural reference that fits naturally. "
             + (f"Address user context: {context}" if context else "")
         )
 
@@ -1096,6 +1119,7 @@ def _generate_compare_teams_blurb(
     comparison: TeamsComparison,
     context: Optional[str],
     roster_notes: Optional[dict[str, dict]] = None,
+    actual_category_strengths: Optional[dict[str, dict[str, float]]] = None,
 ) -> str:
     """Generate a multi-team comparison narrative via Anthropic API."""
     client = _llm_client()
@@ -1106,13 +1130,33 @@ def _generate_compare_teams_blurb(
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
         if context:
             lines.append(f"User context: {context}")
-        lines.append("Team comparison (ranked by power score):")
+        lines.append("Team comparison (ranked by projected power score):")
         for snap in comparison.snapshots:
             lines.append(
                 f"  {snap.team_name} (id={snap.team_id}): power={snap.power_score:.2f} | "
-                f"strong={', '.join(snap.strong_cats[:3])} | "
-                f"weak={', '.join(snap.weak_cats[:3])} | "
+                f"projected strong={', '.join(snap.strong_cats[:3])} | "
+                f"projected weak={', '.join(snap.weak_cats[:3])} | "
                 f"top players: {', '.join(snap.top_players[:2])}"
+            )
+        # Actual YTD category strengths — these reflect real standings, not projections.
+        # The LLM MUST use these to describe current category performance.
+        if actual_category_strengths:
+            lines.append("")
+            lines.append(
+                "ACTUAL YTD category strengths (z-score sums vs league — use these, "
+                "not projected labels, when describing current category performance):"
+            )
+            for team_name, cat_scores in actual_category_strengths.items():
+                if not cat_scores:
+                    continue
+                # Sort strongest → weakest for LLM readability
+                sorted_cats = sorted(cat_scores.items(), key=lambda x: -x[1])
+                parts = [f"{c}:{v:+.2f}" for c, v in sorted_cats]
+                lines.append(f"  {team_name}: {', '.join(parts)}")
+            lines.append(
+                "  NOTE: Positive z-score = above league average in that category. "
+                "A team with SV:+2.1 is STRONG in saves, NOT weak. "
+                "Do NOT contradict actual standings with projected weakness labels."
             )
         if comparison.trade_opportunities:
             lines.append("")
@@ -1134,9 +1178,14 @@ def _generate_compare_teams_blurb(
         lines.append("━━━ END DATA BLOCK ━━━")
         lines.append("")
         lines.append(
-            "Write a 3–5 sentence comparison. Identify the strongest team and why, "
-            "each team's key advantage/disadvantage, and the most interesting trade angle. "
-            "Note any IL players or roster construction issues (position gluts, thin spots) that affect the comparison. "
+            "Write a 3–5 sentence comparison. Identify the strongest team and why — "
+            "be specific about which categories and which players are driving the gap. "
+            "Cover each team's real key advantage and real key weakness. Include the most interesting trade angle. "
+            "IMPORTANT: Base ALL category descriptions on ACTUAL YTD standings above, not projected labels. "
+            "If the projected data says a team is weak in SV but their actual SV z-score is positive, "
+            "they are NOT weak in SV — describe it accurately based on what has actually happened. "
+            "Note any IL players or roster construction issues (position gluts, thin spots). "
+            "Mandatory: use your voice — one analogy, signature phrase, or cultural reference that fits. "
             + (f"Address user context: {context}" if context else "")
         )
 
@@ -1200,7 +1249,9 @@ def _generate_league_power_blurb(
             "(which categories they dominate) and WHY rebuilding teams are struggling "
             "(specific weak spots). Mention which middle-pack teams are closest to breaking into "
             "the top tier and what's holding them back. "
-            "Do NOT mention trades or trade opportunities — this is a pure power ranking summary."
+            "Do NOT mention trades or trade opportunities — this is a pure power ranking summary. "
+            "Mandatory: use your voice. This is an opinion piece, not a standings printout. "
+            "One analogy, signature phrase, or cultural reference that fits the league story naturally."
         )
 
         response = client.messages.create(
@@ -1811,7 +1862,33 @@ def compare_teams_endpoint(
         include_trades=body.include_trade_suggestions,
     )
 
-    blurb = _generate_compare_teams_blurb(comparison, body.context, compare_roster_notes)
+    # Compute actual YTD category strengths for each team from lookback rankings.
+    # These reflect real standings vs the league, not Steamer projections.
+    # The blurb LLM uses these to avoid incorrectly calling a team "weak" in a
+    # category where they actually lead the league (e.g. SV, SB).
+    ct_actual_strengths: Optional[dict[str, dict[str, float]]] = None
+    if lookback:
+        lb_map = {r.player_id: r for r in lookback}
+        ct_actual_strengths = {}
+        for tid, name, _weighted in team_data:
+            # Retrieve the original player_ids for this team
+            if body.manual_teams:
+                # manual teams: get ids from the corresponding manual team entry
+                manual_idx = next(
+                    (i for i, mt in enumerate(body.manual_teams) if -(i + 1) == tid), None
+                )
+                pids = body.manual_teams[manual_idx].player_ids if manual_idx is not None else []
+            else:
+                t_obj = db.get(Team, tid)
+                pids = list(t_obj.roster or []) if t_obj else []
+            lb_rankings = [lb_map[pid] for pid in pids if pid in lb_map]
+            if lb_rankings:
+                ct_actual_strengths[name] = _compute_team_strengths(lb_rankings, categories)
+
+    blurb = _generate_compare_teams_blurb(
+        comparison, body.context, compare_roster_notes,
+        actual_category_strengths=ct_actual_strengths,
+    )
 
     return CompareTeamsResponse(
         snapshots=[_snapshot_to_read(s) for s in comparison.snapshots],
