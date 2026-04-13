@@ -186,6 +186,50 @@ def _monday_blurb_generation() -> None:
         db.close()
 
 
+def _recover_missed_monday_blurbs() -> None:
+    """Startup recovery: if today is Monday and blurbs are stale (>20h old), run them now.
+
+    Railway deploys can restart the process after the 9:30 UTC Monday window.
+    APScheduler's misfire_grace_time won't help if the server was down too long.
+    This function runs once on startup and self-heals that scenario.
+    """
+    from datetime import datetime, timezone, timedelta
+    from fantasai.database import SessionLocal
+    from fantasai.models.ranking import Ranking
+
+    now = datetime.now(timezone.utc)
+    if now.weekday() != 0:  # 0 = Monday
+        return
+
+    db = SessionLocal()
+    try:
+        # Check if any ranking blurb was updated in the last 20 hours
+        cutoff = now - timedelta(hours=20)
+        recent = (
+            db.query(Ranking.updated_at)
+            .filter(
+                Ranking.blurb.isnot(None),
+                Ranking.updated_at >= cutoff,
+            )
+            .first()
+        )
+        if recent:
+            _log.info("Startup blurb recovery: blurbs already fresh (updated after %s), skipping", cutoff.isoformat())
+            return
+
+        _log.warning(
+            "Startup blurb recovery: it's Monday and no fresh blurbs found since %s — "
+            "APScheduler likely missed the window due to a deploy. Triggering now.",
+            cutoff.isoformat(),
+        )
+    finally:
+        db.close()
+
+    # Run in a background thread so startup isn't blocked
+    t = threading.Thread(target=_monday_blurb_generation, daemon=True, name="blurb-recovery")
+    t.start()
+
+
 def _warm_rankings_cache() -> None:
     """Pre-compute SEASON rankings on startup so the first user request is fast.
 
@@ -214,6 +258,11 @@ async def lifespan(app: FastAPI):
     # Warm the rankings cache in a background thread so startup is non-blocking
     t = threading.Thread(target=_warm_rankings_cache, daemon=True, name="cache-warmer")
     t.start()
+
+    # Startup recovery: if today is Monday and blurbs are stale (missed APScheduler window),
+    # kick off blurb generation now rather than waiting until next Monday.
+    t2 = threading.Thread(target=_recover_missed_monday_blurbs, daemon=True, name="blurb-recovery-check")
+    t2.start()
 
     # Start the Yahoo league sync scheduler.
     # Syncs all connected users every 2 hours so roster data stays fresh
@@ -270,6 +319,9 @@ async def lifespan(app: FastAPI):
     )
 
     # Monday 4am EST — generate fresh AI blurbs for top 300 players in all ranking modes.
+    # misfire_grace_time=7200: if the server restarts within 2 hours of the scheduled window
+    # (e.g. a deploy lands at 9:45 UTC), APScheduler will still fire the missed job on startup.
+    # The startup _recover_missed_monday_blurbs() function handles cases beyond 2 hours.
     scheduler.add_job(
         _monday_blurb_generation,
         trigger="cron",
@@ -278,7 +330,7 @@ async def lifespan(app: FastAPI):
         minute=30,
         id="monday-blurbs",
         max_instances=1,
-        misfire_grace_time=600,
+        misfire_grace_time=7200,
     )
 
     # Daytime MLB Stats API refresh every 3 hours (noon–9pm EST) during the season
