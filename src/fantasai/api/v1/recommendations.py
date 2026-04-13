@@ -292,15 +292,30 @@ def _compute_rankings(
         for p in db.query(Player).filter(Player.player_id.in_(all_stat_player_ids)).all()
     }
 
-    # Pre-compute each player's primary stat type from their positions.
+    # Filter stat rows to the appropriate stat type for each player.
     # FanGraphs ingests batting rows for ALL players including pitchers (and
     # occasionally pitching rows for position players).  Without this guard,
     # Kyle Freeland-style pitchers end up with a stat_type='batting' ranking
     # entry that passes the "Batters" position filter on the rankings page.
+    #
+    # Two-way players (e.g. Ohtani: positions=["Util", "SP"]) are a special case:
+    # they legitimately have both batting and pitching rows, and should produce two
+    # ranking entries.  The dedup step below keeps whichever scores higher.
     _pitcher_pos = {"SP", "RP", "P"}
-    def _primary_stat_type(player) -> str:
-        positions = player.positions or []
-        return "pitching" if any(p.upper() in _pitcher_pos for p in positions) else "batting"
+
+    def _should_include_stats_row(player, stat_type: str) -> bool:
+        positions = {p.upper() for p in (player.positions or [])}
+        has_pitcher_pos = bool(positions & _pitcher_pos)
+        has_batter_pos = bool(positions - _pitcher_pos)
+        if has_pitcher_pos and has_batter_pos:
+            # Two-way player: allow both stat types through; dedup keeps the higher score.
+            return True
+        elif has_pitcher_pos:
+            # Pure pitcher: only pitching rows.
+            return stat_type == "pitching"
+        else:
+            # Pure batter (or no position data): only batting rows.
+            return stat_type == "batting"
 
     # Build player list from actual rows (lookback) first
     players = []
@@ -309,8 +324,7 @@ def _compute_rankings(
         player = player_map.get(stats.player_id)
         if not player:
             continue
-        # Skip rows whose stat_type doesn't match the player's primary type.
-        if stats.stat_type != _primary_stat_type(player):
+        if not _should_include_stats_row(player, stats.stat_type):
             continue
         players.append(
             NormalizedPlayerData(

@@ -230,6 +230,91 @@ def _recover_missed_monday_blurbs() -> None:
     t.start()
 
 
+def _nightly_injury_sync() -> None:
+    """Nightly 9:15 UTC: pull current MLB IL data and update injury_records.
+
+    Runs 15 minutes after the nightly stats refresh so injury context is
+    reflected in that day's rankings without an extra manual trigger.
+    """
+    import httpx
+    from datetime import datetime, timezone
+    from fantasai.database import SessionLocal
+    from fantasai.models.player import InjuryRecord, Player
+    from fantasai.engine.pipeline import backfill_mlbam_ids
+
+    _log.info("Nightly injury sync starting")
+    db = SessionLocal()
+    try:
+        backfill_mlbam_ids(db)
+
+        teams_resp = httpx.get(
+            "https://statsapi.mlb.com/api/v1/teams",
+            params={"sportId": 1, "season": 2026},
+            timeout=15.0,
+        )
+        teams_resp.raise_for_status()
+        teams = teams_resp.json().get("teams", [])
+
+        all_players = db.query(Player).filter(Player.mlbam_id.isnot(None)).all()
+        mlbam_map: dict[int, int] = {p.mlbam_id: p.player_id for p in all_players}  # type: ignore[index]
+        now_utc = datetime.now(timezone.utc)
+        _IL_CODES = {"D10", "D15", "D60", "DTD", "DL10", "DL15", "DL60"}
+
+        synced = 0
+        for team in teams:
+            team_id = team.get("id")
+            if not team_id:
+                continue
+            try:
+                resp = httpx.get(
+                    f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
+                    params={"rosterType": "40Man", "season": 2026},
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                roster = resp.json().get("roster", [])
+            except Exception:
+                continue
+
+            for entry in roster:
+                mlbam_id = entry.get("person", {}).get("id")
+                status_code = entry.get("status", {}).get("code", "")
+                if not mlbam_id or status_code not in _IL_CODES:
+                    continue
+                player_id = mlbam_map.get(mlbam_id)
+                if not player_id:
+                    continue
+                if "60" in status_code:
+                    il_status = "il_60"
+                elif status_code == "DTD":
+                    il_status = "day_to_day"
+                else:
+                    il_status = "il_10"
+                injury_note = entry.get("note") or None
+                existing = db.query(InjuryRecord).filter(InjuryRecord.player_id == player_id).first()
+                if existing:
+                    existing.status = il_status
+                    existing.injury_description = injury_note
+                    existing.fetched_at = now_utc
+                else:
+                    db.add(InjuryRecord(
+                        player_id=player_id, status=il_status,
+                        injury_description=injury_note, fetched_at=now_utc,
+                    ))
+                synced += 1
+
+        db.commit()
+        _log.info("Nightly injury sync: %d IL records updated", synced)
+
+        from fantasai.api.v1.recommendations import _RANKINGS_CACHE
+        _RANKINGS_CACHE.clear()
+    except Exception:
+        _log.error("Nightly injury sync failed", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _warm_rankings_cache() -> None:
     """Pre-compute SEASON rankings on startup so the first user request is fast.
 
@@ -369,8 +454,19 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=600,
     )
 
+    # Nightly 9:15 UTC — pull MLB IL data so rankings reflect current injuries
+    scheduler.add_job(
+        _nightly_injury_sync,
+        trigger="cron",
+        hour=9,
+        minute=15,
+        id="nightly-injury-sync",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
     scheduler.start()
-    _log.info("APScheduler started: yahoo-sync=2h (immediate), txn-poll=20m (immediate), blurbs=Monday 9:30 UTC")
+    _log.info("APScheduler started: yahoo-sync=2h (immediate), txn-poll=20m (immediate), blurbs=Monday 9:30 UTC, injury-sync=9:15 UTC daily")
 
     yield
 

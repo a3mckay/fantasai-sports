@@ -797,9 +797,12 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
         if not team_id:
             continue
         try:
+            # Use the 40Man roster (not "injuredList" which returns Active players too).
+            # Filter server-side by status codes: D10=10-day IL, D15=15-day, D60=60-day,
+            # DTD=day-to-day.  Active players have status code "A" and are skipped.
             il_resp = httpx.get(
                 f"https://statsapi.mlb.com/api/v1/teams/{team_id}/roster",
-                params={"rosterType": "injuredList", "season": 2026},
+                params={"rosterType": "40Man", "season": 2026},
                 timeout=10.0,
             )
             il_resp.raise_for_status()
@@ -808,16 +811,18 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             errors.append(f"team {team_id}: {exc}")
             continue
 
+        # Status codes that represent an actual IL placement or day-to-day status.
+        _IL_CODES = {"D10", "D15", "D60", "DTD", "DL10", "DL15", "DL60"}
+
         for entry in roster:
             mlbam_id = entry.get("person", {}).get("id")
             if not mlbam_id:
                 continue
 
-            status_desc = entry.get("status", {}).get("description", "")
+            status_code = entry.get("status", {}).get("code", "")
 
-            # Spring training returns the full roster with "Active" status —
-            # skip entries that aren't actual IL placements.
-            if not status_desc or status_desc.lower() == "active":
+            # Skip active players (code "A") and any non-IL status.
+            if status_code not in _IL_CODES:
                 continue
 
             player_id = mlbam_map.get(mlbam_id)
@@ -825,12 +830,12 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
                 not_found += 1
                 continue
 
-            if "60" in status_desc:
+            if "60" in status_code:
                 status = "il_60"
-            elif "10" in status_desc or "15" in status_desc:
-                status = "il_10"
-            else:
+            elif status_code == "DTD":
                 status = "day_to_day"
+            else:
+                status = "il_10"
 
             # Only store meaningful notes — don't fall back to a bare status string.
             injury_note = (
