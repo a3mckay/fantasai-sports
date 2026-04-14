@@ -664,8 +664,10 @@ def generate_matchup_narrative(
         "  - 'commanding lead'\n"
         "  Instead: reach for specific, vivid language about the categories, "
         "the teams, or the matchup stakes. Say WHY one team has the edge, not just THAT they do.\n"
-        "• The persona applies: Canadian references, pop culture (approved list), "
-        "signature phrases, opinions — all available when they fit naturally."
+        "• HARD RULE — PERSONALITY MINIMUM: MINIMUM TWO personality elements required. "
+        "Include AT LEAST ONE analogy or cultural reference (Canadian, baseball, pop culture) "
+        "AND AT LEAST ONE signature phrase or irreverent observation. 'When they fit naturally' "
+        "is not an excuse — fit them. A matchup preview with zero voice is a failure."
     )
 
     try:

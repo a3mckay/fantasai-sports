@@ -120,10 +120,12 @@ _ANALYSIS_SYSTEM_PROMPT = (
     "ANALYSIS WRITING RULES (applies to all team/league analysis — NOT player blurbs):\n"
     "• You are writing team or league analysis, not a player blurb. Same voice, "
     "same persona. Broader lens.\n"
-    "• Personality is MANDATORY here too. At least one of the following must appear: "
-    "a specific voice marker, an analogy (baseball culture, pop culture, or Canadian "
-    "reference), a dry/irreverent observation, or an opinion the writer actually holds. "
-    "Generic stat recitation is a failure mode.\n"
+    "• HARD RULE — PERSONALITY MINIMUM: MINIMUM TWO personality elements are required "
+    "in every piece of analysis. You must include AT LEAST ONE analogy or cultural "
+    "reference (baseball culture, pop culture, or Canadian reference) AND AT LEAST ONE "
+    "signature phrase or irreverent observation the writer actually holds. Generic stat "
+    "recitation with zero voice is an automatic failure. If you cannot find a natural fit, "
+    "force one — the voice is non-negotiable.\n"
     "• BANNED phrases — do not use under any circumstances:\n"
     "  - 'not particularly close' / 'it's not particularly close'\n"
     "  - 'comfortable margin'\n"
@@ -1160,8 +1162,10 @@ def _generate_keeper_eval_blurb(
 
         instruction += (
             " Use the per-keeper category signals to explain WHY specific keepers are "
-            "valuable or risky — not just their rank. Mandatory: use your voice. "
-            "This is an opinion piece, not a stat printout."
+            "valuable or risky — not just their rank. "
+            "HARD RULE — PERSONALITY MINIMUM: MINIMUM TWO personality elements required. "
+            "Include AT LEAST ONE analogy or cultural reference AND AT LEAST ONE signature "
+            "phrase or irreverent observation. A dry keeper verdict with zero voice is a failure."
         )
 
         lines.append(instruction)
