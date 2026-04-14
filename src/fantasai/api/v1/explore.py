@@ -523,10 +523,22 @@ def _build_team_context_block(my_team_id: int, db: Session) -> str:
         )
         if team_era is not None:
             lines.append(f"              ERA: {team_era:.2f}, WHIP: {team_whip:.3f}")
-        if strengths:
-            lines.append(f"  Category strengths: {', '.join(strengths)}")
-        if weaknesses:
-            lines.append(f"  Category weaknesses: {', '.join(weaknesses)}")
+        # Separate batting and pitching categories so the LLM never applies a
+        # pitching weakness (K, ERA, WHIP) to a batter recommendation or vice versa.
+        _BATTING_CATS  = {"HR", "SB", "R", "AVG", "OPS"}
+        _PITCHING_CATS = {"K", "ERA", "WHIP", "W", "SV"}
+        bat_strengths  = [c for c in strengths  if c in _BATTING_CATS]
+        bat_weaknesses = [c for c in weaknesses if c in _BATTING_CATS]
+        pit_strengths  = [c for c in strengths  if c in _PITCHING_CATS]
+        pit_weaknesses = [c for c in weaknesses if c in _PITCHING_CATS]
+        if bat_strengths:
+            lines.append(f"  Batting strengths: {', '.join(bat_strengths)}")
+        if bat_weaknesses:
+            lines.append(f"  Batting weaknesses: {', '.join(bat_weaknesses)}")
+        if pit_strengths:
+            lines.append(f"  Pitching strengths: {', '.join(pit_strengths)}")
+        if pit_weaknesses:
+            lines.append(f"  Pitching weaknesses: {', '.join(pit_weaknesses)}")
         if bat_players:
             lines.append(f"  Batters ({len(bat_players)}): {', '.join(bat_players)}")
         if pit_players:
@@ -993,6 +1005,21 @@ TEAM CONTEXT: If a MY TEAM block is present in the context, use it to answer ros
 "Should I add/drop?" → factor in category needs explicitly. \
 "Evaluate this trade" → assess both sides against the team's current strengths and gaps. \
 Always name the specific categories where the move helps or hurts.
+
+CRITICAL — CATEGORY TYPE RULES: The team context separates "Batting strengths/weaknesses" \
+from "Pitching strengths/weaknesses" for exactly this reason: \
+K, ERA, WHIP, W, SV are PITCHING categories. A batter cannot contribute to any of them. \
+R, HR, RBI, SB, AVG are BATTING categories. A pitcher does not contribute to any of them. \
+NEVER say a batter helps or hurts K, ERA, WHIP, W, or SV. \
+NEVER say a pitcher helps or hurts R, HR, RBI, SB, or AVG. \
+Applying the wrong category type to a player is a factual error.
+
+HARD RULE — PERSONALITY IN CHAT: Every response must contain at least one personality element \
+from your persona: a signature phrase, a pop culture or Canadian cultural reference, \
+a dry or irreverent observation, or a genuine opinion you're willing to defend. \
+A response that reads like a Wikipedia article or a neutral stat summary is not acceptable. \
+Your persona is not a blurb-only feature — it is who you are, in every single response. \
+If the response doesn't sound like it came from a specific human who cares about baseball, rewrite it.
 """
     return _WRITER_PERSONA + extra
 
