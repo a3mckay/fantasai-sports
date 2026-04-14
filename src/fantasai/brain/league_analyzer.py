@@ -21,10 +21,6 @@ from fantasai.engine.scoring import PlayerRanking
 
 logger = logging.getLogger(__name__)
 
-# Surplus / deficit thresholds for trade opportunity detection
-TRADE_SURPLUS_THRESHOLD = 1.0   # category z-sum above this = surplus
-TRADE_DEFICIT_THRESHOLD = -0.5  # category z-sum below this = deficit
-
 # Cap on trade opportunities returned in a league power report
 MAX_TRADE_OPPS_LEAGUE = 10
 
@@ -164,36 +160,49 @@ def _detect_trade_opportunity(
 ) -> Optional[TradeOpportunity]:
     """Detect a complementary trade opportunity between two teams.
 
-    A trade is worth surfacing when:
-    - Team A has a surplus in categories Team B needs, AND
-    - Team B has a surplus in categories Team A needs.
+    Uses relative comparison: a trade is worth surfacing when Team A is
+    meaningfully stronger than Team B in some categories, AND Team B is
+    meaningfully stronger than Team A in different categories.
 
-    Returns None if no complementary overlap exists.
+    This relative approach works even in competitive leagues where all teams
+    have positive z-sums (so absolute surplus/deficit thresholds fail to
+    find any matches). MIN_RELATIVE_ADVANTAGE controls how big the gap must
+    be before we consider it a real edge worth trading around.
+
+    Returns None if no complementary relative edges exist.
     """
-    cats_a = set(snap_a.category_strengths.keys())
-    cats_b = set(snap_b.category_strengths.keys())
-    all_cats = cats_a | cats_b
+    all_cats = set(snap_a.category_strengths.keys()) | set(snap_b.category_strengths.keys())
 
-    a_surplus = {c for c in all_cats if snap_a.category_strengths.get(c, 0) > TRADE_SURPLUS_THRESHOLD}
-    a_deficit = {c for c in all_cats if snap_a.category_strengths.get(c, 0) < TRADE_DEFICIT_THRESHOLD}
-    b_surplus = {c for c in all_cats if snap_b.category_strengths.get(c, 0) > TRADE_SURPLUS_THRESHOLD}
-    b_deficit = {c for c in all_cats if snap_b.category_strengths.get(c, 0) < TRADE_DEFICIT_THRESHOLD}
+    # Relative advantage: how much larger A's strength is vs B's (or vice versa)
+    MIN_RELATIVE_ADVANTAGE = 2.0
 
-    # Mutual complementarity: A gives from surplus to fill B's deficit, vice-versa
-    a_gives = sorted(a_surplus & b_deficit)  # A has what B needs
-    b_gives = sorted(b_surplus & a_deficit)  # B has what A needs
+    a_advantages: list[str] = []  # cats where A is clearly stronger than B
+    b_advantages: list[str] = []  # cats where B is clearly stronger than A
+
+    for cat in sorted(all_cats):
+        a_val = snap_a.category_strengths.get(cat, 0.0)
+        b_val = snap_b.category_strengths.get(cat, 0.0)
+        diff = a_val - b_val
+        if diff > MIN_RELATIVE_ADVANTAGE:
+            a_advantages.append(cat)
+        elif diff < -MIN_RELATIVE_ADVANTAGE:
+            b_advantages.append(cat)
+
+    # Need both teams to have categories the other lacks
+    a_gives = a_advantages  # A can trade from its edge (B is relatively weak there)
+    b_gives = b_advantages  # B can trade from its edge (A is relatively weak there)
 
     if not a_gives or not b_gives:
         return None
 
-    complementarity_score = len(a_gives) + len(b_gives)
+    complementarity_score = float(len(a_gives) + len(b_gives))
 
     suggested_give = _find_best_trade_player(rankings_a, a_gives)
     suggested_receive = _find_best_trade_player(rankings_b, b_gives)
 
     rationale = (
-        f"{snap_a.team_name} has surplus {', '.join(a_gives)} that {snap_b.team_name} needs; "
-        f"{snap_b.team_name} has surplus {', '.join(b_gives)} that {snap_a.team_name} needs."
+        f"{snap_a.team_name} leads in {', '.join(a_gives)} where {snap_b.team_name} is weaker; "
+        f"{snap_b.team_name} leads in {', '.join(b_gives)} where {snap_a.team_name} is weaker."
     )
 
     return TradeOpportunity(
