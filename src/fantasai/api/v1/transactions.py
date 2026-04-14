@@ -42,13 +42,49 @@ class TransactionRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-def _txn_to_read(txn: Transaction) -> TransactionRead:
+def _enrich_participants(
+    participants: list,
+    positions_map: dict[int, list[str]],
+) -> list:
+    """Inject player positions into each participant entry.
+
+    For add/drop entries the player is at the top level (player_id, player_name).
+    For trade entries players are nested under players_added / players_dropped.
+    Returns a new list — originals are not mutated.
+    """
+    import copy
+    enriched = []
+    for p in participants:
+        p = copy.copy(p)
+        # add / drop
+        pid = p.get("player_id")
+        if pid and pid in positions_map:
+            p["positions"] = positions_map[pid]
+        # trade nested lists
+        for key in ("players_added", "players_dropped"):
+            if p.get(key):
+                new_list = []
+                for entry in p[key]:
+                    entry = copy.copy(entry)
+                    epid = entry.get("player_id")
+                    if epid and epid in positions_map:
+                        entry["positions"] = positions_map[epid]
+                    new_list.append(entry)
+                p[key] = new_list
+        enriched.append(p)
+    return enriched
+
+
+def _txn_to_read(txn: Transaction, positions_map: Optional[dict[int, list[str]]] = None) -> TransactionRead:
+    participants = txn.participants or []
+    if positions_map:
+        participants = _enrich_participants(participants, positions_map)
     return TransactionRead(
         id=txn.id,
         yahoo_transaction_id=txn.yahoo_transaction_id,
         league_id=txn.league_id,
         transaction_type=txn.transaction_type,
-        participants=txn.participants or [],
+        participants=participants,
         grade_letter=txn.grade_letter,
         grade_score=txn.grade_score,
         grade_rationale=txn.grade_rationale,
@@ -62,6 +98,30 @@ def _txn_to_read(txn: Transaction) -> TransactionRead:
         lookback_grade_rationale=txn.lookback_grade_rationale,
         lookback_graded_at=txn.lookback_graded_at.isoformat() if txn.lookback_graded_at else None,
     )
+
+
+def _build_positions_map(txns: list[Transaction], db: Session) -> dict[int, list[str]]:
+    """Batch-fetch player positions for all player_ids appearing in a list of transactions.
+
+    Returns {player_id: [positions]} so callers can inject positions without N+1 queries.
+    """
+    from fantasai.models.player import Player
+
+    player_ids: set[int] = set()
+    for txn in txns:
+        for p in txn.participants or []:
+            if p.get("player_id"):
+                player_ids.add(int(p["player_id"]))
+            for key in ("players_added", "players_dropped"):
+                for entry in p.get(key) or []:
+                    if entry.get("player_id"):
+                        player_ids.add(int(entry["player_id"]))
+
+    if not player_ids:
+        return {}
+
+    rows = db.query(Player.id, Player.positions).filter(Player.id.in_(player_ids)).all()
+    return {row.id: (row.positions or []) for row in rows}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -84,7 +144,9 @@ def list_transactions(
     if transaction_type:
         q = q.filter(Transaction.transaction_type == transaction_type)
     q = q.order_by(Transaction.yahoo_timestamp.desc().nullslast(), Transaction.created_at.desc())
-    return [_txn_to_read(t) for t in q.offset(offset).limit(limit).all()]
+    txns = q.offset(offset).limit(limit).all()
+    pos_map = _build_positions_map(txns, db)
+    return [_txn_to_read(t, pos_map) for t in txns]
 
 
 @router.get("/watermark")
@@ -134,7 +196,9 @@ def list_unseen_transactions(
     if since_id:
         q = q.filter(Transaction.id > since_id)
     q = q.order_by(Transaction.id.desc()).limit(20)
-    return [_txn_to_read(t) for t in q.all()]
+    txns = q.all()
+    pos_map = _build_positions_map(txns, db)
+    return [_txn_to_read(t, pos_map) for t in txns]
 
 
 @router.get("/{transaction_id}", response_model=TransactionRead)
@@ -152,7 +216,8 @@ def get_transaction(
     conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
     if not conn or conn.league_key != txn.league_id:
         raise HTTPException(status_code=403, detail="Access denied")
-    return _txn_to_read(txn)
+    pos_map = _build_positions_map([txn], db)
+    return _txn_to_read(txn, pos_map)
 
 
 @router.get("/{transaction_id}/card")

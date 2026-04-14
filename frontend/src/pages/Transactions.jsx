@@ -31,10 +31,18 @@ function GradeCircle({ letter }) {
   )
 }
 
+function posLabel(positions) {
+  if (!positions?.length) return null
+  // Show the most specific eligible position: prefer SP/RP/C/SS/2B/3B/1B/OF over UTIL/P
+  const preferred = ['SP', 'RP', 'C', 'SS', '2B', '3B', '1B', 'OF', 'P', 'UTIL']
+  const pos = preferred.find(p => positions.includes(p)) || positions[0]
+  return pos ? ` (${pos})` : null
+}
+
 function ParticipantLine({ p, type }) {
   if (type === 'trade') {
-    const gained = p.players_added?.map(x => x.player_name).join(', ') || '—'
-    const lost   = p.players_dropped?.map(x => x.player_name).join(', ') || '—'
+    const gained = p.players_added?.map(x => x.player_name + (posLabel(x.positions) || '')).join(', ') || '—'
+    const lost   = p.players_dropped?.map(x => x.player_name + (posLabel(x.positions) || '')).join(', ') || '—'
     return (
       <div className="text-sm text-slate-300">
         <span className="text-white font-medium">{p.team_name}</span>
@@ -45,10 +53,12 @@ function ParticipantLine({ p, type }) {
   }
   const verb = p.action === 'add' ? 'adds' : 'drops'
   const nameColor = p.action === 'add' ? 'text-field-400' : 'text-red-400'
+  const pos = posLabel(p.positions)
   return (
     <div className="text-sm text-slate-300">
       <span className="text-white font-medium">{p.team_name}</span>
       {' '}{verb} <span className={nameColor}>{p.player_name}</span>
+      {pos && <span className="text-slate-500">{pos}</span>}
     </div>
   )
 }

@@ -25,15 +25,22 @@ const GRADE_COLOR = {
   'F':  '#dc2626',
 }
 
+function posLabel(positions) {
+  if (!positions?.length) return ''
+  const preferred = ['SP', 'RP', 'C', 'SS', '2B', '3B', '1B', 'OF', 'P', 'UTIL']
+  const pos = preferred.find(p => positions.includes(p)) || positions[0]
+  return pos ? ` (${pos})` : ''
+}
+
 function tickerLabel(txn) {
   const p = txn.participants?.[0]
   if (!p) return txn.transaction_type
   if (txn.transaction_type === 'trade') {
-    const names = (p.players_added || []).map(x => x.player_name).join(' & ')
+    const names = (p.players_added || []).map(x => x.player_name + posLabel(x.positions)).join(' & ')
     return `${p.team_name} acquires ${names || '?'}`
   }
   const verb = p.action === 'add' ? 'adds' : 'drops'
-  return `${p.team_name} ${verb} ${p.player_name}`
+  return `${p.team_name} ${verb} ${p.player_name}${posLabel(p.positions)}`
 }
 
 export default function TransactionTicker() {
