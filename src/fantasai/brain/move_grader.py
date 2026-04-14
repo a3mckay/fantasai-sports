@@ -46,31 +46,35 @@ def _score_to_letter(score: float) -> str:
 def _get_player_rank(db: "Session", player_id: Optional[int], league_categories: list[str]) -> Optional[int]:
     """Look up the rest-of-season predictive rank for a player.
 
-    Uses RankingSnapshot (horizon='season') so the Move Grader always uses
-    season-long value rather than a week-specific rank.  Falls back to the
-    Ranking table if no snapshot exists yet.
+    Reads from the Ranking table using the same period key ("2026-season") that
+    the Rankings page writes and displays — so the rank shown in a move grade
+    blurb is guaranteed to match what the user sees on the Rankings page.
+
+    Previously used RankingSnapshot which could be stale and diverge from the
+    live rankings view, causing confusing rank discrepancies.
     """
     if not player_id:
         return None
     try:
-        from fantasai.models.ranking import Ranking, RankingSnapshot
+        from fantasai.models.ranking import Ranking
 
-        # Prefer the most recent season-horizon snapshot — this is stable,
-        # week-agnostic, and never confused with a short-term "hot week" rank.
-        snapshot = (
-            db.query(RankingSnapshot)
+        # "2026-season" is the period key for predictive Rest-of-Season rankings —
+        # matches the period written by the Rankings API (see rankings.py _BLURB_PERIOD_MAP).
+        row = (
+            db.query(Ranking)
             .filter(
-                RankingSnapshot.player_id == player_id,
-                RankingSnapshot.ranking_type == "predictive",
-                RankingSnapshot.horizon == "season",
+                Ranking.player_id == player_id,
+                Ranking.ranking_type == "predictive",
+                Ranking.period == "2026-season",
+                Ranking.league_id.is_(None),
             )
-            .order_by(RankingSnapshot.snapshot_date.desc())
             .first()
         )
-        if snapshot:
-            return snapshot.overall_rank
+        if row:
+            return row.overall_rank
 
-        # Fall back to Ranking table (may be any horizon — still better than nothing)
+        # Fallback: any predictive row for this player (covers older data or
+        # seasons where the period key differs).
         row = (
             db.query(Ranking)
             .filter(
