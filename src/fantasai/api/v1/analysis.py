@@ -1000,8 +1000,11 @@ def _generate_team_eval_blurb(
             f"Overall score: {evaluation.overall_score:.2f} | "
             f"Grade: {evaluation.letter_grade} ({evaluation.grade_percentile:.0f}th percentile)"
         )
-        lines.append(f"Strong categories: {', '.join(evaluation.strong_categories) or 'none'}")
-        lines.append(f"Weak categories: {', '.join(evaluation.weak_categories) or 'none'}")
+        _JUNK = frozenset({"H/AB", "Batting", "Pitching", "AB"})
+        strong_cats = [c for c in evaluation.strong_categories if c not in _JUNK]
+        weak_cats   = [c for c in evaluation.weak_categories   if c not in _JUNK]
+        lines.append(f"Strong categories: {', '.join(strong_cats) or 'none'}")
+        lines.append(f"Weak categories: {', '.join(weak_cats) or 'none'}")
         if actual_category_percentiles:
             pct_parts = [f"{c}: {v:.0f}%" for c, v in sorted(actual_category_percentiles.items(), key=lambda x: -x[1])]
             lines.append(f"Actual YTD category standings (percentile vs league): {', '.join(pct_parts)}")
@@ -1183,12 +1186,15 @@ def _generate_compare_teams_blurb(
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
         if context:
             lines.append(f"User context: {context}")
+        _JUNK = frozenset({"H/AB", "Batting", "Pitching", "AB"})
         lines.append("Team comparison (ranked by projected power score):")
         for snap in comparison.snapshots:
+            clean_strong = [c for c in snap.strong_cats if c not in _JUNK]
+            clean_weak   = [c for c in snap.weak_cats   if c not in _JUNK]
             lines.append(
                 f"  {snap.team_name} (id={snap.team_id}): power={snap.power_score:.2f} | "
-                f"projected strong={', '.join(snap.strong_cats[:3])} | "
-                f"projected weak={', '.join(snap.weak_cats[:3])} | "
+                f"projected strong={', '.join(clean_strong[:3])} | "
+                f"projected weak={', '.join(clean_weak[:3])} | "
                 f"top players: {', '.join(snap.top_players[:2])}"
             )
         # Actual YTD category strengths — these reflect real standings, not projections.
@@ -1269,18 +1275,27 @@ def _generate_league_power_blurb(
     if not client:
         return ""
 
+    # Display artefacts from Yahoo that sometimes bleed into category lists.
+    # Strip them here so the LLM never prints "strong in H/AB" or "weak in Batting".
+    _JUNK_CATS: frozenset = frozenset({"H/AB", "Batting", "Pitching", "AB"})
+
     try:
         lines = ["━━━ DATA BLOCK — ONLY CITE FACTS FROM THIS BLOCK ━━━"]
         lines.append(
-            "League Power Rankings (predictive roster strength — "
-            "power_score=sum of roster z-scores, avg_score=mean per-player z-score):"
+            "League Power Rankings (predictive roster strength):\n"
+            "  power = total roster strength (sum of player z-scores; bigger = more firepower)\n"
+            "  depth = average score per player (higher = genuine top-to-bottom quality;\n"
+            "          low depth with high power = one or two stars holding up a thin roster)"
         )
         for i, snap in enumerate(report.power_rankings, 1):
-            weak_str = (", ".join(snap.weak_cats[:2])) if snap.weak_cats else "none"
-            avg_score_str = f", avg_depth={snap.average_score:.3f}" if snap.average_score else ""
+            # Strip Yahoo display artefacts from category labels
+            clean_strong = [c for c in snap.strong_cats if c not in _JUNK_CATS]
+            clean_weak   = [c for c in snap.weak_cats   if c not in _JUNK_CATS]
+            weak_str = ", ".join(clean_weak[:2]) if clean_weak else "none"
+            depth_str = f", depth={snap.average_score:.2f}" if snap.average_score else ""
             lines.append(
-                f"  #{i} {snap.team_name} (power={snap.power_score:.2f}{avg_score_str}) | "
-                f"strong={', '.join(snap.strong_cats[:3])} | weak={weak_str}"
+                f"  #{i} {snap.team_name} (power={snap.power_score:.2f}{depth_str}) | "
+                f"strong={', '.join(clean_strong[:3])} | weak={weak_str}"
             )
         lines.append("")
         lines.append("Tiers:")
@@ -1306,19 +1321,24 @@ def _generate_league_power_blurb(
         lines.append(
             "Write a 4–6 sentence league power rankings narrative. "
             "Name specific teams when describing each tier — explain WHY each contender is strong "
-            "(which categories they dominate) and WHY rebuilding teams are struggling "
-            "(specific weak spots). Use avg_depth to distinguish teams with elite stars but shallow "
-            "rosters from teams with genuine top-to-bottom quality. "
-            "Mention which middle-pack teams are closest to breaking into "
-            "the top tier and what's holding them back. "
+            "(which scoring categories they dominate) and WHY rebuilding teams are struggling "
+            "(specific weak spots). "
+            "Use the depth score to distinguish teams with one or two stars propping up a thin roster "
+            "from rosters with genuine top-to-bottom quality — but translate this into plain language "
+            "(e.g. 'deep roster', 'one injury away from trouble', 'genuine top-to-bottom quality') "
+            "rather than printing the number or the word 'depth' literally. "
+            "Mention which middle-pack teams are closest to breaking into the top tier and what's holding them back. "
             "Do NOT mention trades or trade opportunities — this is a pure power ranking summary. "
-            "Mandatory: use your voice. This is an opinion piece, not a standings printout. "
-            "One analogy, signature phrase, or cultural reference that fits the league story naturally."
+            "BANNED non-scoring categories — never mention these: H/AB, Batting, Pitching, AB. "
+            "If any appear in the data, ignore them. "
+            "Mandatory: MINIMUM two personality elements in this response. "
+            "At least one analogy or cultural reference AND at least one signature phrase or irreverent observation. "
+            "A neutral standings printout is not acceptable — this is a league storyline, not a spreadsheet."
         )
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=400,
+            max_tokens=600,  # 400 was too tight for a full 12-team narrative
             system=[{"type": "text", "text": _ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n".join(lines)}],
         )
