@@ -367,16 +367,28 @@ def regrade_transactions(
     return {"status": "regrading", "message": "Re-grading all transactions in background"}
 
 
-@router.post("/poll", status_code=202)
+@router.post("/poll")
 def poll_transactions(
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Manually trigger a transaction poll for the user's league."""
+    """Manually trigger a transaction poll and return immediately with result count.
+
+    Runs synchronously so the frontend knows whether the poll actually found
+    transactions (new_count > 0) or failed (raises 502).  Grading still happens
+    in-process but the stored-transaction count is returned right away so the
+    UI can reload without guessing how long to wait.
+    """
     from fantasai.services.yahoo_transactions import poll_all_leagues
-    background_tasks.add_task(poll_all_leagues)
-    return {"status": "polling", "message": "Transaction poll started in background"}
+    try:
+        new_count = poll_all_leagues()
+    except Exception as exc:
+        logger.error("poll_transactions: poll failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Transaction poll failed — Yahoo connection may need re-authorising. ({exc})",
+        )
+    return {"status": "ok", "new_count": new_count}
 
 
 @router.post("/force-reimport", status_code=202, tags=["admin"])

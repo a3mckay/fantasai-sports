@@ -214,13 +214,15 @@ export default function Transactions() {
 
   const handlePoll = async () => {
     setSyncing(true)
+    setError(null)
     try {
+      // /poll now runs synchronously and returns {new_count} — no need to guess
+      // how long to wait before reloading.
       await req('POST', '/api/v1/transactions/poll')
-      setTimeout(async () => {
-        await load(true)
-        setSyncing(false)
-      }, 3000)
-    } catch {
+      await load(true)
+    } catch (err) {
+      setError(err.message || 'Could not reach Yahoo — your connection may need re-authorising in Settings.')
+    } finally {
       setSyncing(false)
     }
   }
