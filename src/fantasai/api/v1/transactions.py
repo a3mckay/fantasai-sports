@@ -126,6 +126,45 @@ def _build_positions_map(txns: list[Transaction], db: Session) -> dict[int, list
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
+@router.get("/debug-status")
+def debug_status(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Diagnostic endpoint — returns raw DB state to help debug empty Move Grades.
+
+    Shows total transaction count (all leagues), the user's current league_key,
+    and the count of transactions for that league specifically.
+    """
+    from sqlalchemy import func, text
+    from fantasai.models.user import YahooConnection
+
+    conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
+    league_key = conn.league_key if conn else None
+
+    total_count = db.query(func.count(Transaction.id)).scalar()
+    league_count = (
+        db.query(func.count(Transaction.id))
+        .filter(Transaction.league_id == league_key)
+        .scalar()
+        if league_key else 0
+    )
+    distinct_leagues = (
+        db.query(Transaction.league_id)
+        .distinct()
+        .all()
+    )
+
+    return {
+        "user_id": user.id,
+        "conn_league_key": league_key,
+        "total_transactions_in_db": total_count,
+        "transactions_for_this_league": league_count,
+        "distinct_league_ids_in_db": [r[0] for r in distinct_leagues],
+    }
+
+
 @router.get("", response_model=list[TransactionRead])
 def list_transactions(
     transaction_type: Optional[str] = Query(default=None, pattern="^(add|drop|trade)$"),
