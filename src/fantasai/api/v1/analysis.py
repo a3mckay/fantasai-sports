@@ -1050,14 +1050,22 @@ def _generate_team_eval_blurb(
             "HARD RULE: NEVER state that a specific named player is 'on the bench', 'not starting', or 'sitting' "
             "unless they appear in the IL list. Position congestion is a structural roster issue, "
             "not a fact about any individual player's lineup deployment. "
-            "Mandatory: use your voice — this is not a stat recitation. Lead with an opinion or observation. "
-            "One analogy, signature phrase, or cultural reference that fits naturally. "
+            "HARD RULE — CATEGORY/PLAYER ATTRIBUTION: "
+            "Pitching categories (K, W, SV, ERA, WHIP, IP) are produced by pitchers only — "
+            "NEVER credit a named batter for K, W, SV, ERA, WHIP, or IP strength. "
+            "Batting categories (HR, R, RBI, SB, AVG) are produced by batters only — "
+            "NEVER credit a named pitcher for HR, R, RBI, SB, or AVG strength.\n"
+            "HARD RULE — NO RAW Z-SCORES: NEVER print raw numeric z-score values (e.g. '+2.1', '-4.5'). "
+            "Translate to natural language: 'league-leading in saves', 'last in innings pitched', 'positive in SBs'.\n"
+            "HARD RULE — PERSONALITY: Minimum two personality elements — "
+            "at least one analogy or cultural reference AND one signature phrase or irreverent observation. "
+            "A stat recitation is not acceptable.\n"
             + (f"Address user context: {context}" if context else "")
         )
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=400,
+            max_tokens=450,
             system=[{"type": "text", "text": _ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n".join(lines)}],
         )
@@ -1244,16 +1252,29 @@ def _generate_compare_teams_blurb(
             "If the projected data says a team is weak in SV but their actual SV z-score is positive, "
             "they are NOT weak in SV — describe it accurately based on what has actually happened. "
             "Note any IL players or roster construction issues (position gluts, thin spots). "
-            "HARD RULE: NEVER state that a specific named player is 'on the bench', 'not starting', or 'sitting' "
-            "unless they appear in the IL list. Roster congestion is a structural issue — describe it by position "
-            "group, not by claiming individual stars are sitting. "
-            "Mandatory: use your voice — one analogy, signature phrase, or cultural reference that fits. "
+            "\n"
+            "HARD RULE — CATEGORY/PLAYER ATTRIBUTION: "
+            "Pitching categories (K, W, SV, ERA, WHIP, IP) are produced by PITCHERS. "
+            "NEVER name a specific batter as the reason a team leads or lags in K, W, SV, ERA, WHIP, or IP. "
+            "Batting categories (HR, R, RBI, SB, AVG, OBP, H, BB) are produced by BATTERS. "
+            "NEVER name a specific pitcher as the reason a team leads or lags in HR, R, RBI, SB, or AVG. "
+            "Only name a player when the category actually matches their role.\n"
+            "HARD RULE — NO RAW Z-SCORES: NEVER print the raw numeric z-score values from the data block "
+            "(e.g. '+11.50', '-4.52', '+2.15'). These numbers mean nothing to a reader. "
+            "Translate them to natural language: 'leading the group in strikeouts', "
+            "'bleeding innings pitched', 'the only team with a positive stolen-base balance'. "
+            "You may say 'first', 'last', 'ahead of', 'behind' — but never paste the raw number.\n"
+            "HARD RULE — BENCH/LINEUP: NEVER state that a specific named player is 'on the bench', "
+            "'not starting', or 'sitting' unless they appear in the IL list.\n"
+            "HARD RULE — PERSONALITY: Minimum two personality elements required. "
+            "At least one analogy or cultural reference AND one signature phrase or irreverent observation. "
+            "A neutral stat comparison is not acceptable — this is a league story, not a spreadsheet.\n"
             + (f"Address user context: {context}" if context else "")
         )
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=350,
+            max_tokens=500,  # 350 was causing mid-sentence truncation
             system=[{"type": "text", "text": _ANALYSIS_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": "\n".join(lines)}],
         )
