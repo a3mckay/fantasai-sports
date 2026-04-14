@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { req } from '../lib/api'
 import Spinner from '../components/Spinner'
-import { Shield, Trash2, Search } from 'lucide-react'
+import { Shield, Trash2, Search, Activity } from 'lucide-react'
 
 export default function AdminPanel() {
   const { user } = useAuth()
@@ -15,6 +15,31 @@ export default function AdminPanel() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const [txnStatus, setTxnStatus] = useState(null)
+  const [txnStatusLoading, setTxnStatusLoading] = useState(false)
+
+  async function loadTxnStatus() {
+    setTxnStatusLoading(true)
+    try {
+      const data = await req('GET', '/api/v1/transactions/debug-status')
+      setTxnStatus(data)
+    } catch (e) {
+      setTxnStatus({ error: e.message })
+    } finally {
+      setTxnStatusLoading(false)
+    }
+  }
+
+  async function forceReimport() {
+    if (!confirm('Delete and re-import all transactions? This will wipe existing move grades.')) return
+    try {
+      await req('POST', '/api/v1/transactions/force-reimport?count=200')
+      alert('Re-import started in background. Check Move Grades in ~60 seconds.')
+    } catch (e) {
+      alert('Failed: ' + e.message)
+    }
+  }
 
   // Redirect non-admins
   useEffect(() => {
@@ -63,7 +88,33 @@ export default function AdminPanel() {
   if (!user || user.role !== 'admin') return null
 
   return (
-    <div>
+    <div className="space-y-8">
+      {/* ── Transaction diagnostics ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <Activity size={16} className="text-field-400" />
+          <h2 className="text-lg font-semibold text-white">Transaction Diagnostics</h2>
+        </div>
+        <div className="bg-navy-900 border border-navy-700 rounded-xl p-4 space-y-3">
+          <div className="flex gap-3">
+            <button onClick={loadTxnStatus} disabled={txnStatusLoading}
+              className="px-3 py-1.5 text-xs bg-field-800 hover:bg-field-700 text-white rounded border border-field-600 transition-colors">
+              {txnStatusLoading ? 'Loading…' : 'Check Status'}
+            </button>
+            <button onClick={forceReimport}
+              className="px-3 py-1.5 text-xs bg-red-900/40 hover:bg-red-800/60 text-red-300 rounded border border-red-700 transition-colors">
+              Force Re-import All Transactions
+            </button>
+          </div>
+          {txnStatus && (
+            <pre className="text-xs text-slate-300 bg-navy-950 rounded p-3 overflow-x-auto whitespace-pre-wrap">
+              {JSON.stringify(txnStatus, null, 2)}
+            </pre>
+          )}
+        </div>
+      </div>
+
+      <div>
       <div className="flex items-center gap-2 mb-6">
         <Shield size={20} className="text-field-400" />
         <h1 className="text-2xl font-bold text-white">Admin Panel</h1>
@@ -152,6 +203,7 @@ export default function AdminPanel() {
           </table>
         </div>
       )}
+      </div>  {/* end users section */}
     </div>
   )
 }

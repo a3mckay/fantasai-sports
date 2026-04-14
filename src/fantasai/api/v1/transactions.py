@@ -120,8 +120,8 @@ def _build_positions_map(txns: list[Transaction], db: Session) -> dict[int, list
     if not player_ids:
         return {}
 
-    rows = db.query(Player.id, Player.positions).filter(Player.id.in_(player_ids)).all()
-    return {row.id: (row.positions or []) for row in rows}
+    rows = db.query(Player.player_id, Player.positions).filter(Player.player_id.in_(player_ids)).all()
+    return {row.player_id: (row.positions or []) for row in rows}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
