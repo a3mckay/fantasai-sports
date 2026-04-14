@@ -744,7 +744,7 @@ def _build_prompt(
         seen_ids.add(key)
         rank = _get_player_rank(db, pid, categories)
         # Label rank explicitly so Claude knows what it represents
-        rank_str = f" | predicted-season-rank=#{rank}" if rank else ""
+        rank_str = f" | predictive-ROS-rank=#{rank}" if rank else ""
         facts = _get_player_facts(db, pid, pname)
         data_block_lines.append(f"  - {facts}{rank_str}")
 
@@ -770,8 +770,10 @@ def _build_prompt(
         "- Stats labeled '[2026 Steamer projection]' are full-season projections; "
         "say 'projects for X' or 'Steamer projects', never 'has X'.\n"
         "- 'proj-HR', 'proj-K', etc. are projected season totals, not current stats.\n"
-        "- 'predicted-season-rank' is our internal rest-of-season ranking model; "
-        "refer to it as 'ranked #N in our season projections' or similar.\n"
+        "- 'predictive-ROS-rank' is our internal Rest-of-Season ranking model; "
+        "refer to it as 'ranked #N in our Predictive (Rest-of-Season) rankings'. "
+        "Never say 'our season projections' — always say 'Predictive (Rest-of-Season) rankings' "
+        "so the user knows exactly which list to look at.\n"
         "K/9 benchmarks for starters: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
         "below avg=7.0-7.9, poor=<7.0. Do not call anything below 9.0 'elite'.\n"
         "POSITIONS ARE AUTHORITATIVE: A player's eligible position(s) are listed "
@@ -1063,7 +1065,8 @@ def grade_transaction(
                 "6. Stats labeled '[2026 Steamer projection — full-season]' are projections — always "
                 "frame them as such: 'Steamer projects X this season'. Never quote as observed fact.\n"
                 "   Stats labeled '[2026 actual — N G/PA/IP]' are real; flag the sample if under 50 PA / 5 GS.\n"
-                "7. 'predicted-season-rank' = our internal ROS model. Say 'ranked #N in our season projections'.\n"
+                "7. 'predictive-ROS-rank' = our internal Rest-of-Season model. "
+                "Say 'ranked #N in our Predictive (Rest-of-Season) rankings' — never 'our season projections'.\n"
                 "8. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
                 "9. Always 'Name (TEAM)' on first mention when team is provided.\n"
                 "10. Apply the ADVANCED STATS FRAMEWORK: if the verdict hinges on xERA vs ERA, \n"
