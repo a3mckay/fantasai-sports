@@ -50,15 +50,12 @@ def get_scoring_grid(
     conn, access_token = _get_conn_and_token(user, db)
     league_key = conn.league_key
 
-    snap = None
-
-    # If a specific week was requested, try the DB cache first
-    if week is not None:
+    # Always fetch live from Yahoo and update the cache — ensures fresh stats
+    # even when navigating to a previously-stored week.  If Yahoo fails, fall
+    # back to whatever we have in the DB.
+    snap = fetch_and_store_scoring_grid(db, league_key, access_token, week=week)
+    if snap is None and week is not None:
         snap = get_scoring_grid_snapshot(db, league_key, week)
-
-    # Fetch from Yahoo if missing (always fetch for current week = no week param)
-    if snap is None:
-        snap = fetch_and_store_scoring_grid(db, league_key, access_token, week=week)
 
     if snap is None:
         raise HTTPException(status_code=503, detail="Could not fetch scoring data from Yahoo")
