@@ -7,11 +7,12 @@ from fantasai.models.prospect import ProspectProfile
 from fantasai.models.user import User, YahooConnection, UserSettings, AnonymousUsage
 from fantasai.models.transaction import Transaction, GRADE_SCORES, GRADE_LETTERS
 from fantasai.models.matchup import MatchupAnalysis
+from fantasai.models.scoring_grid import ScoringGridSnapshot
 
 __all__ = [
     "Base", "Player", "PlayerStats", "League", "Team",
     "Ranking", "RankingSnapshot", "Recommendation", "ProspectProfile",
     "User", "YahooConnection", "UserSettings", "AnonymousUsage",
     "Transaction", "GRADE_SCORES", "GRADE_LETTERS",
-    "MatchupAnalysis",
+    "MatchupAnalysis", "ScoringGridSnapshot",
 ]

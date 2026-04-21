@@ -48,6 +48,7 @@ from fantasai.api.v1.settings import router as settings_router  # noqa: E402
 from fantasai.api.v1.transactions import router as transactions_router
 from fantasai.api.v1.matchups import router as matchups_router  # noqa: E402
 from fantasai.api.v1.explore import router as explore_router  # noqa: E402
+from fantasai.api.v1.scoring_grid import router as scoring_grid_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
@@ -165,6 +166,36 @@ def _weekly_lookback_pass() -> None:
     except Exception:
         _log.error("Weekly lookback pass failed", exc_info=True)
         db.rollback()
+    finally:
+        db.close()
+
+
+def _nightly_scoring_grid_refresh() -> None:
+    """Nightly: refresh scoring grid snapshot for the current and previous week for all leagues."""
+    from fantasai.database import SessionLocal
+    from fantasai.models.user import YahooConnection
+    from fantasai.services.scoring_grid_service import fetch_and_store_scoring_grid
+    from fantasai.services.yahoo_sync import get_valid_access_token
+
+    db = SessionLocal()
+    try:
+        conns = db.query(YahooConnection).filter(YahooConnection.league_key.isnot(None)).all()
+        seen: set[str] = set()
+        for conn in conns:
+            league_key = conn.league_key
+            if not league_key or league_key in seen:
+                continue
+            seen.add(league_key)
+            try:
+                access_token = get_valid_access_token(conn, db)
+                snap = fetch_and_store_scoring_grid(db, league_key, access_token, week=None)
+                if snap and snap.week > 1:
+                    fetch_and_store_scoring_grid(db, league_key, access_token, week=snap.week - 1)
+                _log.info("Scoring grid refreshed for league %s (week %s)", league_key, snap.week if snap else "?")
+            except Exception:
+                _log.warning("Scoring grid refresh failed for league %s", league_key, exc_info=True)
+    except Exception:
+        _log.error("Nightly scoring grid refresh failed", exc_info=True)
     finally:
         db.close()
 
@@ -465,6 +496,17 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=600,
     )
 
+    # Nightly 9:30 UTC — refresh scoring grid for current + previous week across all leagues
+    scheduler.add_job(
+        _nightly_scoring_grid_refresh,
+        trigger="cron",
+        hour=9,
+        minute=30,
+        id="nightly-scoring-grid",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
     scheduler.start()
     _log.info("APScheduler started: yahoo-sync=2h (immediate), txn-poll=20m (immediate), blurbs=Monday 9:30 UTC, injury-sync=9:15 UTC daily")
 
@@ -507,3 +549,4 @@ app.include_router(settings_router, prefix="/api/v1")
 app.include_router(transactions_router, prefix="/api/v1")
 app.include_router(matchups_router, prefix="/api/v1")
 app.include_router(explore_router, prefix="/api/v1")
+app.include_router(scoring_grid_router, prefix="/api/v1")

@@ -101,6 +101,16 @@ export const getRankings = ({ ranking_type = 'predictive', limit = 400, season, 
 
 export const getWeekMode = () => get('/api/v1/rankings/week-mode')
 
+// ── Scoring Grid ───────────────────────────────────────────────────────────────
+export const getScoringGrid = (week) => {
+  const params = week != null ? `?week=${week}` : ''
+  return get(`/api/v1/scoring-grid${params}`)
+}
+export const refreshScoringGrid = (week) => {
+  const params = week != null ? `?week=${week}` : ''
+  return req('POST', `/api/v1/scoring-grid/refresh${params}`)
+}
+
 // ── Explore Players ───────────────────────────────────────────────────────────
 export const getPlayer = (playerId) => get(`/api/v1/players/${playerId}`)
 
