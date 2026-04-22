@@ -10,10 +10,10 @@ import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ComparePlayers from './ComparePlayers'
 
-// MLB headshot URL — same pattern used in grade cards
+// MLB headshot URL — no Cloudinary default so onError fires for missing headshots
 const headshotUrl = (mlbamId) =>
   mlbamId
-    ? `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_120,q_auto:best/v1/people/${mlbamId}/headshot/67/current`
+    ? `https://img.mlbstatic.com/mlb-photos/image/upload/w_120,q_auto:best/v1/people/${mlbamId}/headshot/67/current`
     : null
 
 const MAX_PLAYERS = 5
@@ -34,6 +34,21 @@ const PITCHING_DISPLAY = [
   { key: 'ERA', label: 'ERA', decimals: 2 }, { key: 'WHIP', label: 'WHIP', decimals: 2 },
   { key: 'xERA', label: 'xERA', decimals: 2 }, { key: 'K/9', label: 'K/9', decimals: 1 },
   { key: 'Stuff+', label: 'Stf+' },
+]
+// Projections show fractional totals — everything gets 1 decimal except AVG/OPS (3) and ERA/WHIP (2)
+const BATTING_PROJ_DISPLAY = [
+  { key: 'PA', label: 'PA', decimals: 1 }, { key: 'R', label: 'R', decimals: 1 }, { key: 'HR', label: 'HR', decimals: 1 },
+  { key: 'RBI', label: 'RBI', decimals: 1 }, { key: 'SB', label: 'SB', decimals: 1 },
+  { key: 'AVG', label: 'AVG', decimals: 3 }, { key: 'OPS', label: 'OPS', decimals: 3 },
+  { key: 'xwOBA', label: 'xwOBA', decimals: 3 }, { key: 'Barrel%', label: 'Brl%', decimals: 1 },
+  { key: 'wRC+', label: 'wRC+', decimals: 1 },
+]
+const PITCHING_PROJ_DISPLAY = [
+  { key: 'IP', label: 'IP', decimals: 1 }, { key: 'W', label: 'W', decimals: 1 },
+  { key: 'SV', label: 'SV', decimals: 1 }, { key: 'SO', label: 'K', decimals: 1 },
+  { key: 'ERA', label: 'ERA', decimals: 2 }, { key: 'WHIP', label: 'WHIP', decimals: 2 },
+  { key: 'xERA', label: 'xERA', decimals: 1 }, { key: 'K/9', label: 'K/9', decimals: 1 },
+  { key: 'Stuff+', label: 'Stf+', decimals: 1 },
 ]
 
 function fmtStat(val, decimals) {
@@ -85,6 +100,7 @@ function PlayerCard({ context, onRemove }) {
   const [showProjection, setShowProjection] = useState(false)
   const [showPav, setShowPav] = useState(false)
   const defs = context.stat_type === 'pitching' ? PITCHING_DISPLAY : BATTING_DISPLAY
+  const projDefs = context.stat_type === 'pitching' ? PITCHING_PROJ_DISPLAY : BATTING_PROJ_DISPLAY
   const hs = headshotUrl(context.mlbam_id)
 
   return (
@@ -209,7 +225,7 @@ function PlayerCard({ context, onRemove }) {
           </button>
           {showProjection && (
             <div className="mt-1.5">
-              <StatRow stats={context.projection_stats} defs={defs} />
+              <StatRow stats={context.projection_stats} defs={projDefs} />
             </div>
           )}
         </div>

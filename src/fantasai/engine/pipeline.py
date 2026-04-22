@@ -908,9 +908,10 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
             except (TypeError, ValueError):
                 continue
             d = row.to_dict()
+            def _pct(v): return round(v * 100, 2) if v is not None else None
             batter_adv.setdefault(mlbam, {}).update({
-                "Barrel%":  _fval_sc(d, "brl_percent"),
-                "HardHit%": _fval_sc(d, "ev95percent"),
+                "Barrel%":  _pct(_fval_sc(d, "brl_percent")),
+                "HardHit%": _pct(_fval_sc(d, "ev95percent")),
                 "EV":       _fval_sc(d, "avg_hit_speed"),
                 # More predictive power metrics (per advanced stats framework)
                 "EV_FBLD":  _fval_sc(d, "fbld"),        # EV on fly balls / line drives
@@ -1049,9 +1050,10 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
             except (TypeError, ValueError):
                 continue
             d = row.to_dict()
+            def _pct(v): return round(v * 100, 2) if v is not None else None
             pitcher_adv.setdefault(mlbam, {}).update({
-                "Barrel%":  _fval_sc(d, "brl_percent"),
-                "HardHit%": _fval_sc(d, "ev95percent"),
+                "Barrel%":  _pct(_fval_sc(d, "brl_percent")),
+                "HardHit%": _pct(_fval_sc(d, "ev95percent")),
                 "EV":       _fval_sc(d, "avg_hit_speed"),
             })
     except Exception:
