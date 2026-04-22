@@ -112,6 +112,29 @@ def _run_refresh(league_key: str, week: Optional[int]) -> None:
         logger.warning("Background scoring grid refresh failed for %s", league_key, exc_info=True)
 
 
+@router.get("/debug-raw")
+def debug_raw_yahoo_response(
+    week: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Debug: return raw Yahoo JSON for the teams;out=stats endpoint."""
+    import httpx as _httpx
+    conn, access_token = _get_conn_and_token(user, db)
+    path = f"league/{conn.league_key}/teams;out=stats;type=week"
+    if week is not None:
+        path += f";week={week}"
+    url = f"https://fantasysports.yahooapis.com/fantasy/v2/{path}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        with _httpx.Client(timeout=20.0) as client:
+            resp = client.get(url, params={"format": "json"}, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @router.post("/refresh")
 def refresh_scoring_grid(
     week: Optional[int] = None,
