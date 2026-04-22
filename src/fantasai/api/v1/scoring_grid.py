@@ -145,21 +145,39 @@ def debug_raw_yahoo_response(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Debug: return raw Yahoo JSON for the teams;out=stats endpoint."""
+    """Debug: show league stat_id map + raw team stats for first team."""
     import httpx as _httpx
+    from fantasai.services.scoring_grid_service import _fetch_league_stat_id_map
     conn, access_token = _get_conn_and_token(user, db)
-    url = f"https://fantasysports.yahooapis.com/fantasy/v2/league/{conn.league_key}/teams;out=stats"
-    params: dict = {"format": "json", "type": "week"}
-    if week is not None:
-        params["week"] = str(week)
-    headers = {"Authorization": f"Bearer {access_token}"}
-    try:
-        with _httpx.Client(timeout=20.0) as client:
-            resp = client.get(url, params=params, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+
+    stat_map = _fetch_league_stat_id_map(access_token, conn.league_key)
+
+    # Also fetch raw team stats for the user's own team if available
+    from fantasai.models.league import Team
+    my_team = (
+        db.query(Team)
+        .filter(Team.league_id == conn.league_key, Team.owner_user_id == user.id)
+        .first()
+    )
+    raw_team_stats = None
+    if my_team and my_team.yahoo_team_key:
+        url = f"https://fantasysports.yahooapis.com/fantasy/v2/team/{my_team.yahoo_team_key}/stats"
+        params: dict = {"format": "json", "type": "week"}
+        if week is not None:
+            params["week"] = str(week)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        try:
+            with _httpx.Client(timeout=15.0) as client:
+                resp = client.get(url, params=params, headers=headers)
+                raw_team_stats = resp.json() if resp.is_success else {"error": resp.text[:500]}
+        except Exception as exc:
+            raw_team_stats = {"error": str(exc)}
+
+    return {
+        "league_stat_id_map": stat_map,
+        "my_team_key": my_team.yahoo_team_key if my_team else None,
+        "my_team_raw_stats": raw_team_stats,
+    }
 
 
 @router.post("/refresh")
