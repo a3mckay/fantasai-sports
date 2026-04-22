@@ -627,10 +627,21 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
             except (TypeError, ValueError):
                 continue
 
-            # Match to existing player by FanGraphs ID
+            # Match to existing player by FanGraphs ID; create if missing
             player = db.get(Player, player_id)
             if player is None:
-                continue
+                name = str(row_dict.get("Name") or "").strip()
+                team = str(row_dict.get("Team") or "").strip()
+                if not name:
+                    continue
+                player = Player(player_id=player_id, name=name, team=team, positions=[])
+                db.add(player)
+                try:
+                    db.flush()
+                except Exception:
+                    db.rollback()
+                    logger.warning("Could not create player %d (%s) from FG batting stats", player_id, name)
+                    continue
 
             counting_stats = {
                 "PA":  _fval(row_dict, "PA"),
@@ -721,7 +732,18 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
 
             player = db.get(Player, player_id)
             if player is None:
-                continue
+                name = str(row_dict.get("Name") or "").strip()
+                team = str(row_dict.get("Team") or "").strip()
+                if not name:
+                    continue
+                player = Player(player_id=player_id, name=name, team=team, positions=[])
+                db.add(player)
+                try:
+                    db.flush()
+                except Exception:
+                    db.rollback()
+                    logger.warning("Could not create player %d (%s) from FG pitching stats", player_id, name)
+                    continue
 
             counting_stats = {
                 "IP":  _fval(row_dict, "IP"),

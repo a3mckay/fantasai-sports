@@ -54,11 +54,11 @@ const FEATURES = [
     description: 'Get a fair / favor-receive / favor-give verdict. Accounts for talent density — one star beats five fillers.',
   },
   {
-    to: '/compare',
+    to: '/explore',
     icon: BarChart2,
     color: 'stitch',
-    title: 'Compare Players',
-    description: 'Rank 2+ players head-to-head. Factor in your category priorities with a quick note.',
+    title: 'Explore Players',
+    description: 'Deep-dive on up to 5 players — stats, injury info, schedule context, and AI analyst chat. Compare head-to-head too.',
   },
   {
     to: '/compare-teams',

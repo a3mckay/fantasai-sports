@@ -26,7 +26,7 @@ function emptyPlayer() {
   return { name: '', playerId: null }
 }
 
-export default function ComparePlayers() {
+export default function ComparePlayers({ compact = false }) {
   const [players, setPlayers]         = useState([emptyPlayer(), emptyPlayer()])
   const [context, setContext]         = useState('')
   const [rankingType, setRankingType] = useState('predictive')
@@ -80,15 +80,17 @@ export default function ComparePlayers() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <BarChart2 size={18} className="text-field-400" />
-          <h1 className="text-2xl font-bold text-white">Compare Players</h1>
+      {!compact && (
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <BarChart2 size={18} className="text-field-400" />
+            <h1 className="text-2xl font-bold text-white">Compare Players</h1>
+          </div>
+          <p className="text-slate-500 text-sm">
+            Rank 2–8 players head-to-head. Search by name to find any player.
+          </p>
         </div>
-        <p className="text-slate-500 text-sm">
-          Rank 2–8 players head-to-head. Search by name to find any player.
-        </p>
-      </div>
+      )}
 
       <form
         onSubmit={submit}

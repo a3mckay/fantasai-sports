@@ -8,6 +8,7 @@ import { explorePlayerContext, exploreChatStream, searchPlayers, getPlayer } fro
 import { useLeague } from '../contexts/LeagueContext'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
+import ComparePlayers from './ComparePlayers'
 
 // MLB headshot URL — same pattern used in grade cards
 const headshotUrl = (mlbamId) =>
@@ -402,7 +403,8 @@ function SuggestedPrompts({ players, contexts, myTeamId, onSelect }) {
 // Main component
 // ---------------------------------------------------------------------------
 export default function ExplorePlayers() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = searchParams.get('tab') === 'compare' ? 'compare' : 'explore'
   const { league, myTeam } = useLeague() || {}
 
   const leagueId = league?.league_id ?? null
@@ -620,9 +622,35 @@ export default function ExplorePlayers() {
           <h1 className="text-2xl font-bold text-white">Explore Players</h1>
         </div>
         <p className="text-slate-500 text-sm">
-          Select up to 5 players, review their stats, and ask our AI analyst anything.
+          Deep-dive on up to 5 players, ask the AI analyst anything, or compare head-to-head.
         </p>
       </div>
+
+      {/* ── Tabs ── */}
+      <div className="flex gap-1 border-b border-navy-700">
+        {[
+          { id: 'explore', label: 'Explore' },
+          { id: 'compare', label: 'Compare' },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setSearchParams(tab.id === 'explore' ? {} : { tab: tab.id })}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === tab.id
+                ? 'border-field-500 text-field-300'
+                : 'border-transparent text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Compare tab ── */}
+      {activeTab === 'compare' && <ComparePlayers compact />}
+
+      {/* ── Explore tab content ── */}
+      {activeTab === 'explore' && <>
 
       {/* ── Zone A: Player Selector ── */}
       <div className="space-y-3">
@@ -842,6 +870,8 @@ export default function ExplorePlayers() {
           </div>
         </div>
       </details>
+
+      </>}
     </div>
   )
 }
