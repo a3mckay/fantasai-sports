@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, Swords, ScrollText, ChevronRight, RefreshCw } from 'lucide-react'
+import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, Swords, ScrollText, Grid3X3, ChevronRight, RefreshCw } from 'lucide-react'
 import { useLeague } from '../contexts/LeagueContext'
 
 // Order mirrors the left-hand nav
@@ -10,6 +10,13 @@ const FEATURES = [
     color: 'field',
     title: 'Rankings',
     description: 'Predictive and current-season player rankings powered by advanced metrics and FanGraphs data.',
+  },
+  {
+    to: '/scoring-grid',
+    icon: Grid3X3,
+    color: 'field',
+    title: 'League Scoring Grid',
+    description: 'Every team's weekly stats side-by-side. See how you stack up in each category against the whole league.',
   },
   {
     to: '/league-power',
