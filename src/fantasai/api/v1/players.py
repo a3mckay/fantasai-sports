@@ -83,3 +83,33 @@ def get_player(player_id: int, db: Session = Depends(get_db)) -> Player:
     if not player:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
     return player
+
+
+@router.patch("/{player_id}/admin", tags=["admin"])
+def admin_patch_player(
+    player_id: int,
+    mlbam_id: Optional[int] = None,
+    clear_prospect: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Admin: patch a player's mlbam_id and/or remove a stale ProspectProfile."""
+    from fantasai.models.prospect import ProspectProfile
+
+    player = db.get(Player, player_id)
+    if not player:
+        raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
+    changes = []
+    if mlbam_id is not None:
+        old = player.mlbam_id
+        player.mlbam_id = mlbam_id
+        changes.append(f"mlbam_id {old} → {mlbam_id}")
+
+    if clear_prospect:
+        prospect = db.get(ProspectProfile, player_id)
+        if prospect:
+            db.delete(prospect)
+            changes.append("ProspectProfile removed")
+
+    db.commit()
+    return {"player_id": player_id, "changes": changes}
