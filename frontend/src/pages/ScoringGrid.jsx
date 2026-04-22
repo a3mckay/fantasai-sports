@@ -198,8 +198,8 @@ export default function ScoringGrid() {
           </div>
         ) : data && categories.length > 0 ? (
           <>
-            <div className="rounded-lg border border-navy-700 shadow-lg overflow-hidden">
-              <table className="w-full text-sm border-collapse">
+            <div className="rounded-lg border border-navy-700 shadow-lg overflow-x-auto">
+              <table className="w-full text-sm border-collapse min-w-max">
                 <thead>
                   <tr className="bg-navy-800 border-b border-navy-700">
                     <th
