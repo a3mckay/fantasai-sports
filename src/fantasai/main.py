@@ -170,6 +170,49 @@ def _weekly_lookback_pass() -> None:
         db.close()
 
 
+def _daily_matchup_refresh() -> None:
+    """Refresh matchup analysis for all leagues (runs 3x/day so projections stay current).
+
+    Calls analyze_league_matchups for every unique league in YahooConnection.
+    analyze_league_matchups fetches the live Yahoo scoreboard to get the correct
+    current week, so this also handles the week transition automatically.
+    """
+    from fantasai.config import settings
+    from fantasai.database import SessionLocal
+    from fantasai.models.league import League
+    from fantasai.models.user import YahooConnection
+    from fantasai.services.matchup_service import analyze_league_matchups
+    from fantasai.services.yahoo_sync import get_valid_access_token
+
+    db = SessionLocal()
+    try:
+        conns = db.query(YahooConnection).filter(YahooConnection.league_key.isnot(None)).all()
+        seen: set[str] = set()
+        for conn in conns:
+            league_key = conn.league_key
+            if not league_key or league_key in seen:
+                continue
+            seen.add(league_key)
+            try:
+                league = db.query(League).filter(League.league_id == league_key).first()
+                if not league:
+                    continue
+                access_token = get_valid_access_token(conn, db)
+                analyze_league_matchups(
+                    db=db,
+                    league=league,
+                    access_token=access_token,
+                    anthropic_api_key=settings.anthropic_api_key,
+                )
+                _log.info("Matchup analysis refreshed for league %s", league_key)
+            except Exception:
+                _log.warning("Matchup refresh failed for league %s", league_key, exc_info=True)
+    except Exception:
+        _log.error("Daily matchup refresh failed", exc_info=True)
+    finally:
+        db.close()
+
+
 def _nightly_scoring_grid_refresh() -> None:
     """Nightly: refresh scoring grid snapshot for the current and previous week for all leagues."""
     from fantasai.database import SessionLocal
@@ -507,8 +550,21 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=600,
     )
 
+    # Matchup analysis 3x/day: 9:45 UTC (4:45am EST), 17:00 UTC (noon EST), 22:00 UTC (5pm EST).
+    # Each run fetches the Yahoo scoreboard to get the live week number, so week
+    # transitions are picked up automatically without any manual intervention.
+    scheduler.add_job(
+        _daily_matchup_refresh,
+        trigger="cron",
+        hour="9,17,22",
+        minute=45,
+        id="daily-matchup-refresh",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
     scheduler.start()
-    _log.info("APScheduler started: yahoo-sync=2h (immediate), txn-poll=20m (immediate), blurbs=Monday 9:30 UTC, injury-sync=9:15 UTC daily")
+    _log.info("APScheduler started: yahoo-sync=2h, txn-poll=20m, matchup-refresh=3x/day, blurbs=Monday 9:30 UTC, injury-sync=9:15 UTC daily")
 
     yield
 

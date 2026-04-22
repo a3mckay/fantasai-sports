@@ -191,6 +191,7 @@ def _run_refresh(league_id: str) -> None:
 
 @router.get("", response_model=list[MatchupAnalysisRead])
 def list_matchups(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[MatchupAnalysisRead]:
@@ -222,6 +223,22 @@ def list_matchups(
         .order_by(MatchupAnalysis.id)
         .all()
     )
+
+    # Auto-refresh in the background if analysis is stale (> 20 hours old).
+    # This catches gaps between scheduled runs and week transitions where the
+    # scheduler hasn't fired yet.
+    if rows:
+        from datetime import datetime, timezone, timedelta
+        most_recent_generated = max(
+            (r.generated_at for r in rows if r.generated_at is not None),
+            default=None,
+        )
+        stale = most_recent_generated is None or (
+            datetime.now(timezone.utc) - most_recent_generated.replace(tzinfo=timezone.utc)
+            > timedelta(hours=20)
+        )
+        if stale:
+            background_tasks.add_task(_run_refresh, league_id)
 
     return [_to_read(row, user_team_key=user_team_key) for row in rows]
 

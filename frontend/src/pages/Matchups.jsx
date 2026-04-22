@@ -492,7 +492,7 @@ export default function Matchups() {
           <h1 className="text-2xl font-bold text-white">Matchup Analyzer</h1>
           {currentWeek !== null && (
             <p className="text-sm text-slate-400 mt-0.5">
-              Week {currentWeek} — projected full-week category totals · updated daily
+              Week {currentWeek} — projected full-week category totals · updated 3× daily
             </p>
           )}
         </div>
