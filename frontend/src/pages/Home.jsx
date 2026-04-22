@@ -16,7 +16,7 @@ const FEATURES = [
     icon: Grid3X3,
     color: 'field',
     title: 'League Scoring Grid',
-    description: 'Every team's weekly stats side-by-side. See how you stack up in each category against the whole league.',
+    description: "Every team's weekly stats side-by-side. See how you stack up in each category against the whole league.",
   },
   {
     to: '/league-power',
