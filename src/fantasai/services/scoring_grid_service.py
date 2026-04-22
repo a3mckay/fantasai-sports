@@ -23,15 +23,43 @@ logger = logging.getLogger(__name__)
 _SEASON = 2026
 _YAHOO_BASE = "https://fantasysports.yahooapis.com/fantasy/v2"
 
+# Corrected fallback mapping (used when league settings fetch fails).
+# Verified against Yahoo's individual /team/{key}/stats endpoint response.
+_FALLBACK_STAT_ID_MAP: dict[str, str] = {
+    "3":  "AVG",
+    "4":  "OBP",
+    "5":  "SLG",
+    "6":  "BB",
+    "7":  "R",
+    "8":  "H",
+    "12": "HR",
+    "13": "RBI",
+    "16": "SB",
+    "17": "CS",
+    "23": "IP",
+    "24": "W",
+    "25": "L",
+    "26": "GS",
+    "28": "SHO",
+    "29": "SV",
+    "31": "K",
+    "32": "ERA",
+    "33": "WHIP",
+    "37": "K/9",
+    "42": "HLD",
+    "55": "H",
+    "60": "OPS",
+}
+
 
 def _fetch_league_stat_id_map(
     access_token: str,
     league_key: str,
 ) -> dict[str, str]:
-    """Fetch the stat_id → display_name mapping from the league's own settings.
+    """Fetch stat_id → display_name from the league's settings.
 
-    Returns {stat_id_str: display_name}, e.g. {"7": "R", "12": "HR", ...}.
-    Falls back to empty dict on failure; caller should handle gracefully.
+    Returns a populated map on success, empty dict on any failure.
+    The caller should fall back to _FALLBACK_STAT_ID_MAP when empty.
     """
     url = f"{_YAHOO_BASE}/league/{league_key}/settings"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -50,24 +78,31 @@ def _fetch_league_stat_id_map(
         logger.warning("League settings fetch failed for %s: %s", league_key, exc)
         return {}
 
+    # Yahoo's settings JSON shape varies — try multiple paths
+    stat_list: list = []
     try:
         league_data = data["fantasy_content"]["league"]
-        settings_list = league_data[1]["settings"]
-        # settings_list may be a list or dict depending on Yahoo's response shape
-        if isinstance(settings_list, list):
-            settings = settings_list[0]
-        else:
-            settings = settings_list
-        stat_cats = settings["stat_categories"]["stats"]
-        # stat_cats may be {"stat": [...]} or a list directly
-        if isinstance(stat_cats, dict):
-            stat_list = stat_cats.get("stat", [])
-        else:
-            stat_list = stat_cats
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.warning(
-            "Could not parse league stat_categories for %s: %s", league_key, exc
+        settings_block = league_data[1]  # second element has settings content
+
+        # Path A: settings_block["settings"][0]["stat_categories"]["stats"]["stat"]
+        # Path B: settings_block["settings"]["stat_categories"]["stats"]["stat"]
+        raw_settings = settings_block.get("settings")
+        if isinstance(raw_settings, list) and raw_settings:
+            raw_settings = raw_settings[0]
+
+        if isinstance(raw_settings, dict):
+            stat_cats = raw_settings.get("stat_categories", {}).get("stats", {})
+            if isinstance(stat_cats, dict):
+                stat_list = stat_cats.get("stat", [])
+            elif isinstance(stat_cats, list):
+                stat_list = stat_cats
+
+        logger.info(
+            "League settings raw keys for %s: settings type=%s stat_list len=%d",
+            league_key, type(raw_settings).__name__, len(stat_list),
         )
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.warning("Could not parse league stat_categories for %s: %s", league_key, exc)
         return {}
 
     stat_map: dict[str, str] = {}
@@ -75,14 +110,11 @@ def _fetch_league_stat_id_map(
         if not isinstance(stat, dict):
             continue
         stat_id = str(stat.get("stat_id", ""))
-        display_name = stat.get("display_name", "") or stat.get("name", "")
+        display_name = (stat.get("display_name") or stat.get("name") or "").strip()
         if stat_id and display_name:
             stat_map[stat_id] = display_name
 
-    logger.info(
-        "League stat map for %s: %d stats — %s",
-        league_key, len(stat_map), stat_map,
-    )
+    logger.info("League stat map for %s: %d stats — %s", league_key, len(stat_map), stat_map)
     return stat_map
 
 
@@ -195,8 +227,10 @@ def fetch_and_store_scoring_grid(
     # Phase 0: get the league's own stat_id → category name mapping
     stat_id_map = _fetch_league_stat_id_map(access_token, league_key)
     if not stat_id_map:
-        logger.warning("Could not get stat_id map for league %s; aborting", league_key)
-        return None
+        logger.warning(
+            "League settings fetch failed for %s; falling back to hardcoded map", league_key
+        )
+        stat_id_map = _FALLBACK_STAT_ID_MAP
 
     # Phase 1: get team metadata + week number from scoreboard
     week_num, teams_meta = _fetch_team_keys_from_scoreboard(
