@@ -112,6 +112,33 @@ def _run_refresh(league_key: str, week: Optional[int]) -> None:
         logger.warning("Background scoring grid refresh failed for %s", league_key, exc_info=True)
 
 
+@router.get("/debug-scoreboard")
+def debug_scoreboard(
+    week: Optional[int] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Debug: return parsed scoreboard data and pivoted team stats."""
+    from fantasai.services.matchup_service import fetch_league_scoreboard
+    conn, access_token = _get_conn_and_token(user, db)
+    scoreboard = fetch_league_scoreboard(access_token, conn.league_key, week)
+    # Build per-team stats pivot (same logic as _fetch_via_scoreboard)
+    team_stats: dict = {}
+    for m in scoreboard:
+        t1, t2 = m.get("team1_key", ""), m.get("team2_key", "")
+        if t1 not in team_stats:
+            team_stats[t1] = {}
+        if t2 not in team_stats:
+            team_stats[t2] = {}
+        for cat, vals in (m.get("live_stats") or {}).items():
+            if isinstance(vals, dict):
+                if "team1" in vals:
+                    team_stats[t1][cat] = vals["team1"]
+                if "team2" in vals:
+                    team_stats[t2][cat] = vals["team2"]
+    return {"scoreboard": scoreboard, "team_stats_pivot": team_stats}
+
+
 @router.get("/debug-raw")
 def debug_raw_yahoo_response(
     week: Optional[int] = None,
@@ -121,14 +148,14 @@ def debug_raw_yahoo_response(
     """Debug: return raw Yahoo JSON for the teams;out=stats endpoint."""
     import httpx as _httpx
     conn, access_token = _get_conn_and_token(user, db)
-    path = f"league/{conn.league_key}/teams;out=stats;type=week"
+    url = f"https://fantasysports.yahooapis.com/fantasy/v2/league/{conn.league_key}/teams;out=stats"
+    params: dict = {"format": "json", "type": "week"}
     if week is not None:
-        path += f";week={week}"
-    url = f"https://fantasysports.yahooapis.com/fantasy/v2/{path}"
+        params["week"] = str(week)
     headers = {"Authorization": f"Bearer {access_token}"}
     try:
         with _httpx.Client(timeout=20.0) as client:
-            resp = client.get(url, params={"format": "json"}, headers=headers)
+            resp = client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             return resp.json()
     except Exception as exc:

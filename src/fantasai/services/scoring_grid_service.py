@@ -78,6 +78,15 @@ def _fetch_via_scoreboard(
                 if "team2" in vals:
                     team_stats[t2_key][cat] = vals["team2"]
 
+    # ERA and WHIP are mathematically undefined when IP=0.
+    # Yahoo returns ERA=0 (not "-") in that case, which is misleading.
+    # Strip them if there's no IP on record for that team.
+    for key, stats in team_stats.items():
+        ip = stats.get("IP")
+        if ip is None or ip == 0:
+            stats.pop("ERA", None)
+            stats.pop("WHIP", None)
+
     logger.info(
         "Scoreboard pivot: league=%s week=%s teams=%d",
         league_key, week_num, len(teams_meta),
