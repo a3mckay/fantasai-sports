@@ -52,6 +52,42 @@ _FALLBACK_STAT_ID_MAP: dict[str, str] = {
 }
 
 
+def _fetch_league_stat_id_map_xml(
+    access_token: str,
+    league_key: str,
+) -> dict[str, str]:
+    """Try to get stat_id map via the XML API (_yahoo_get), which is more reliable."""
+    try:
+        from fantasai.services.yahoo_oauth import _yahoo_get
+
+        root = _yahoo_get(access_token, f"league/{league_key}/settings")
+        stat_map: dict[str, str] = {}
+
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag != "stat":
+                continue
+            stat_id = None
+            display_name = None
+            for child in elem:
+                ctag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if ctag == "stat_id" and child.text:
+                    stat_id = child.text.strip()
+                elif ctag == "display_name" and child.text:
+                    display_name = child.text.strip()
+            if stat_id and display_name:
+                stat_map[stat_id] = display_name
+
+        if stat_map:
+            logger.info(
+                "XML league stat map for %s: %d stats — %s", league_key, len(stat_map), stat_map
+            )
+        return stat_map
+    except Exception as exc:
+        logger.warning("XML league settings fetch failed for %s: %s", league_key, exc)
+        return {}
+
+
 def _fetch_league_stat_id_map(
     access_token: str,
     league_key: str,
@@ -114,8 +150,12 @@ def _fetch_league_stat_id_map(
         if stat_id and display_name:
             stat_map[stat_id] = display_name
 
-    logger.info("League stat map for %s: %d stats — %s", league_key, len(stat_map), stat_map)
-    return stat_map
+    if stat_map:
+        logger.info("JSON league stat map for %s: %d stats — %s", league_key, len(stat_map), stat_map)
+        return stat_map
+
+    # JSON path failed — try XML
+    return _fetch_league_stat_id_map_xml(access_token, league_key)
 
 
 def _fetch_team_keys_from_scoreboard(
@@ -206,12 +246,6 @@ def _fetch_one_team_weekly_stats(
                     stats[cat] = float(value_str)
                 except (TypeError, ValueError):
                     pass
-
-    # ERA/WHIP are undefined when no innings pitched
-    ip = stats.get("IP")
-    if ip is None or ip == 0:
-        stats.pop("ERA", None)
-        stats.pop("WHIP", None)
 
     return stats
 
