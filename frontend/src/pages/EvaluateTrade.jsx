@@ -676,57 +676,69 @@ function BuildTradeResults({ data, rankingsMap }) {
 // ── BuildTrade ────────────────────────────────────────────────────────────────
 
 function BuildTrade({ myTeam, league, rankingsMap }) {
-  const [targetPlayers, setTargetPlayers] = useState([])
-  const [targetSearch, setTargetSearch] = useState('')
-  const [searchResults, setSearchResults] = useState([])
-  const [searching, setSearching] = useState(false)
+  // Step 1: which team to trade with
   const [theirTeam, setTheirTeam] = useState(null)
+  // Step 2: which player(s) from their roster
+  const [targetIds, setTargetIds] = useState(new Set())
+  // Settings
   const [context, setContext] = useState('')
   const [valueTolerance, setValueTolerance] = useState(0)
+  // Results
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  // Fallback: manual player search when no league
+  const [manualTargets, setManualTargets] = useState([])
+  const [manualSearch, setManualSearch] = useState('')
+  const [manualResults, setManualResults] = useState([])
+  const [manualSearching, setManualSearching] = useState(false)
 
-  // Debounced player search
   useEffect(() => {
-    if (targetSearch.length < 2) { setSearchResults([]); return }
+    if (manualSearch.length < 2) { setManualResults([]); return }
     const t = setTimeout(async () => {
-      setSearching(true)
+      setManualSearching(true)
       try {
-        const data = await searchPlayers(targetSearch)
-        const existing = new Set(targetPlayers.map(p => p.playerId))
-        setSearchResults((data.players || []).filter(p => !existing.has(p.player_id)))
+        const data = await searchPlayers(manualSearch)
+        const existing = new Set(manualTargets.map(p => p.playerId))
+        setManualResults((data.players || []).filter(p => !existing.has(p.player_id)).slice(0, 10))
       } catch { /* ignore */ }
-      setSearching(false)
-    }, 250)
+      setManualSearching(false)
+    }, 300)
     return () => clearTimeout(t)
-  }, [targetSearch, targetPlayers])
+  }, [manualSearch, manualTargets])
 
-  function addTarget(player) {
-    setTargetPlayers(prev => [
-      ...prev,
-      { playerId: player.player_id, name: player.name, positions: player.positions || [] },
-    ])
-    setTargetSearch('')
-    setSearchResults([])
+  function selectTeam(t) {
+    setTheirTeam(t)
+    setTargetIds(new Set())
+    setResult(null)
   }
 
-  function removeTarget(id) {
-    setTargetPlayers(prev => prev.filter(p => p.playerId !== id))
+  function toggleTarget(id) {
+    setTargetIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
   }
+
+  const allTargetIds = theirTeam
+    ? [...targetIds]
+    : manualTargets.map(p => p.playerId)
+
+  const hasTargets = allTargetIds.length > 0
 
   async function handleBuild() {
-    if (!targetPlayers.length) return
+    if (!hasTargets) return
     setLoading(true); setError(null); setResult(null)
     try {
       const body = {
-        target_player_ids: targetPlayers.map(p => p.playerId),
+        target_player_ids: allTargetIds,
         value_tolerance: valueTolerance,
         context: context || undefined,
       }
-      if (myTeam?.team_id)   body.my_team_id   = myTeam.team_id
+      if (myTeam?.team_id)    body.my_team_id    = myTeam.team_id
       if (theirTeam?.team_id) body.their_team_id = theirTeam.team_id
-      if (league?.league_id) body.league_id    = league.league_id
+      if (league?.league_id)  body.league_id     = league.league_id
       const data = await buildTrade(body)
       setResult(data)
     } catch (e) {
@@ -735,150 +747,224 @@ function BuildTrade({ myTeam, league, rankingsMap }) {
     setLoading(false)
   }
 
-  const targetValue = targetPlayers.reduce((s, p) => s + (rankingsMap[p.playerId]?.score || 0), 0)
+  // Roster sorted by score descending
+  const sortedRoster = useMemo(() => {
+    if (!theirTeam?.roster) return []
+    return [...theirTeam.roster].sort(
+      (a, b) => (rankingsMap[b.player_id]?.score || 0) - (rankingsMap[a.player_id]?.score || 0)
+    )
+  }, [theirTeam, rankingsMap])
+
+  const targetValue = allTargetIds.reduce((s, id) => s + (rankingsMap[id]?.score || 0), 0)
   const toleranceLabel =
-    valueTolerance < -0.3 ? 'Showing trades where you come out ahead or close to even.' :
+    valueTolerance < -0.3 ? 'Only showing trades where you come out ahead or close to even.' :
     valueTolerance >  0.3 ? 'Showing trades where you may overpay to land this player.' :
-    'Showing trades close to fair value.'
+                            'Showing trades close to fair value.'
 
   return (
     <div className="space-y-6 mt-2">
-      {/* ── Target player selector ── */}
-      <div>
-        <div className="section-label mb-2">I want to receive</div>
-        <div className="space-y-2">
-          {targetPlayers.map(p => {
-            const rd = rankingsMap[p.playerId]
-            return (
-              <div key={p.playerId} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-field-900/40 border border-field-700/60">
-                <span className="flex-1 text-sm text-white font-medium">{p.name}</span>
-                {p.positions?.length > 0 && (
-                  <span className="text-xs text-field-400">{p.positions.join('/')}</span>
-                )}
-                {rd?.score != null && (
-                  <span className="text-xs font-mono text-slate-400">{rd.score.toFixed(2)}</span>
-                )}
-                <button type="button" onClick={() => removeTarget(p.playerId)} className="text-slate-600 hover:text-stitch-400 transition-colors">
-                  <X size={14} />
-                </button>
-              </div>
-            )
-          })}
 
-          <div className="relative">
-            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-navy-800 border border-navy-600 focus-within:border-field-600 transition-colors">
-              <Search size={14} className="text-slate-500 shrink-0" />
-              <input
-                className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 outline-none"
-                placeholder="Search for a player to receive…"
-                value={targetSearch}
-                onChange={e => setTargetSearch(e.target.value)}
-              />
-              {searching && <div className="w-3 h-3 border border-field-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+      {/* ── Step 1: Pick a team ── */}
+      <div>
+        <div className="section-label mb-2">Trade with</div>
+
+        {theirTeam ? (
+          <>
+            {/* Team header + change */}
+            <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-navy-800 border border-navy-600 mb-3">
+              <span className="flex-1 text-sm text-white font-medium">{theirTeam.team_name}</span>
+              {theirTeam.manager_name && (
+                <span className="text-xs text-slate-500">{theirTeam.manager_name}</span>
+              )}
+              <button
+                type="button"
+                onClick={() => selectTeam(null)}
+                className="text-xs text-slate-500 hover:text-stitch-400 flex items-center gap-1 transition-colors"
+              >
+                <X size={11} /> Change
+              </button>
             </div>
-            {searchResults.length > 0 && (
-              <div className="absolute top-full left-0 right-0 z-20 bg-navy-900 border border-navy-600 rounded-lg mt-1 shadow-xl max-h-48 overflow-y-auto">
-                {searchResults.map(p => (
-                  <button
-                    key={p.player_id}
-                    type="button"
-                    onClick={() => addTarget(p)}
-                    className="w-full flex items-center gap-3 px-3 py-2 hover:bg-navy-800 text-left transition-colors"
-                  >
-                    <span className="flex-1 text-sm text-white">{p.name}</span>
-                    <span className="text-xs text-field-400">{(p.positions || []).join('/')}</span>
-                    {rankingsMap[p.player_id]?.score != null && (
-                      <span className="text-xs font-mono text-slate-500">{rankingsMap[p.player_id].score.toFixed(2)}</span>
-                    )}
-                  </button>
-                ))}
+
+            {/* ── Step 2: Pick player(s) from their roster ── */}
+            <div className="section-label mb-2">
+              Select player(s) I want
+              {targetIds.size > 0 && (
+                <span className="ml-2 text-field-400 font-mono normal-case font-normal">
+                  · value {targetValue.toFixed(2)}
+                </span>
+              )}
+            </div>
+
+            {/* Selected chips */}
+            {targetIds.size > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {[...targetIds].map(id => {
+                  const p = theirTeam.roster?.find(r => r.player_id === id)
+                  const rd = rankingsMap[id]
+                  return (
+                    <span key={id} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-field-900/60 border border-field-700 text-field-300">
+                      {p?.name || rd?.name || `#${id}`}
+                      <button type="button" onClick={() => toggleTarget(id)} className="hover:text-white transition-colors">
+                        <X size={10} />
+                      </button>
+                    </span>
+                  )
+                })}
               </div>
             )}
-          </div>
-        </div>
-        {targetValue > 0 && (
-          <p className="text-xs text-slate-500 mt-1.5">
-            Target value: <span className="font-mono text-field-400">{targetValue.toFixed(2)}</span>
-          </p>
-        )}
-      </div>
 
-      {/* ── Other team picker ── */}
-      <div>
-        <div className="section-label mb-1">From which team?
-          <span className="font-normal normal-case text-slate-600 ml-1">(optional — improves roster-fit analysis)</span>
-        </div>
-        {theirTeam ? (
-          <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-navy-800 border border-navy-600">
-            <span className="flex-1 text-sm text-white">{theirTeam.team_name}</span>
-            <button type="button" onClick={() => setTheirTeam(null)} className="text-xs text-slate-500 hover:text-stitch-400 flex items-center gap-1 transition-colors">
-              <X size={11} /> Change
-            </button>
-          </div>
+            {/* Roster list */}
+            <div className="max-h-72 overflow-y-auto rounded-xl border border-navy-700 divide-y divide-navy-800">
+              {sortedRoster.map(p => {
+                const rd = rankingsMap[p.player_id]
+                const selected = targetIds.has(p.player_id)
+                return (
+                  <div
+                    key={p.player_id}
+                    className={`flex items-center gap-3 px-3 py-2.5 transition-colors ${selected ? 'bg-field-900/30' : 'hover:bg-navy-800/60'}`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm text-white">{p.name}</span>
+                      {rd?.positions?.length > 0 && (
+                        <span className="text-xs text-slate-500 ml-2">{rd.positions.join('/')}</span>
+                      )}
+                    </div>
+                    {rd?.score != null && (
+                      <span className="text-xs font-mono text-slate-400 shrink-0">{rd.score.toFixed(2)}</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => toggleTarget(p.player_id)}
+                      className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center border transition-colors ${
+                        selected
+                          ? 'bg-field-700 border-field-600 text-white hover:bg-stitch-700 hover:border-stitch-600'
+                          : 'bg-transparent border-navy-600 text-slate-500 hover:border-field-600 hover:text-field-400'
+                      }`}
+                    >
+                      {selected ? <X size={11} /> : <Plus size={11} />}
+                    </button>
+                  </div>
+                )
+              })}
+              {sortedRoster.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-6">No roster data available for this team.</p>
+              )}
+            </div>
+          </>
         ) : league ? (
-          <div className="max-h-36 overflow-y-auto space-y-0.5">
+          /* League connected: show team list */
+          <div className="rounded-xl border border-navy-700 divide-y divide-navy-800 overflow-hidden">
             {(league.teams || []).filter(t => !t.is_mine).map(t => (
               <button
                 key={t.team_id}
                 type="button"
-                onClick={() => setTheirTeam(t)}
-                className="w-full text-left px-3 py-2 rounded-lg text-sm text-slate-300 hover:bg-navy-800 hover:text-white border border-transparent hover:border-navy-600 transition-colors"
+                onClick={() => selectTeam(t)}
+                className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-navy-800 transition-colors"
               >
-                {t.team_name}
-                {t.manager_name && <span className="text-slate-600 ml-2 text-xs">{t.manager_name}</span>}
+                <span className="text-sm text-white">{t.team_name}</span>
+                {t.manager_name && <span className="text-xs text-slate-500">{t.manager_name}</span>}
               </button>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-slate-500">Connect your league to enable roster-fit analysis.</p>
+          /* No league: manual player search */
+          <div className="space-y-2">
+            <p className="text-xs text-slate-500 mb-3">
+              Connect your Yahoo league to browse rosters, or search for the player you want manually:
+            </p>
+            {manualTargets.map(p => (
+              <div key={p.playerId} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-field-900/40 border border-field-700/60">
+                <span className="flex-1 text-sm text-white">{p.name}</span>
+                {p.positions?.length > 0 && <span className="text-xs text-field-400">{p.positions.join('/')}</span>}
+                {rankingsMap[p.playerId]?.score != null && (
+                  <span className="text-xs font-mono text-slate-400">{rankingsMap[p.playerId].score.toFixed(2)}</span>
+                )}
+                <button type="button" onClick={() => setManualTargets(prev => prev.filter(x => x.playerId !== p.playerId))} className="text-slate-600 hover:text-stitch-400 transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <div className="relative">
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-navy-800 border border-navy-600 focus-within:border-field-600 transition-colors">
+                <Search size={14} className="text-slate-500 shrink-0" />
+                <input
+                  className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 outline-none"
+                  placeholder="Search for a player to receive…"
+                  value={manualSearch}
+                  onChange={e => setManualSearch(e.target.value)}
+                />
+                {manualSearching && <div className="w-3 h-3 border border-field-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+              </div>
+              {manualResults.length > 0 && (
+                <div className="absolute top-full left-0 right-0 z-20 bg-navy-900 border border-navy-600 rounded-lg mt-1 shadow-xl max-h-48 overflow-y-auto">
+                  {manualResults.map(p => (
+                    <button
+                      key={p.player_id}
+                      type="button"
+                      onClick={() => {
+                        setManualTargets(prev => [...prev, { playerId: p.player_id, name: p.name, positions: p.positions || [] }])
+                        setManualSearch('')
+                        setManualResults([])
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2 hover:bg-navy-800 text-left transition-colors"
+                    >
+                      <span className="flex-1 text-sm text-white">{p.name}</span>
+                      <span className="text-xs text-field-400">{(p.positions || []).join('/')}</span>
+                      {rankingsMap[p.player_id]?.score != null && (
+                        <span className="text-xs font-mono text-slate-500">{rankingsMap[p.player_id].score.toFixed(2)}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
-      {/* ── Context ── */}
-      <div>
-        <div className="section-label mb-2">What does the other manager want?</div>
-        <textarea
-          className="w-full bg-navy-800 border border-navy-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-field-600 outline-none resize-none transition-colors"
-          rows={3}
-          placeholder={`e.g. "He's told me he's looking for arms." or "She needs to fill multiple OF spots."`}
-          value={context}
-          onChange={e => setContext(e.target.value)}
-        />
-      </div>
+      {/* ── Context, slider, build button — shown once a target is chosen ── */}
+      {hasTargets && (
+        <>
+          <div>
+            <div className="section-label mb-2">What does the other manager want?</div>
+            <textarea
+              className="w-full bg-navy-800 border border-navy-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-field-600 outline-none resize-none transition-colors"
+              rows={3}
+              placeholder={`e.g. "He's told me he's looking for arms." or "She needs to fill multiple OF spots."`}
+              value={context}
+              onChange={e => setContext(e.target.value)}
+            />
+          </div>
 
-      {/* ── Value tolerance slider ── */}
-      <div>
-        <div className="section-label mb-2">How much value are you willing to give up?</div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-400 w-8 text-right shrink-0">Less</span>
-          <input
-            type="range"
-            min="-1"
-            max="1"
-            step="0.05"
-            value={valueTolerance}
-            onChange={e => setValueTolerance(parseFloat(e.target.value))}
-            className="flex-1 accent-field-500"
-          />
-          <span className="text-xs text-slate-400 w-8 shrink-0">More</span>
-        </div>
-        <p className="text-xs text-slate-600 text-center mt-1">{toleranceLabel}</p>
-      </div>
+          <div>
+            <div className="section-label mb-2">How much value are you willing to give up?</div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 w-8 text-right shrink-0">Less</span>
+              <input
+                type="range" min="-1" max="1" step="0.05"
+                value={valueTolerance}
+                onChange={e => setValueTolerance(parseFloat(e.target.value))}
+                className="flex-1 accent-field-500"
+              />
+              <span className="text-xs text-slate-400 w-8 shrink-0">More</span>
+            </div>
+            <p className="text-xs text-slate-600 text-center mt-1">{toleranceLabel}</p>
+          </div>
 
-      {/* ── Build button ── */}
-      <button
-        type="button"
-        onClick={handleBuild}
-        disabled={!targetPlayers.length || loading}
-        className="btn-primary w-full py-3 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-      >
-        {loading
-          ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Building trade options…</>
-          : <><Sparkles size={16} /> Build Trade</>}
-      </button>
+          <button
+            type="button"
+            onClick={handleBuild}
+            disabled={loading}
+            className="btn-primary w-full py-3 disabled:opacity-40 flex items-center justify-center gap-2"
+          >
+            {loading
+              ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Building trade options…</>
+              : <><Sparkles size={16} /> Build Trade</>}
+          </button>
+        </>
+      )}
 
       <ErrorBanner message={error} onClose={() => setError(null)} />
-
       {result && <BuildTradeResults data={result} rankingsMap={rankingsMap} />}
     </div>
   )
