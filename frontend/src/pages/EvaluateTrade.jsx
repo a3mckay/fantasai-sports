@@ -755,6 +755,15 @@ function BuildTrade({ myTeam, league, rankingsMap }) {
     )
   }, [theirTeam, rankingsMap])
 
+  // Enrich rankingsMap with roster names so unranked players display correctly
+  const enrichedMap = useMemo(() => {
+    const m = { ...rankingsMap }
+    ;[...(myTeam?.roster || []), ...(theirTeam?.roster || [])].forEach(p => {
+      if (!m[p.player_id]) m[p.player_id] = { name: p.name, score: null, positions: [] }
+    })
+    return m
+  }, [rankingsMap, myTeam, theirTeam])
+
   const targetValue = allTargetIds.reduce((s, id) => s + (rankingsMap[id]?.score || 0), 0)
   const toleranceLabel =
     valueTolerance < -0.3 ? 'Only showing trades where you come out ahead or close to even.' :
@@ -965,7 +974,7 @@ function BuildTrade({ myTeam, league, rankingsMap }) {
       )}
 
       <ErrorBanner message={error} onClose={() => setError(null)} />
-      {result && <BuildTradeResults data={result} rankingsMap={rankingsMap} />}
+      {result && <BuildTradeResults data={result} rankingsMap={enrichedMap} />}
     </div>
   )
 }
