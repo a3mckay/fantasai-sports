@@ -114,6 +114,18 @@ from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
 
 logger = logging.getLogger(__name__)
 
+
+def _fetch_player_ages(player_ids: list[int], db: Session) -> dict[int, int]:
+    """Return player_id → current age for all players that have a birth_year."""
+    from datetime import date as _date
+    current_year = _date.today().year
+    players = db.query(Player).filter(Player.player_id.in_(player_ids)).all()
+    return {
+        p.player_id: current_year - p.birth_year
+        for p in players
+        if p.birth_year is not None
+    }
+
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 # Default scoring categories — must match RANKINGS_DEFAULT_CATEGORIES in
@@ -617,7 +629,7 @@ def evaluate_trade_endpoint(
         team, league = _fetch_team_and_league(body.team_id, db)
         categories = league.scoring_categories or DEFAULT_CATEGORIES
         league_type = league.league_type or "h2h_categories"
-        has_keepers = (league.settings or {}).get("keepers", 0) > 0
+        has_keepers = (league.settings or {}).get("keepers_per_team", 0) > 0
         roster_ids: set[int] = set(team.roster or [])
     else:
         team = None
@@ -680,7 +692,9 @@ def evaluate_trade_endpoint(
         league_type=league_type,
         has_keepers=has_keepers,
         context=body.context,
-        player_ages={},  # Future: populate from Player.birth_date when available
+        player_ages=_fetch_player_ages(
+            body.giving.player_ids + body.receiving.player_ids, db
+        ) if has_keepers else {},
     )
 
     evaluation = evaluate_trade(ctx)
@@ -738,6 +752,8 @@ def _generate_build_trade_fit_notes(
     target_names: list[str],
     ranking_map: dict[int, PlayerRanking],
     context: Optional[str],
+    has_keepers: bool = False,
+    player_ages: Optional[dict[int, int]] = None,
 ) -> list[str]:
     """Generate fit notes for all suggestions in one batched LLM call.
 
@@ -754,8 +770,26 @@ def _generate_build_trade_fit_notes(
             "━━━ BUILD TRADE FIT NOTES ━━━",
             f"The manager wants to receive: {receive_label}",
         ]
+        if has_keepers:
+            ages = player_ages or {}
+            lines.append(
+                "KEEPER LEAGUE: Player age heavily affects value. "
+                "Young players (≤26) carry multi-year upside and are worth significantly more; "
+                "veterans (33+) are win-now pieces with limited future value. "
+                "Factor this into both sides of every fit note."
+            )
         if context:
             lines.append(f"Context from the other manager: {context}")
+        if has_keepers and player_ages:
+            age_strs = []
+            for s in suggestions:
+                for pid in s.give_player_ids + s.receive_player_ids:
+                    age = player_ages.get(pid)
+                    name = ranking_map.get(pid)
+                    if age and name:
+                        age_strs.append(f"{name.name} age {age}")
+            if age_strs:
+                lines.append(f"Player ages: {', '.join(dict.fromkeys(age_strs))}")
         lines.append("")
 
         for i, s in enumerate(suggestions, 1):
@@ -852,12 +886,14 @@ def build_trade_endpoint(
         my_team, league = _fetch_team_and_league(body.my_team_id, db)
         categories = league.scoring_categories or DEFAULT_CATEGORIES
         league_type = league.league_type or "h2h_categories"
+        has_keepers = (league.settings or {}).get("keepers_per_team", 0) > 0
         my_roster_ids: set[int] = set(my_team.roster or [])
     else:
         my_team = None
         league = None
         categories = body.custom_categories or DEFAULT_CATEGORIES
         league_type = body.custom_league_type or "h2h_categories"
+        has_keepers = False
         my_roster_ids = set(body.my_roster_player_ids or [])
 
     if body.custom_categories:
@@ -918,6 +954,10 @@ def build_trade_endpoint(
         r.player_id: r.positions for r in my_rankings
     }
 
+    # Fetch ages for all trade participants (only costs a DB query if keeper league)
+    all_trade_ids = list(my_roster_ids | their_roster_ids | set(body.target_player_ids))
+    player_ages = _fetch_player_ages(all_trade_ids, db) if has_keepers else {}
+
     build_ctx = TradeBuildContext(
         my_rankings=my_rankings,
         their_rankings=their_rankings,
@@ -926,6 +966,8 @@ def build_trade_endpoint(
         value_tolerance=body.value_tolerance,
         scoring_categories=categories,
         league_type=league_type,
+        has_keepers=has_keepers,
+        player_ages=player_ages,
         my_roster_positions=my_roster_positions,
     )
 
@@ -944,11 +986,18 @@ def build_trade_endpoint(
     # Generate LLM fit notes in one batch call
     target_names = [r.name for r in target_rankings]
     fit_notes = _generate_build_trade_fit_notes(
-        suggestions, target_names, ranking_map, body.context
+        suggestions, target_names, ranking_map, body.context,
+        has_keepers=has_keepers, player_ages=player_ages,
     )
 
-    # Compute target value for transparency
-    target_value = _adjusted_side_value([r.score for r in target_rankings])
+    # Compute target value for transparency (keeper-adjusted if applicable)
+    from fantasai.brain.trade_evaluator import _keeper_age_multiplier
+    def _eff(r: PlayerRanking) -> float:
+        s = r.score
+        if has_keepers and player_ages:
+            s *= _keeper_age_multiplier(r.player_id, player_ages)
+        return s
+    target_value = _adjusted_side_value([_eff(r) for r in target_rankings])
 
     return TradeBuildResponse(
         suggestions=[

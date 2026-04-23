@@ -19,6 +19,7 @@ from typing import Optional
 
 from fantasai.brain.trade_evaluator import (
     _adjusted_side_value,
+    _keeper_age_multiplier,
     _pick_value,
 )
 from fantasai.engine.scoring import PlayerRanking
@@ -76,6 +77,9 @@ class TradeBuildContext:
     value_tolerance: float                  # -1.0 (I want more back) → +1.0 (I'll overpay)
     scoring_categories: list[str]
     league_type: str = "h2h_categories"
+    has_keepers: bool = False               # True for keeper/dynasty leagues
+    # player_id → age; used for keeper-league future-value adjustment
+    player_ages: dict[int, int] = field(default_factory=dict)
     # player_id → positions for all my roster players (for positional warnings)
     my_roster_positions: dict[int, list[str]] = field(default_factory=dict)
 
@@ -334,7 +338,14 @@ def build_trades(ctx: TradeBuildContext) -> list[TradeSuggestion]:
     if not ctx.target_rankings:
         return []
 
-    target_scores = [r.score for r in ctx.target_rankings]
+    def _effective_score(r: PlayerRanking) -> float:
+        """Player score with keeper-league age multiplier applied if relevant."""
+        s = r.score
+        if ctx.has_keepers and ctx.player_ages:
+            s *= _keeper_age_multiplier(r.player_id, ctx.player_ages)
+        return s
+
+    target_scores = [_effective_score(r) for r in ctx.target_rankings]
     target_recv_value = _adjusted_side_value(target_scores)
 
     # Slider semantics:
@@ -360,7 +371,7 @@ def build_trades(ctx: TradeBuildContext) -> list[TradeSuggestion]:
 
     for n_players in range(1, n_max + 1):
         for player_combo in combinations(my_available, n_players):
-            player_give_adj = _adjusted_side_value([r.score for r in player_combo])
+            player_give_adj = _adjusted_side_value([_effective_score(r) for r in player_combo])
 
             for my_rounds, their_rounds in _PICK_PAIRS:
                 my_picks = [_pick_round_str(r) for r in my_rounds]
