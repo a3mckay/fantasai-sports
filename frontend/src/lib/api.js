@@ -82,6 +82,7 @@ export const listTeams   = (leagueId) => get(`/api/v1/leagues/${leagueId}/teams`
 // ── Analysis ─────────────────────────────────────────────────────────────────
 export const comparePlayers  = (body) => post('/api/v1/analysis/compare', body)
 export const evaluateTrade   = (body) => post('/api/v1/analysis/trade', body)
+export const buildTrade      = (body) => post('/api/v1/analysis/trade/build', body)
 export const findPlayer      = (body) => post('/api/v1/analysis/find-player', body)
 export const teamEval        = (body) => post('/api/v1/analysis/team-eval', body)
 export const keeperEval      = (body) => post('/api/v1/analysis/keeper-eval', body)

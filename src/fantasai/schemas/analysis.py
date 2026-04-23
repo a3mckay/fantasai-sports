@@ -1,9 +1,10 @@
 """Pydantic schemas for the analysis API endpoints.
 
-Covers three features:
+Covers these features:
   1. Compare Players  — rank 2+ players head-to-head with optional context
   2. Evaluate Trade   — assess a trade proposal with talent-density awareness
   3. Find Me a Player — suggest one available player for a specific roster slot
+  4. Build Trade      — generate fair trade proposals given target player(s)
 """
 from __future__ import annotations
 
@@ -160,6 +161,105 @@ class TradeResponse(BaseModel):
     pros: list[str]
     cons: list[str]
     analysis_blurb: str
+
+
+# ---------------------------------------------------------------------------
+# Feature 2b — Build Trade
+# ---------------------------------------------------------------------------
+
+
+class TradeBuildRequest(BaseModel):
+    """Request body for the trade-builder endpoint."""
+
+    league_id: Optional[str] = Field(
+        default=None,
+        description="League ID for category and roster context.",
+    )
+    my_team_id: Optional[int] = Field(
+        default=None,
+        description="Your team ID. Used to load your roster.",
+    )
+    their_team_id: Optional[int] = Field(
+        default=None,
+        description="Other team's ID. Used for roster-need analysis (optional).",
+    )
+    my_roster_player_ids: Optional[list[int]] = Field(
+        default=None,
+        description="Your full roster when no my_team_id is available.",
+    )
+    their_roster_player_ids: Optional[list[int]] = Field(
+        default=None,
+        description="Other team's roster when no their_team_id is available.",
+    )
+    target_player_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        description="Players you want to receive (FanGraphs IDfg).",
+    )
+    context: Optional[str] = Field(
+        default=None,
+        description='What the other manager is looking for, e.g. "He wants arms".',
+    )
+    value_tolerance: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Slider for value lopsidedness. "
+            "-1.0 = only propose trades where you get fair/more value; "
+            " 0.0 = target fair trades; "
+            "+1.0 = willing to overpay significantly."
+        ),
+    )
+    horizon: str = Field(
+        default="season",
+        pattern="^(week|month|season)$",
+        description="Projection horizon for player values.",
+    )
+    custom_categories: Optional[list[str]] = Field(
+        default=None,
+        description="Custom scoring categories (used when no league_id).",
+    )
+    custom_league_type: Optional[str] = Field(
+        default=None,
+        description="Custom league type: h2h_categories, roto, or points.",
+    )
+
+
+class TradeSuggestionRead(BaseModel):
+    """One proposed trade package returned by the build-trade endpoint."""
+
+    label: str = Field(description='E.g. "Best 2-for-1", "Draft Pick Sweetener".')
+    give_player_ids: list[int]
+    give_picks: list[str] = Field(description="Pick strings on your side (same count as receive_picks).")
+    receive_player_ids: list[int]
+    receive_picks: list[str] = Field(description="Pick strings on their side.")
+    give_value: float
+    receive_value: float
+    value_differential: float = Field(
+        description="receive_value − give_value. Negative = you're overpaying."
+    )
+    fairness_score: float = Field(description="0–1, how close this is to your slider target.")
+    positional_warnings: list[str] = Field(
+        description="E.g. 'Trading X leaves you with no SS coverage.'",
+    )
+    respects_roster_needs: bool = Field(
+        description="False for the Wildcard suggestion that ignores the other team's needs.",
+    )
+    fit_note: str = Field(
+        default="",
+        description="LLM-generated 2-3 sentence explanation of why this works for both teams.",
+    )
+
+
+class TradeBuildResponse(BaseModel):
+    """Response for the build-trade endpoint."""
+
+    suggestions: list[TradeSuggestionRead]
+    target_value: float = Field(description="Density-adjusted value of the target player(s).")
+    candidates_evaluated: int = Field(
+        description="Total candidate packages evaluated before selection.",
+    )
 
 
 # ---------------------------------------------------------------------------

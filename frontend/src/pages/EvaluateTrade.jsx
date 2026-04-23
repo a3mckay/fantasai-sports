@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
-import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, X, ChevronDown, ChevronRight, Search, Plus } from 'lucide-react'
-import { evaluateTrade, searchPlayers, getRankings } from '../lib/api'
+import { ArrowLeftRight, Play, TrendingUp, TrendingDown, Minus, X, ChevronDown, ChevronRight, Search, Plus, Sparkles, AlertTriangle } from 'lucide-react'
+import { evaluateTrade, buildTrade, searchPlayers, getRankings } from '../lib/api'
 import { LoadingState } from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 import ContextInput from '../components/ContextInput'
@@ -492,6 +492,398 @@ function TeamPickerPanel({ league, excludeTeamId, side, onLoadTeam, onAddPlayer,
   )
 }
 
+// ── BuildTradeResults ─────────────────────────────────────────────────────────
+
+const LABEL_COLOR_MAP = {
+  'Pitcher Package':     'bg-blue-900/50 border-blue-700 text-blue-300',
+  'Closer Package':      'bg-blue-900/50 border-blue-700 text-blue-300',
+  'Draft Pick Sweetener':'bg-purple-900/50 border-purple-700 text-purple-300',
+  'Pick-Heavy Deal':     'bg-purple-900/50 border-purple-700 text-purple-300',
+  'Pick-Heavy Package':  'bg-purple-900/50 border-purple-700 text-purple-300',
+  'Wildcard':            'bg-amber-900/50 border-amber-700 text-amber-300',
+}
+
+function SuggestionCard({ s, idx, isExpanded, onToggle, rankingsMap }) {
+  const giveNames = s.give_player_ids.map(id => rankingsMap[id]?.name || `Player #${id}`)
+  const recvNames = s.receive_player_ids.map(id => rankingsMap[id]?.name || `Player #${id}`)
+  const diff = s.value_differential
+  const diffColor = diff > 0.5 ? 'text-field-400' : diff < -0.5 ? 'text-stitch-400' : 'text-slate-300'
+  const labelCls = LABEL_COLOR_MAP[s.label] || 'bg-navy-700 border-navy-600 text-slate-300'
+
+  return (
+    <div className="bg-navy-900 border border-navy-700 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full px-4 py-3 flex items-start gap-3 hover:bg-navy-800/50 transition-colors text-left"
+      >
+        <div className="flex-1 min-w-0 space-y-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${labelCls}`}>
+              {s.label}
+            </span>
+            {!s.respects_roster_needs && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-amber-950/40 border-amber-800/60 text-amber-500">
+                ignores their roster needs
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-sm">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-stitch-400 font-medium mb-0.5">You give</div>
+              <div className="text-white text-xs truncate">
+                {[...giveNames, ...s.give_picks].join(' + ')}
+              </div>
+              <div className="text-xs font-mono text-slate-500 mt-0.5">{s.give_value.toFixed(2)}</div>
+            </div>
+            <ArrowLeftRight size={13} className="text-slate-600 shrink-0" />
+            <div className="flex-1 min-w-0 text-right">
+              <div className="text-xs text-field-400 font-medium mb-0.5">You receive</div>
+              <div className="text-white text-xs truncate">
+                {[...recvNames, ...s.receive_picks].join(' + ')}
+              </div>
+              <div className="text-xs font-mono text-slate-500 mt-0.5">{s.receive_value.toFixed(2)}</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-1.5 bg-navy-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-field-500 rounded-full"
+                style={{ width: `${Math.round(s.fairness_score * 100)}%` }}
+              />
+            </div>
+            <span className={`text-xs font-mono shrink-0 ${diffColor}`}>
+              {diff >= 0 ? '+' : ''}{diff.toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        <div className="shrink-0 text-slate-500 mt-1">
+          {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="px-4 pb-4 border-t border-navy-700/60 pt-3 space-y-3">
+          {s.fit_note && (
+            <p className="text-sm text-slate-300 leading-relaxed">{s.fit_note}</p>
+          )}
+
+          {s.positional_warnings?.length > 0 && (
+            <div className="space-y-1">
+              {s.positional_warnings.map((w, wi) => (
+                <div key={wi} className="flex items-start gap-2 text-xs text-amber-400 bg-amber-950/30 border border-amber-800/40 rounded-lg px-3 py-2">
+                  <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                  <span>{w}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-stitch-400 font-semibold uppercase tracking-wider mb-1.5">You give</div>
+              <div className="space-y-1">
+                {s.give_player_ids.map(id => {
+                  const r = rankingsMap[id]
+                  return (
+                    <div key={id} className="flex items-center justify-between text-xs">
+                      <span className="text-white">{r?.name || `#${id}`}</span>
+                      <span className="font-mono text-slate-400">{r?.score?.toFixed(2) ?? '—'}</span>
+                    </div>
+                  )
+                })}
+                {s.give_picks.map((p, pi) => (
+                  <div key={pi} className="flex items-center justify-between text-xs">
+                    <span className="text-purple-300">{p}</span>
+                    <span className="text-slate-600 text-xs">pick</span>
+                  </div>
+                ))}
+                <div className="border-t border-navy-700 pt-1 flex items-center justify-between text-xs font-semibold">
+                  <span className="text-stitch-400">Total</span>
+                  <span className="font-mono text-stitch-400">{s.give_value.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-field-400 font-semibold uppercase tracking-wider mb-1.5">You receive</div>
+              <div className="space-y-1">
+                {s.receive_player_ids.map(id => {
+                  const r = rankingsMap[id]
+                  return (
+                    <div key={id} className="flex items-center justify-between text-xs">
+                      <span className="text-white">{r?.name || `#${id}`}</span>
+                      <span className="font-mono text-slate-400">{r?.score?.toFixed(2) ?? '—'}</span>
+                    </div>
+                  )
+                })}
+                {s.receive_picks.map((p, pi) => (
+                  <div key={pi} className="flex items-center justify-between text-xs">
+                    <span className="text-purple-300">{p}</span>
+                    <span className="text-slate-600 text-xs">pick</span>
+                  </div>
+                ))}
+                <div className="border-t border-navy-700 pt-1 flex items-center justify-between text-xs font-semibold">
+                  <span className="text-field-400">Total</span>
+                  <span className="font-mono text-field-400">{s.receive_value.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BuildTradeResults({ data, rankingsMap }) {
+  const [expandedIdx, setExpandedIdx] = useState(null)
+  const { suggestions, target_value, candidates_evaluated } = data
+
+  if (!suggestions?.length) {
+    return (
+      <div className="card text-center text-slate-500 text-sm py-8">
+        No packages found in this value range. Try moving the slider toward "More".
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3 mt-2">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-white">Trade Proposals</h3>
+        <span className="text-xs text-slate-600">
+          {candidates_evaluated?.toLocaleString()} packages evaluated
+        </span>
+      </div>
+      {suggestions.map((s, i) => (
+        <SuggestionCard
+          key={i}
+          s={s}
+          idx={i}
+          isExpanded={expandedIdx === i}
+          onToggle={() => setExpandedIdx(expandedIdx === i ? null : i)}
+          rankingsMap={rankingsMap}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ── BuildTrade ────────────────────────────────────────────────────────────────
+
+function BuildTrade({ myTeam, league, rankingsMap }) {
+  const [targetPlayers, setTargetPlayers] = useState([])
+  const [targetSearch, setTargetSearch] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [theirTeam, setTheirTeam] = useState(null)
+  const [context, setContext] = useState('')
+  const [valueTolerance, setValueTolerance] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+
+  // Debounced player search
+  useEffect(() => {
+    if (targetSearch.length < 2) { setSearchResults([]); return }
+    const t = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const data = await searchPlayers(targetSearch)
+        const existing = new Set(targetPlayers.map(p => p.playerId))
+        setSearchResults((data.players || []).filter(p => !existing.has(p.player_id)))
+      } catch { /* ignore */ }
+      setSearching(false)
+    }, 250)
+    return () => clearTimeout(t)
+  }, [targetSearch, targetPlayers])
+
+  function addTarget(player) {
+    setTargetPlayers(prev => [
+      ...prev,
+      { playerId: player.player_id, name: player.name, positions: player.positions || [] },
+    ])
+    setTargetSearch('')
+    setSearchResults([])
+  }
+
+  function removeTarget(id) {
+    setTargetPlayers(prev => prev.filter(p => p.playerId !== id))
+  }
+
+  async function handleBuild() {
+    if (!targetPlayers.length) return
+    setLoading(true); setError(null); setResult(null)
+    try {
+      const body = {
+        target_player_ids: targetPlayers.map(p => p.playerId),
+        value_tolerance: valueTolerance,
+        context: context || undefined,
+      }
+      if (myTeam?.team_id)   body.my_team_id   = myTeam.team_id
+      if (theirTeam?.team_id) body.their_team_id = theirTeam.team_id
+      if (league?.league_id) body.league_id    = league.league_id
+      const data = await buildTrade(body)
+      setResult(data)
+    } catch (e) {
+      setError(e.message)
+    }
+    setLoading(false)
+  }
+
+  const targetValue = targetPlayers.reduce((s, p) => s + (rankingsMap[p.playerId]?.score || 0), 0)
+  const toleranceLabel =
+    valueTolerance < -0.3 ? 'Showing trades where you come out ahead or close to even.' :
+    valueTolerance >  0.3 ? 'Showing trades where you may overpay to land this player.' :
+    'Showing trades close to fair value.'
+
+  return (
+    <div className="space-y-6 mt-2">
+      {/* ── Target player selector ── */}
+      <div>
+        <div className="section-label mb-2">I want to receive</div>
+        <div className="space-y-2">
+          {targetPlayers.map(p => {
+            const rd = rankingsMap[p.playerId]
+            return (
+              <div key={p.playerId} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-field-900/40 border border-field-700/60">
+                <span className="flex-1 text-sm text-white font-medium">{p.name}</span>
+                {p.positions?.length > 0 && (
+                  <span className="text-xs text-field-400">{p.positions.join('/')}</span>
+                )}
+                {rd?.score != null && (
+                  <span className="text-xs font-mono text-slate-400">{rd.score.toFixed(2)}</span>
+                )}
+                <button type="button" onClick={() => removeTarget(p.playerId)} className="text-slate-600 hover:text-stitch-400 transition-colors">
+                  <X size={14} />
+                </button>
+              </div>
+            )
+          })}
+
+          <div className="relative">
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-navy-800 border border-navy-600 focus-within:border-field-600 transition-colors">
+              <Search size={14} className="text-slate-500 shrink-0" />
+              <input
+                className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 outline-none"
+                placeholder="Search for a player to receive…"
+                value={targetSearch}
+                onChange={e => setTargetSearch(e.target.value)}
+              />
+              {searching && <div className="w-3 h-3 border border-field-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+            </div>
+            {searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 z-20 bg-navy-900 border border-navy-600 rounded-lg mt-1 shadow-xl max-h-48 overflow-y-auto">
+                {searchResults.map(p => (
+                  <button
+                    key={p.player_id}
+                    type="button"
+                    onClick={() => addTarget(p)}
+                    className="w-full flex items-center gap-3 px-3 py-2 hover:bg-navy-800 text-left transition-colors"
+                  >
+                    <span className="flex-1 text-sm text-white">{p.name}</span>
+                    <span className="text-xs text-field-400">{(p.positions || []).join('/')}</span>
+                    {rankingsMap[p.player_id]?.score != null && (
+                      <span className="text-xs font-mono text-slate-500">{rankingsMap[p.player_id].score.toFixed(2)}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        {targetValue > 0 && (
+          <p className="text-xs text-slate-500 mt-1.5">
+            Target value: <span className="font-mono text-field-400">{targetValue.toFixed(2)}</span>
+          </p>
+        )}
+      </div>
+
+      {/* ── Other team picker ── */}
+      <div>
+        <div className="section-label mb-1">From which team?
+          <span className="font-normal normal-case text-slate-600 ml-1">(optional — improves roster-fit analysis)</span>
+        </div>
+        {theirTeam ? (
+          <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-navy-800 border border-navy-600">
+            <span className="flex-1 text-sm text-white">{theirTeam.team_name}</span>
+            <button type="button" onClick={() => setTheirTeam(null)} className="text-xs text-slate-500 hover:text-stitch-400 flex items-center gap-1 transition-colors">
+              <X size={11} /> Change
+            </button>
+          </div>
+        ) : league ? (
+          <div className="max-h-36 overflow-y-auto space-y-0.5">
+            {(league.teams || []).filter(t => !t.is_mine).map(t => (
+              <button
+                key={t.team_id}
+                type="button"
+                onClick={() => setTheirTeam(t)}
+                className="w-full text-left px-3 py-2 rounded-lg text-sm text-slate-300 hover:bg-navy-800 hover:text-white border border-transparent hover:border-navy-600 transition-colors"
+              >
+                {t.team_name}
+                {t.manager_name && <span className="text-slate-600 ml-2 text-xs">{t.manager_name}</span>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">Connect your league to enable roster-fit analysis.</p>
+        )}
+      </div>
+
+      {/* ── Context ── */}
+      <div>
+        <div className="section-label mb-2">What does the other manager want?</div>
+        <textarea
+          className="w-full bg-navy-800 border border-navy-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-field-600 outline-none resize-none transition-colors"
+          rows={3}
+          placeholder={`e.g. "He's told me he's looking for arms." or "She needs to fill multiple OF spots."`}
+          value={context}
+          onChange={e => setContext(e.target.value)}
+        />
+      </div>
+
+      {/* ── Value tolerance slider ── */}
+      <div>
+        <div className="section-label mb-2">How much value are you willing to give up?</div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400 w-8 text-right shrink-0">Less</span>
+          <input
+            type="range"
+            min="-1"
+            max="1"
+            step="0.05"
+            value={valueTolerance}
+            onChange={e => setValueTolerance(parseFloat(e.target.value))}
+            className="flex-1 accent-field-500"
+          />
+          <span className="text-xs text-slate-400 w-8 shrink-0">More</span>
+        </div>
+        <p className="text-xs text-slate-600 text-center mt-1">{toleranceLabel}</p>
+      </div>
+
+      {/* ── Build button ── */}
+      <button
+        type="button"
+        onClick={handleBuild}
+        disabled={!targetPlayers.length || loading}
+        className="btn-primary w-full py-3 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+      >
+        {loading
+          ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Building trade options…</>
+          : <><Sparkles size={16} /> Build Trade</>}
+      </button>
+
+      <ErrorBanner message={error} onClose={() => setError(null)} />
+
+      {result && <BuildTradeResults data={result} rankingsMap={rankingsMap} />}
+    </div>
+  )
+}
+
 // ── ReplaceTeamModal ──────────────────────────────────────────────────────────
 
 function ReplaceTeamModal({ currentTeam, newTeam, onConfirm, onCancel }) {
@@ -559,6 +951,7 @@ export default function EvaluateTrade() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  const [activeTab, setActiveTab] = useState('evaluate')
   const [mobileTab, setMobileTab] = useState('team1')
   const touchStartX = useRef(null)
 
@@ -857,12 +1250,49 @@ export default function EvaluateTrade() {
     <div className="space-y-0">
       {/* Page header */}
       <div className="pb-4">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center gap-2 mb-3">
           <ArrowLeftRight size={18} className="text-field-400" />
-          <h1 className="text-2xl font-bold text-white">Evaluate Trade</h1>
+          <h1 className="text-2xl font-bold text-white">Trade</h1>
         </div>
-        <p className="text-slate-500 text-sm">Select players from each team, then evaluate.</p>
+        {/* Tab switcher */}
+        <div className="flex gap-1 p-1 bg-navy-800 rounded-xl border border-navy-700 w-fit">
+          <button
+            type="button"
+            onClick={() => setActiveTab('evaluate')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              activeTab === 'evaluate'
+                ? 'bg-navy-600 text-white shadow'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            Evaluate Trade
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('build')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+              activeTab === 'build'
+                ? 'bg-navy-600 text-white shadow'
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            <Sparkles size={13} />
+            Build Trade
+          </button>
+        </div>
       </div>
+
+      {/* ── Build Trade tab ── */}
+      {activeTab === 'build' && (
+        <BuildTrade
+          myTeam={myTeam}
+          league={league}
+          rankingsMap={rankingsMap}
+        />
+      )}
+
+      {/* ── Evaluate Trade tab ── */}
+      {activeTab === 'evaluate' && <>
 
       {/* Sticky trade summary bar */}
       <TradeSummaryBar
@@ -1105,6 +1535,8 @@ export default function EvaluateTrade() {
           onCancel={() => setReplaceModal(null)}
         />
       )}
+
+      </> /* end Evaluate Trade tab */}
     </div>
   )
 }

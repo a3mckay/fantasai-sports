@@ -54,8 +54,14 @@ from fantasai.brain.team_evaluator import (
 from fantasai.brain.trade_evaluator import (
     TradeContext,
     TradeEvaluation,
+    _adjusted_side_value,
     _parse_pros_cons,
     evaluate_trade,
+)
+from fantasai.brain.trade_builder import (
+    TradeBuildContext,
+    TradeSuggestion as _TradeSuggestion,
+    build_trades,
 )
 from fantasai.config import settings
 from fantasai.engine.projection import ProjectionHorizon
@@ -73,6 +79,9 @@ from fantasai.schemas.analysis import (
     FindPlayerRequest,
     FindPlayerResponse,
     FindPlayerSuggestionRead,
+    TradeBuildRequest,
+    TradeBuildResponse,
+    TradeSuggestionRead,
     TradeRequest,
     TradeResponse,
 )
@@ -716,6 +725,251 @@ def evaluate_trade_endpoint(
         pros=pros or evaluation.pros,
         cons=cons or evaluation.cons,
         analysis_blurb=blurb,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 2b — Build Trade
+# ---------------------------------------------------------------------------
+
+
+def _generate_build_trade_fit_notes(
+    suggestions: list[_TradeSuggestion],
+    target_names: list[str],
+    ranking_map: dict[int, PlayerRanking],
+    context: Optional[str],
+) -> list[str]:
+    """Generate fit notes for all suggestions in one batched LLM call.
+
+    Returns a list of note strings in the same order as suggestions.
+    Falls back to empty strings on failure.
+    """
+    client = _llm_client()
+    if not client or not suggestions:
+        return [""] * len(suggestions)
+
+    try:
+        receive_label = " + ".join(target_names) if target_names else "target player(s)"
+        lines: list[str] = [
+            "━━━ BUILD TRADE FIT NOTES ━━━",
+            f"The manager wants to receive: {receive_label}",
+        ]
+        if context:
+            lines.append(f"Context from the other manager: {context}")
+        lines.append("")
+
+        for i, s in enumerate(suggestions, 1):
+            give_names = [
+                ranking_map[pid].name if pid in ranking_map else f"Player #{pid}"
+                for pid in s.give_player_ids
+            ]
+            recv_names = list(target_names)
+            give_str = " + ".join(give_names + s.give_picks) or "(none)"
+            recv_str = " + ".join(recv_names + s.receive_picks) or "(none)"
+            diff_sign = "+" if s.value_differential >= 0 else ""
+            lines += [
+                f"[SUGGESTION_{i}]",
+                f"Label: {s.label}",
+                f"You give: {give_str}",
+                f"You receive: {recv_str}",
+                f"Value differential: {diff_sign}{s.value_differential:.2f} "
+                f"(positive = you get more value)",
+                f"Respects other team's roster needs: {s.respects_roster_needs}",
+            ]
+            if s.positional_warnings:
+                lines.append(f"Positional note: {'; '.join(s.positional_warnings)}")
+            lines.append("")
+
+        lines += [
+            "━━━ END DATA ━━━",
+            "",
+            "For each suggestion write exactly 2-3 sentences explaining why this trade "
+            "works for BOTH sides — what the offering manager gets (the target player) "
+            "and what makes this package appealing to the other manager. "
+            "Be specific to the players and context above. "
+            "Format exactly as:",
+            "",
+            "[NOTE_1]",
+            "<2-3 sentence fit note>",
+            "",
+            "[NOTE_2]",
+            "<2-3 sentence fit note>",
+            "... (one block per suggestion)",
+        ]
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            system=[
+                {
+                    "type": "text",
+                    "text": _ANALYSIS_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": "\n".join(lines)}],
+        )
+        text_blocks = [b for b in response.content if b.type == "text"]
+        if not text_blocks:
+            return [""] * len(suggestions)
+
+        raw = text_blocks[0].text.strip()
+
+        import re
+        notes: list[str] = []
+        for i in range(1, len(suggestions) + 1):
+            pattern = rf"\[NOTE_{i}\](.*?)(?:\[NOTE_{i+1}\]|\Z)"
+            m = re.search(pattern, raw, re.DOTALL | re.IGNORECASE)
+            notes.append(m.group(1).strip() if m else "")
+        return notes
+
+    except Exception as exc:
+        logger.warning("Build trade fit notes failed: %s", exc)
+        return [""] * len(suggestions)
+
+
+@router.post(
+    "/trade/build",
+    response_model=TradeBuildResponse,
+    summary="Generate fair trade proposals for a target player",
+)
+def build_trade_endpoint(
+    body: TradeBuildRequest,
+    db: Session = Depends(get_db),
+    _limit: None = Depends(check_rate_limit("trade")),
+) -> TradeBuildResponse:
+    """Generate 3-5 trade packages from your roster that are fair value for
+    the target player(s).
+
+    Uses the same talent-density-adjusted scoring as Evaluate Trade. A
+    value_tolerance slider (-1.0 to +1.0) controls whether proposals lean
+    toward fair-or-better or allow overpaying. Draft picks (rounds 1-13 only)
+    are included in some packages to bridge value gaps, always in equal counts
+    on each side.
+    """
+    # Resolve categories and league context
+    if body.my_team_id:
+        my_team, league = _fetch_team_and_league(body.my_team_id, db)
+        categories = league.scoring_categories or DEFAULT_CATEGORIES
+        league_type = league.league_type or "h2h_categories"
+        my_roster_ids: set[int] = set(my_team.roster or [])
+    else:
+        my_team = None
+        league = None
+        categories = body.custom_categories or DEFAULT_CATEGORIES
+        league_type = body.custom_league_type or "h2h_categories"
+        my_roster_ids = set(body.my_roster_player_ids or [])
+
+    if body.custom_categories:
+        categories = body.custom_categories
+    if body.custom_league_type:
+        league_type = body.custom_league_type
+
+    trade_horizon = ProjectionHorizon(body.horizon)
+    lookback, predictive = _compute_rankings(db, categories, horizon=trade_horizon)
+    if not lookback:
+        raise HTTPException(status_code=404, detail="No player stats available.")
+
+    ranking_map = {r.player_id: r for r in predictive} if predictive else {}
+    if not ranking_map:
+        ranking_map = {r.player_id: r for r in lookback}
+
+    def _lookup(pids: list[int]) -> list[PlayerRanking]:
+        found = []
+        for pid in pids:
+            r = ranking_map.get(pid)
+            if r:
+                found.append(r)
+            else:
+                logger.warning("build_trade: player_id %d not in rankings", pid)
+        return found
+
+    # Resolve rosters
+    if not my_roster_ids and my_team is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide my_team_id or my_roster_player_ids.",
+        )
+
+    target_rankings = _lookup(body.target_player_ids)
+    if not target_rankings:
+        raise HTTPException(
+            status_code=404,
+            detail="None of the target players were found in current rankings.",
+        )
+
+    my_rankings = [r for r in ranking_map.values() if r.player_id in my_roster_ids]
+
+    # Their roster for need-fit scoring
+    their_roster_ids: set[int] = set()
+    if body.their_team_id:
+        try:
+            their_team, _ = _fetch_team_and_league(body.their_team_id, db)
+            their_roster_ids = set(their_team.roster or [])
+        except Exception:
+            pass
+    elif body.their_roster_player_ids:
+        their_roster_ids = set(body.their_roster_player_ids)
+
+    their_rankings = [r for r in ranking_map.values() if r.player_id in their_roster_ids]
+
+    # Build roster position map for positional warnings
+    my_roster_positions = {
+        r.player_id: r.positions for r in my_rankings
+    }
+
+    build_ctx = TradeBuildContext(
+        my_rankings=my_rankings,
+        their_rankings=their_rankings,
+        target_rankings=target_rankings,
+        context=body.context,
+        value_tolerance=body.value_tolerance,
+        scoring_categories=categories,
+        league_type=league_type,
+        my_roster_positions=my_roster_positions,
+    )
+
+    suggestions = build_trades(build_ctx)
+
+    # Compute total candidates evaluated (approximate — expose for transparency)
+    from math import comb as _comb
+    n_avail = max(len(my_rankings) - len(target_rankings), 0)
+    n_pick_pairs = 11  # len(_PICK_PAIRS)
+    candidates_approx = sum(
+        _comb(n_avail, k) * n_pick_pairs
+        for k in range(1, 4)
+        if n_avail >= k
+    )
+
+    # Generate LLM fit notes in one batch call
+    target_names = [r.name for r in target_rankings]
+    fit_notes = _generate_build_trade_fit_notes(
+        suggestions, target_names, ranking_map, body.context
+    )
+
+    # Compute target value for transparency
+    target_value = _adjusted_side_value([r.score for r in target_rankings])
+
+    return TradeBuildResponse(
+        suggestions=[
+            TradeSuggestionRead(
+                label=s.label,
+                give_player_ids=s.give_player_ids,
+                give_picks=s.give_picks,
+                receive_player_ids=s.receive_player_ids,
+                receive_picks=s.receive_picks,
+                give_value=s.give_value,
+                receive_value=s.receive_value,
+                value_differential=s.value_differential,
+                fairness_score=s.fairness_score,
+                positional_warnings=s.positional_warnings,
+                respects_roster_needs=s.respects_roster_needs,
+                fit_note=fit_notes[i] if i < len(fit_notes) else "",
+            )
+            for i, s in enumerate(suggestions)
+        ],
+        target_value=round(target_value, 3),
+        candidates_evaluated=candidates_approx,
     )
 
 
