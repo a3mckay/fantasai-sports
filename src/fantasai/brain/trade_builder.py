@@ -346,7 +346,11 @@ def build_trades(ctx: TradeBuildContext) -> list[TradeSuggestion]:
 
     signals = _parse_context_signals(ctx.context)
     target_ids = {r.player_id for r in ctx.target_rankings}
-    my_available = [r for r in ctx.my_rankings if r.player_id not in target_ids]
+    # Only offer players with positive scores. Non-positive scores are below
+    # replacement level — adding them to a package decreases density-adjusted
+    # value (total drops while max*0.4 stays constant), producing the
+    # counterintuitive result that giving more players looks cheaper.
+    my_available = [r for r in ctx.my_rankings if r.player_id not in target_ids and r.score > 0]
 
     if not my_available:
         return []
