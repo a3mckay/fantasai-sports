@@ -518,19 +518,28 @@ def _draw_trade_side_card(img, draw, txn: "Transaction", side_idx: int, db: "Ses
 
 def render_trade_side_cards(txn: "Transaction", db: "Session") -> list[str]:
     """Render one grade card per trade side. Returns list of file paths (may be partial on error)."""
+    # Load identity attrs before any DB operations (avoids autoflush on lazy-load
+    # if the session is in a dirty/failed state at call time).
+    try:
+        txn_id = txn.__dict__.get("id") or txn.id
+        txn_token = (txn.__dict__.get("share_token") or txn.share_token)[:8]
+        participants = txn.__dict__.get("participants") or txn.participants or []
+    except Exception as exc:
+        _log.error("render_trade_side_cards: could not read txn attrs: %s", exc)
+        return []
+
     try:
         from PIL import Image, ImageDraw
         _CARD_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
-        _log.error("render_trade_side_cards: PIL setup failed for txn %s", txn.id, exc_info=True)
+        _log.error("render_trade_side_cards: PIL setup failed for txn %s", txn_id, exc_info=True)
         return []
 
     paths: list[str] = []
-    participants = txn.participants or []
     for side_idx in range(min(2, len(participants))):
         try:
             from PIL import Image, ImageDraw
-            out_path = _CARD_DIR / f"txn_{txn.id}_{txn.share_token[:8]}_side{side_idx}.png"
+            out_path = _CARD_DIR / f"txn_{txn_id}_{txn_token}_side{side_idx}.png"
             img = Image.new("RGB", (_W, _H), _BG)
             draw = ImageDraw.Draw(img)
             _draw_trade_side_card(img, draw, txn, side_idx, db)
@@ -538,7 +547,7 @@ def render_trade_side_cards(txn: "Transaction", db: "Session") -> list[str]:
             paths.append(str(out_path))
         except Exception:
             _log.error(
-                "render_trade_side_cards: failed for txn %s side %d", txn.id, side_idx, exc_info=True
+                "render_trade_side_cards: failed for txn %s side %d", txn_id, side_idx, exc_info=True
             )
     return paths
 
