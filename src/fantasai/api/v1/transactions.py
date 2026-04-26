@@ -259,13 +259,67 @@ def get_transaction(
     return _txn_to_read(txn, pos_map)
 
 
+def _resolve_card_path(txn: Transaction, side: Optional[int], db: Session) -> Optional[str]:
+    """Return the appropriate card image path, regenerating if missing.
+
+    For trade transactions, `side` selects a per-side card (0 or 1).
+    For non-trade or side=None, falls back to txn.card_image_path.
+    """
+    # Per-side trade card
+    if side is not None and txn.transaction_type == "trade":
+        participants = txn.participants or []
+        if side < len(participants):
+            path = participants[side].get("_card_image_path")
+            if path and os.path.exists(path):
+                return path
+            # Regenerate both side cards
+            try:
+                from fantasai.brain.grade_card import render_trade_side_cards
+                side_paths = render_trade_side_cards(txn, db)
+                for i, p in enumerate(side_paths):
+                    if i < len(participants):
+                        participants[i]["_card_image_path"] = p
+                txn.participants = participants
+                if side_paths:
+                    txn.card_image_path = side_paths[0]
+                db.commit()
+                return side_paths[side] if side < len(side_paths) else None
+            except Exception:
+                return None
+
+    # Default: txn-level card
+    if txn.card_image_path and os.path.exists(txn.card_image_path):
+        return txn.card_image_path
+    try:
+        from fantasai.brain.grade_card import render_grade_card, render_trade_side_cards
+        if txn.transaction_type == "trade":
+            side_paths = render_trade_side_cards(txn, db)
+            participants = txn.participants or []
+            for i, p in enumerate(side_paths):
+                if i < len(participants):
+                    participants[i]["_card_image_path"] = p
+            txn.participants = participants
+            txn.card_image_path = side_paths[0] if side_paths else None
+        else:
+            card_path = render_grade_card(txn, db)
+            txn.card_image_path = card_path
+        db.commit()
+    except Exception:
+        pass
+    return txn.card_image_path if txn.card_image_path and os.path.exists(txn.card_image_path) else None
+
+
 @router.get("/{transaction_id}/card")
 def get_grade_card_image(
     transaction_id: int,
+    side: Optional[int] = Query(default=None, ge=0, le=1, description="Trade side (0 or 1); omit for default card"),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Serve the grade card PNG for a transaction, regenerating if needed."""
+    """Serve the grade card PNG for a transaction.
+
+    For trade transactions, use ?side=0 or ?side=1 to get each team's individual card.
+    """
     txn = db.get(Transaction, transaction_id)
     if not txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -274,24 +328,14 @@ def get_grade_card_image(
     if not conn or conn.league_key != txn.league_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Regenerate the card if the stored file is missing (e.g. after a deploy
-    # that wiped /tmp) so sharing always works.
-    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
-        try:
-            from fantasai.brain.grade_card import render_grade_card
-            card_path = render_grade_card(txn, db)
-            if card_path:
-                txn.card_image_path = card_path
-                db.commit()
-        except Exception:
-            pass
-
-    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
+    card_path = _resolve_card_path(txn, side, db)
+    if not card_path:
         raise HTTPException(status_code=404, detail="Grade card could not be generated")
 
-    filename = f"grade_{txn.transaction_type}_{txn.grade_letter}_{txn.share_token[:8]}.png"
+    side_suffix = f"_side{side}" if side is not None else ""
+    filename = f"grade_{txn.transaction_type}_{txn.grade_letter}{side_suffix}_{txn.share_token[:8]}.png"
     return FileResponse(
-        txn.card_image_path,
+        card_path,
         media_type="image/png",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -300,11 +344,13 @@ def get_grade_card_image(
 @router.get("/share/{share_token}")
 def get_shared_card(
     share_token: str,
+    side: Optional[int] = Query(default=None, ge=0, le=1, description="Trade side (0 or 1)"),
     db: Session = Depends(get_db),
 ):
     """Public endpoint — serves a grade card PNG by share token (no auth required).
 
     Used by the frontend Share button so recipients don't need to be logged in.
+    For trades, use ?side=0 or ?side=1 to serve each team's card.
     """
     txn = (
         db.query(Transaction)
@@ -314,23 +360,14 @@ def get_shared_card(
     if not txn:
         raise HTTPException(status_code=404, detail="Grade card not found")
 
-    # Regenerate if missing (ephemeral /tmp storage)
-    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
-        try:
-            from fantasai.brain.grade_card import render_grade_card
-            card_path = render_grade_card(txn, db)
-            if card_path:
-                txn.card_image_path = card_path
-                db.commit()
-        except Exception:
-            pass
-
-    if not txn.card_image_path or not os.path.exists(txn.card_image_path):
+    card_path = _resolve_card_path(txn, side, db)
+    if not card_path:
         raise HTTPException(status_code=404, detail="Grade card could not be generated")
 
-    filename = f"grade_{txn.transaction_type}_{txn.grade_letter}_{txn.share_token[:8]}.png"
+    side_suffix = f"_side{side}" if side is not None else ""
+    filename = f"grade_{txn.transaction_type}_{txn.grade_letter}{side_suffix}_{txn.share_token[:8]}.png"
     return FileResponse(
-        txn.card_image_path,
+        card_path,
         media_type="image/png",
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )

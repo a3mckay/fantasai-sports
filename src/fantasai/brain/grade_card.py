@@ -429,6 +429,120 @@ def _draw_trade_card(img, draw, txn: "Transaction", db: "Session"):
     _draw_branding(draw, img)
 
 
+def _draw_trade_side_card(img, draw, txn: "Transaction", side_idx: int, db: "Session"):
+    """Render one side of a trade as a full-width grade card."""
+    participants = txn.participants or []
+    if side_idx >= len(participants):
+        return
+
+    side = participants[side_idx]
+    other = participants[1 - side_idx] if len(participants) > 1 else {}
+
+    side_grade = side.get("_grade_letter", "?")
+    grade_col = _grade_colour(side_grade)
+    rationale = side.get("_grade_rationale") or txn.grade_rationale or ""
+
+    _draw_rounded_rect(draw, (20, 20, _W - 20, _H - 60), 12, _CARD_BG)
+
+    font_title = _load_font(16, bold=True)
+    font_mgr = _load_font(15, bold=True)
+    font_player = _load_font(13)
+    font_label = _load_font(11)
+    font_body = _load_font(13)
+
+    # Header: "TRADE GRADE"
+    draw.text((40, 30), "TRADE GRADE", font=font_title, fill=_MUTED)
+
+    # Grade badge (top-right)
+    badge_r = 32
+    bx = _W - 60
+    by = 60
+    draw.ellipse([bx - badge_r, by - badge_r, bx + badge_r, by + badge_r], fill=grade_col)
+    font_badge = _load_font(28, bold=True) if len(side_grade) == 1 else _load_font(22, bold=True)
+    bbox = draw.textbbox((0, 0), side_grade, font=font_badge)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text((bx - tw // 2, by - th // 2 - 1), side_grade, font=font_badge, fill=_WHITE)
+
+    mgr = side.get("manager_name", f"Team {side_idx + 1}")
+    other_mgr = other.get("manager_name", "other team")
+    y = 56
+
+    # Manager name
+    draw.text((40, y), mgr, font=font_mgr, fill=_WHITE)
+    y += 26
+
+    # Players received
+    draw.text((40, y), "RECEIVES", font=font_label, fill=_GREEN)
+    y += 16
+    for p in side.get("players_added", [])[:4]:
+        pname = p.get("player_name", "?")
+        mlbam = _get_mlbam_id(p.get("player_id"), db)
+        headshot = _fetch_headshot(mlbam, size=28) if mlbam else None
+        if headshot:
+            try:
+                from PIL import Image as _PILImage
+                mask = _make_circle_mask(28)
+                img.paste(headshot, (40, y - 2), mask)
+                draw.text((76, y + 2), f"+ {pname}", font=font_player, fill=_WHITE)
+            except Exception:
+                draw.text((48, y + 2), f"+ {pname}", font=font_player, fill=_WHITE)
+        else:
+            draw.text((48, y + 2), f"+ {pname}", font=font_player, fill=_WHITE)
+        team_pos = _get_team_pos(p.get("player_id"), db)
+        if team_pos:
+            draw.text((48 + draw.textlength(f"+ {pname}", font=font_player) + 8, y + 4),
+                      team_pos, font=_load_font(11), fill=_MUTED)
+        y += 22
+
+    y += 6
+    draw.text((40, y), "GIVES UP", font=font_label, fill=_RED)
+    y += 16
+    for p in side.get("players_dropped", [])[:4]:
+        pname = p.get("player_name", "?")
+        draw.text((48, y + 2), f"- {pname}", font=font_player, fill=_MUTED)
+        team_pos = _get_team_pos(p.get("player_id"), db)
+        if team_pos:
+            draw.text((48 + draw.textlength(f"- {pname}", font=font_player) + 8, y + 4),
+                      team_pos, font=_load_font(11), fill=_MUTED)
+        y += 22
+
+    # Divider before rationale
+    div_y = max(y + 8, _H - 145)
+    draw.line([(30, div_y), (_W - 30, div_y)], fill=_BORDER, width=1)
+
+    if rationale:
+        _draw_wrapped_text(draw, rationale, 40, div_y + 10, _W - 80, font_body, _WHITE, line_height=20)
+
+    _draw_branding(draw, img)
+
+
+def render_trade_side_cards(txn: "Transaction", db: "Session") -> list[str]:
+    """Render one grade card per trade side. Returns list of file paths (may be partial on error)."""
+    try:
+        from PIL import Image, ImageDraw
+        _CARD_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _log.error("render_trade_side_cards: PIL setup failed for txn %s", txn.id, exc_info=True)
+        return []
+
+    paths: list[str] = []
+    participants = txn.participants or []
+    for side_idx in range(min(2, len(participants))):
+        try:
+            from PIL import Image, ImageDraw
+            out_path = _CARD_DIR / f"txn_{txn.id}_{txn.share_token[:8]}_side{side_idx}.png"
+            img = Image.new("RGB", (_W, _H), _BG)
+            draw = ImageDraw.Draw(img)
+            _draw_trade_side_card(img, draw, txn, side_idx, db)
+            img.save(str(out_path), "PNG", optimize=True)
+            paths.append(str(out_path))
+        except Exception:
+            _log.error(
+                "render_trade_side_cards: failed for txn %s side %d", txn.id, side_idx, exc_info=True
+            )
+    return paths
+
+
 def _draw_wrapped_text(draw, text: str, x: int, y: int, max_w: int, font, fill, line_height: int = 20):
     """Simple word-wrap text drawing."""
     words = text.split()

@@ -7,6 +7,7 @@ Grade card images are generated separately by grade_card.py.
 from __future__ import annotations
 
 import logging
+import time as _time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -16,6 +17,11 @@ if TYPE_CHECKING:
     from fantasai.models.league import League
 
 _log = logging.getLogger(__name__)
+
+# Live rank map cache — rebuilt at most every 5 min (matches _compute_rankings TTL).
+# Key: sorted-categories string → (monotonic_ts, {player_id: overall_rank}).
+_LIVE_RANK_CACHE: dict[str, tuple[float, dict[int, int]]] = {}
+_LIVE_RANK_TTL = 300.0
 
 # Grade → numeric score mapping (4.3-scale GPA)
 _GRADE_SCORES: dict[str, float] = {
@@ -43,49 +49,35 @@ def _score_to_letter(score: float) -> str:
     return "F"
 
 
-def _get_player_rank(db: "Session", player_id: Optional[int], league_categories: list[str]) -> Optional[int]:
-    """Look up the rest-of-season predictive rank for a player.
+def _get_live_rank_map(db: "Session", categories: list[str]) -> dict[int, int]:
+    """Return a player_id → ROS rank dict using the same live path as the Rankings page.
 
-    Reads from the Ranking table using the same period key ("2026-season") that
-    the Rankings page writes and displays — so the rank shown in a move grade
-    blurb is guaranteed to match what the user sees on the Rankings page.
-
-    Previously used RankingSnapshot which could be stale and diverge from the
-    live rankings view, causing confusing rank discrepancies.
+    Uses _compute_rankings (cached up to 5 min) + _inject_prospect_rankings so
+    the numbers here always match what the user sees on the Rankings page.
     """
+    cache_key = ",".join(sorted(str(c) for c in (categories or [])))
+    cached = _LIVE_RANK_CACHE.get(cache_key)
+    if cached and (_time.monotonic() - cached[0]) < _LIVE_RANK_TTL:
+        return cached[1]
+    try:
+        from fantasai.api.v1.recommendations import _compute_rankings, _inject_prospect_rankings
+        from fantasai.engine.projection import ProjectionHorizon
+        _, predictive = _compute_rankings(db, categories or [], horizon=ProjectionHorizon.SEASON)
+        enriched = _inject_prospect_rankings(predictive, db)
+        rank_map: dict[int, int] = {r.player_id: r.overall_rank for r in enriched}
+        _LIVE_RANK_CACHE[cache_key] = (_time.monotonic(), rank_map)
+        return rank_map
+    except Exception:
+        _log.debug("_get_live_rank_map: failed", exc_info=True)
+        return {}
+
+
+def _get_player_rank(db: "Session", player_id: Optional[int], league_categories: list[str]) -> Optional[int]:
+    """Return the live ROS predictive rank for a player — matches the Rankings page exactly."""
     if not player_id:
         return None
     try:
-        from fantasai.models.ranking import Ranking
-
-        # "2026-season" is the period key for predictive Rest-of-Season rankings —
-        # matches the period written by the Rankings API (see rankings.py _BLURB_PERIOD_MAP).
-        row = (
-            db.query(Ranking)
-            .filter(
-                Ranking.player_id == player_id,
-                Ranking.ranking_type == "predictive",
-                Ranking.period == "2026-season",
-                Ranking.league_id.is_(None),
-            )
-            .first()
-        )
-        if row:
-            return row.overall_rank
-
-        # Fallback: any predictive row for this player (covers older data or
-        # seasons where the period key differs).
-        row = (
-            db.query(Ranking)
-            .filter(
-                Ranking.player_id == player_id,
-                Ranking.ranking_type == "predictive",
-                Ranking.league_id.is_(None),
-            )
-            .order_by(Ranking.overall_rank)
-            .first()
-        )
-        return row.overall_rank if row else None
+        return _get_live_rank_map(db, league_categories).get(player_id)
     except Exception:
         return None
 
@@ -706,14 +698,115 @@ def _get_matchup_context(
         return None
 
 
-def _build_prompt(
+def _get_team_strength_summary(team_key: str, categories: list[str], db: "Session") -> str:
+    """Return a short string describing a team's category strengths and weaknesses.
+
+    Uses lookback rankings for the team's current roster to compute category scores,
+    then returns the top 2 strong and bottom 2 weak categories for prompt injection.
+    Returns an empty string on failure (non-fatal).
+    """
+    try:
+        from fantasai.api.v1.recommendations import _compute_rankings
+        from fantasai.brain.recommender import _compute_team_strengths
+        from fantasai.models.league import Team
+
+        team = db.query(Team).filter(Team.team_id == team_key).first()
+        if not team or not team.roster:
+            return ""
+
+        lookback, _ = _compute_rankings(db, categories or [])
+        lb_map = {r.player_id: r for r in lookback}
+        roster_rankings = [lb_map[pid] for pid in (team.roster or []) if pid in lb_map]
+        if not roster_rankings:
+            return ""
+
+        strengths = _compute_team_strengths(roster_rankings, categories)
+        sorted_cats = sorted(strengths.items(), key=lambda x: x[1], reverse=True)
+        strong = [c for c, _ in sorted_cats[:2]]
+        weak = [c for c, _ in sorted_cats[-2:]]
+        parts = []
+        if strong:
+            parts.append(f"strong: {', '.join(strong)}")
+        if weak:
+            parts.append(f"weak: {', '.join(weak)}")
+        return "; ".join(parts)
+    except Exception:
+        return ""
+
+
+def _build_trade_side_prompt(
+    side_idx: int,
+    participants: list[dict],
+    data_block: str,
+    stat_instructions: str,
+    early_season_note: str,
+    categories: list[str],
+    has_keepers: bool,
+    player_ages: dict[int, int],
+    db: "Session",
+) -> str:
+    """Build a per-side trade rationale prompt from the perspective of side `side_idx`."""
+    if len(participants) < 2:
+        return ""
+
+    this_side = participants[side_idx]
+    other_side = participants[1 - side_idx]
+
+    this_mgr = this_side.get("manager_name", f"Team {side_idx + 1}")
+    this_grade = this_side.get("_grade_letter", "?")
+    this_team_key = this_side.get("team_key", "")
+
+    receives = ", ".join(p.get("player_name", "?") for p in this_side.get("players_added", []))
+    gives_up = ", ".join(p.get("player_name", "?") for p in this_side.get("players_dropped", []))
+
+    # Team strengths/weaknesses context
+    strength_summary = ""
+    if this_team_key:
+        s = _get_team_strength_summary(this_team_key, categories, db)
+        if s:
+            strength_summary = f"\n{this_mgr}'s team categories — {s}."
+
+    # Keeper-league age context
+    keeper_note = ""
+    if has_keepers and player_ages:
+        age_parts = []
+        for p in this_side.get("players_added", []) + this_side.get("players_dropped", []):
+            pid = p.get("player_id")
+            if pid and pid in player_ages:
+                age_parts.append(f"{p.get('player_name', '?')} age {player_ages[pid]}")
+        if age_parts:
+            keeper_note = f"\nKEEPER LEAGUE: Factor in future value — {', '.join(age_parts)}. Younger players (≤25) carry more dynasty weight."
+
+    txn_desc = (
+        f"TRADE — {this_mgr}'s perspective:\n"
+        f"  {this_mgr} RECEIVES: {receives or '(nothing)'}\n"
+        f"  {this_mgr} GIVES UP: {gives_up or '(nothing)'}\n"
+        f"GRADE FOR {this_mgr.upper()}: {this_grade}"
+    )
+
+    return (
+        f"{data_block}{early_season_note}"
+        f"{strength_summary}{keeper_note}\n\n"
+        f"{txn_desc}\n\n"
+        f"{stat_instructions}\n\n"
+        f"Write a 2-sentence verdict on whether {this_mgr} won or lost this trade. "
+        f"Be specific about what they gain and give up. "
+        f"If this is a keeper league, weigh age and future value appropriately. "
+        f"Use ONLY the player data above — never cite stats or injuries not listed. "
+        f"Direct, opinionated, no hedging."
+    )
+
+
+def _build_txn_shared_context(
     txn: "Transaction",
     league: "League",
     db: "Session",
-    stream_ctx: Optional[dict] = None,
-    matchup_ctx: Optional[str] = None,
-) -> str:
-    """Build a Claude prompt for the move grade rationale."""
+) -> tuple[str, str, str]:
+    """Return (data_block, stat_instructions, early_season_note) for any transaction.
+
+    Extracted so the trade grader can reuse these when building per-side prompts
+    without calling _build_prompt twice.
+    """
     categories = league.scoring_categories or []
     cat_str = ", ".join(str(c) for c in categories[:8]) if categories else "H/AB, R, HR, RBI, SB, AVG, OPS, IP"
     league_format = _league_format_str(league)
@@ -721,21 +814,17 @@ def _build_prompt(
     txn_type = txn.transaction_type
     participants = txn.participants or []
 
-    # ── Shared data header injected into every prompt ────────────────────────
-    # Providing verified DB facts prevents Claude from hallucinating stale
-    # team names, injuries, or league types from its training data.
     data_block_lines: list[str] = [
         f"LEAGUE FORMAT: {league_format}",
         f"SCORING CATEGORIES: {cat_str}",
         "PLAYER DATA (live DB — authoritative; ignore any conflicting training knowledge):",
     ]
 
-    # Collect all relevant player IDs from this transaction
     players_to_lookup: list[tuple[Optional[int], str]] = []
     if txn_type in ("add", "drop"):
         for p in participants:
             players_to_lookup.append((p.get("player_id"), p.get("player_name", "?")))
-    else:  # trade
+    else:
         for side in participants:
             for p in side.get("players_added", []) + side.get("players_dropped", []):
                 players_to_lookup.append((p.get("player_id"), p.get("player_name", "?")))
@@ -747,18 +836,16 @@ def _build_prompt(
             continue
         seen_ids.add(key)
         rank = _get_player_rank(db, pid, categories)
-        # Label rank explicitly so Claude knows what it represents
         rank_str = f" | predictive-ROS-rank=#{rank}" if rank else ""
         facts = _get_player_facts(db, pid, pname)
         data_block_lines.append(f"  - {facts}{rank_str}")
 
     data_block = "\n".join(data_block_lines)
 
-    # Early-season context flag — week 1-4 of the season
     from datetime import date as _date
     _season_start = _date(2026, 3, 25)
     _days_in = (_date.today() - _season_start).days
-    _early_season = _days_in < 28  # first 4 weeks
+    _early_season = _days_in < 28
     early_season_note = (
         "\nEARLY SEASON CONTEXT: The 2026 season just started. Stats labeled "
         "'2026 actual' have very small samples — flag this and blend in the "
@@ -786,6 +873,24 @@ def _build_prompt(
         "'positions=2B/OF', call them a 2B or outfielder, never a shortstop or "
         "catcher regardless of what you know about their history."
     )
+
+    return data_block, stat_instructions, early_season_note
+
+
+def _build_prompt(
+    txn: "Transaction",
+    league: "League",
+    db: "Session",
+    stream_ctx: Optional[dict] = None,
+    matchup_ctx: Optional[str] = None,
+) -> str:
+    """Build a Claude prompt for the move grade rationale."""
+    categories = league.scoring_categories or []
+
+    txn_type = txn.transaction_type
+    participants = txn.participants or []
+
+    data_block, stat_instructions, early_season_note = _build_txn_shared_context(txn, league, db)
 
     # ── Stream context block ─────────────────────────────────────────────────
     stream_block = ""
@@ -1027,11 +1132,24 @@ def grade_transaction(
         all_scores = [_compute_drop_score(p.get("player_id"), db, categories) for p in participants]
         grade_score = sum(all_scores) / len(all_scores) if all_scores else 2.0
 
-    else:  # trade — grade the first side (combined card shows both)
+    else:  # trade
+        has_keepers = (league.settings or {}).get("keepers_per_team", 0) > 0
+        player_ages: dict[int, int] = {}
+        if has_keepers:
+            try:
+                from fantasai.api.v1.analysis import _fetch_player_ages
+                all_trade_ids = [
+                    p.get("player_id")
+                    for side in participants
+                    for p in side.get("players_added", []) + side.get("players_dropped", [])
+                    if p.get("player_id")
+                ]
+                player_ages = _fetch_player_ages(all_trade_ids, db)
+            except Exception:
+                pass
+
         score_a, score_b = _compute_trade_score(participants, db, categories)
-        # Store the average as the overall grade
         grade_score = (score_a + score_b) / 2
-        # Attach per-side grades to participants for the card renderer
         if len(participants) >= 1:
             participants[0]["_grade_score"] = score_a
             participants[0]["_grade_letter"] = _score_to_letter(score_a)
@@ -1045,58 +1163,111 @@ def grade_transaction(
     txn.grade_score = grade_score
     txn.graded_at = datetime.now(tz=timezone.utc)
 
+    from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
+    _move_grade_system = _WRITER_PERSONA + (
+        "\n\n"
+        "───────────────────────────────────────\n"
+        "MOVE GRADER — TRANSACTION VERDICT MODE\n"
+        "───────────────────────────────────────\n"
+        "You are writing a brief, direct fantasy transaction verdict. Same voice as always — \n"
+        "opinionated, never generic. 2–3 sentences maximum.\n"
+        "HARD RULE — PERSONALITY MINIMUM: MINIMUM TWO personality elements required even in 2 sentences. "
+        "Include AT LEAST ONE analogy or cultural reference AND AT LEAST ONE signature phrase or "
+        "irreverent observation. 'Witty when earned' is not a standard — the voice is always on.\n\n"
+        "MOVE GRADER RULES (non-negotiable):\n"
+        "1. Use ONLY the player data, team names, stats, and league format in the prompt. "
+        "Your training knowledge about players is outdated — the provided data is authoritative.\n"
+        "2. Never mention injuries, surgeries, or health history unless explicitly listed.\n"
+        "3. Never reference a league format other than the one stated in the prompt.\n"
+        "4. If a player's team is listed, use that team. Never substitute a different team.\n"
+        "5. NEVER begin with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. Lead with opinion.\n"
+        "6. Stats labeled '[2026 Steamer projection — full-season]' are projections — always "
+        "frame them as such: 'Steamer projects X this season'. Never quote as observed fact.\n"
+        "   Stats labeled '[2026 actual — N G/PA/IP]' are real; flag the sample if under 50 PA / 5 GS.\n"
+        "7. 'predictive-ROS-rank' = our internal Rest-of-Season model. "
+        "Say 'ranked #N in our Predictive (Rest-of-Season) rankings' — never 'our season projections'.\n"
+        "8. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
+        "9. Always 'Name (TEAM)' on first mention when team is provided.\n"
+        "10. Apply the ADVANCED STATS FRAMEWORK: if the verdict hinges on xERA vs ERA, \n"
+        "    Barrel% vs surface AVG, or HR/FB luck — say so in your voice. One analytical \n"
+        "    insight beats three plain stat citations."
+    )
+
     # Generate rationale via Claude Haiku
     if settings.anthropic_api_key:
         try:
             import anthropic
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            prompt = _build_prompt(txn, league, db, stream_ctx=stream_ctx, matchup_ctx=matchup_ctx)
-            from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
-            _move_grade_system = _WRITER_PERSONA + (
-                "\n\n"
-                "───────────────────────────────────────\n"
-                "MOVE GRADER — TRANSACTION VERDICT MODE\n"
-                "───────────────────────────────────────\n"
-                "You are writing a brief, direct fantasy transaction verdict. Same voice as always — \n"
-                "opinionated, never generic. 2–3 sentences maximum.\n"
-                "HARD RULE — PERSONALITY MINIMUM: MINIMUM TWO personality elements required even in 2 sentences. "
-                "Include AT LEAST ONE analogy or cultural reference AND AT LEAST ONE signature phrase or "
-                "irreverent observation. 'Witty when earned' is not a standard — the voice is always on.\n\n"
-                "MOVE GRADER RULES (non-negotiable):\n"
-                "1. Use ONLY the player data, team names, stats, and league format in the prompt. "
-                "Your training knowledge about players is outdated — the provided data is authoritative.\n"
-                "2. Never mention injuries, surgeries, or health history unless explicitly listed.\n"
-                "3. Never reference a league format other than the one stated in the prompt.\n"
-                "4. If a player's team is listed, use that team. Never substitute a different team.\n"
-                "5. NEVER begin with 'VERDICT:', 'PASS', 'FAIL', or any verdict label. Lead with opinion.\n"
-                "6. Stats labeled '[2026 Steamer projection — full-season]' are projections — always "
-                "frame them as such: 'Steamer projects X this season'. Never quote as observed fact.\n"
-                "   Stats labeled '[2026 actual — N G/PA/IP]' are real; flag the sample if under 50 PA / 5 GS.\n"
-                "7. 'predictive-ROS-rank' = our internal Rest-of-Season model. "
-                "Say 'ranked #N in our Predictive (Rest-of-Season) rankings' — never 'our season projections'.\n"
-                "8. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
-                "9. Always 'Name (TEAM)' on first mention when team is provided.\n"
-                "10. Apply the ADVANCED STATS FRAMEWORK: if the verdict hinges on xERA vs ERA, \n"
-                "    Barrel% vs surface AVG, or HR/FB luck — say so in your voice. One analytical \n"
-                "    insight beats three plain stat citations."
-            )
-            response = client.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=300,
-                system=_move_grade_system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            txn.grade_rationale = response.content[0].text.strip()
+
+            if txn_type == "trade" and len(participants) >= 2:
+                # ── Two per-side rationales for trades ────────────────────────
+                data_block, stat_instructions, early_season_note = _build_txn_shared_context(
+                    txn, league, db
+                )
+                side_rationales: list[str] = []
+                for side_idx in range(2):
+                    side_prompt = _build_trade_side_prompt(
+                        side_idx=side_idx,
+                        participants=participants,
+                        data_block=data_block,
+                        stat_instructions=stat_instructions,
+                        early_season_note=early_season_note,
+                        categories=categories,
+                        has_keepers=has_keepers,
+                        player_ages=player_ages,
+                        db=db,
+                    )
+                    try:
+                        resp = client.messages.create(
+                            model="claude-haiku-4-5",
+                            max_tokens=300,
+                            system=_move_grade_system,
+                            messages=[{"role": "user", "content": side_prompt}],
+                        )
+                        side_rationale = resp.content[0].text.strip()
+                    except Exception:
+                        _log.error(
+                            "grade_transaction: Claude call failed for trade side %d txn %s",
+                            side_idx, txn.yahoo_transaction_id, exc_info=True
+                        )
+                        side_rationale = f"Grade: {participants[side_idx].get('_grade_letter', '?')}."
+                    side_rationales.append(side_rationale)
+                    participants[side_idx]["_grade_rationale"] = side_rationale
+
+                txn.participants = participants
+                # Combined rationale: both sides' verdicts separated by a divider
+                txn.grade_rationale = "\n\n".join(side_rationales)
+
+            else:
+                prompt = _build_prompt(txn, league, db, stream_ctx=stream_ctx, matchup_ctx=matchup_ctx)
+                response = client.messages.create(
+                    model="claude-haiku-4-5",
+                    max_tokens=300,
+                    system=_move_grade_system,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                txn.grade_rationale = response.content[0].text.strip()
+
         except Exception:
             _log.error("grade_transaction: Claude call failed for txn %s", txn.yahoo_transaction_id, exc_info=True)
             txn.grade_rationale = f"Grade: {grade_letter}. Analysis unavailable."
 
-    # Generate grade card image
+    # Generate grade card image(s)
     try:
-        from fantasai.brain.grade_card import render_grade_card
-        card_path = render_grade_card(txn, db)
-        if card_path:
-            txn.card_image_path = card_path
+        from fantasai.brain.grade_card import render_grade_card, render_trade_side_cards
+        if txn_type == "trade" and len(participants) >= 2:
+            side_paths = render_trade_side_cards(txn, db)
+            if side_paths:
+                for i, path in enumerate(side_paths):
+                    if i < len(participants):
+                        participants[i]["_card_image_path"] = path
+                txn.participants = participants
+                # Primary card_image_path = side 0 for backwards compat
+                txn.card_image_path = side_paths[0] if side_paths else None
+        else:
+            card_path = render_grade_card(txn, db)
+            if card_path:
+                txn.card_image_path = card_path
     except Exception:
         _log.warning("grade_transaction: card render failed for %s", txn.yahoo_transaction_id, exc_info=True)
 
