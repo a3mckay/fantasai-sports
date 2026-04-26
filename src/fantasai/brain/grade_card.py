@@ -429,9 +429,8 @@ def _draw_trade_card(img, draw, txn: "Transaction", db: "Session"):
     _draw_branding(draw, img)
 
 
-def _draw_trade_side_card(img, draw, txn: "Transaction", side_idx: int, db: "Session"):
+def _draw_trade_side_card(img, draw, participants: list, side_idx: int, db: "Session", fallback_rationale: str = ""):
     """Render one side of a trade as a full-width grade card."""
-    participants = txn.participants or []
     if side_idx >= len(participants):
         return
 
@@ -440,7 +439,7 @@ def _draw_trade_side_card(img, draw, txn: "Transaction", side_idx: int, db: "Ses
 
     side_grade = side.get("_grade_letter", "?")
     grade_col = _grade_colour(side_grade)
-    rationale = side.get("_grade_rationale") or txn.grade_rationale or ""
+    rationale = side.get("_grade_rationale") or fallback_rationale or ""
 
     _draw_rounded_rect(draw, (20, 20, _W - 20, _H - 60), 12, _CARD_BG)
 
@@ -518,12 +517,12 @@ def _draw_trade_side_card(img, draw, txn: "Transaction", side_idx: int, db: "Ses
 
 def render_trade_side_cards(txn: "Transaction", db: "Session") -> list[str]:
     """Render one grade card per trade side. Returns list of file paths (may be partial on error)."""
-    # Load identity attrs before any DB operations (avoids autoflush on lazy-load
-    # if the session is in a dirty/failed state at call time).
+    # Pre-load all ORM attrs from __dict__ to avoid autoflush triggering on a dirty session.
     try:
         txn_id = txn.__dict__.get("id") or txn.id
         txn_token = (txn.__dict__.get("share_token") or txn.share_token)[:8]
         participants = txn.__dict__.get("participants") or txn.participants or []
+        grade_rationale = txn.__dict__.get("grade_rationale") or txn.grade_rationale or ""
     except Exception as exc:
         _log.error("render_trade_side_cards: could not read txn attrs: %s", exc)
         return []
@@ -542,7 +541,8 @@ def render_trade_side_cards(txn: "Transaction", db: "Session") -> list[str]:
             out_path = _CARD_DIR / f"txn_{txn_id}_{txn_token}_side{side_idx}.png"
             img = Image.new("RGB", (_W, _H), _BG)
             draw = ImageDraw.Draw(img)
-            _draw_trade_side_card(img, draw, txn, side_idx, db)
+            with db.no_autoflush:
+                _draw_trade_side_card(img, draw, participants, side_idx, db, fallback_rationale=grade_rationale)
             img.save(str(out_path), "PNG", optimize=True)
             paths.append(str(out_path))
         except Exception:
