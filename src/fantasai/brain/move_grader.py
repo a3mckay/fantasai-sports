@@ -1327,6 +1327,16 @@ def grade_transaction(
     except Exception:
         _log.warning("grade_transaction: card render failed for %s", txn.yahoo_transaction_id, exc_info=True)
 
+    # Force SQLAlchemy to write the final participants state.
+    # JSON columns don't track in-place mutations of nested dicts — repeated
+    # assignments to the same Python list object can be no-ops for change
+    # detection.  flag_modified guarantees the current value is flushed.
+    try:
+        from sqlalchemy.orm import attributes as _sa_attrs
+        _sa_attrs.flag_modified(txn, "participants")
+    except Exception:
+        pass
+
     _log.info(
         "grade_transaction: %s → %s (%.2f) for %s",
         txn.yahoo_transaction_id, grade_letter, grade_score, txn.transaction_type,
