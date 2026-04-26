@@ -209,60 +209,133 @@ def _compute_swap_score(
     return 0.7                    # D- — significant downgrade
 
 
+def _is_keeper_league(league: Any) -> bool:
+    """Return True if the league is a keeper/dynasty league.
+
+    Uses the explicit is_keeper_league flag stored during Yahoo sync, which
+    is derived from uses_roster_import in Yahoo's settings XML (Yahoo doesn't
+    expose a dedicated keeper boolean — roster import is how keepers are
+    designated before the draft, making it the definitive signal).
+    Falls back to keepers_per_team > 0 for leagues synced before this field
+    was added.
+    """
+    settings = getattr(league, "settings", None) or {}
+    if settings.get("is_keeper_league"):
+        return True
+    if settings.get("keepers_per_team", 0) > 0:
+        return True
+    return False
+
+
+def _pick_round_to_str(round_val: Any) -> str:
+    """Convert a pick round value (int or string) to a label for evaluate_trade."""
+    try:
+        n = int(round_val)
+        return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
+    except (TypeError, ValueError):
+        return str(round_val)
+
+
+def _eval_diff_to_grade_score(adj_diff: float) -> float:
+    """Map evaluate_trade value_differential to 0–4.3 grade scale.
+
+    Calibrated against typical PlayerRanking.score values (~0–6 range)
+    and the DRAFT_PICK_VALUES constants used by the evaluator.
+    """
+    if adj_diff >= 5.0:  return 4.3   # A+
+    if adj_diff >= 3.0:  return 4.0   # A
+    if adj_diff >= 1.5:  return 3.7   # A-
+    if adj_diff >= 0.5:  return 3.3   # B+
+    if adj_diff >= -0.5: return 3.0   # B  — roughly even
+    if adj_diff >= -1.5: return 2.7   # B-
+    if adj_diff >= -3.0: return 2.3   # C+
+    if adj_diff >= -5.0: return 1.7   # C-
+    if adj_diff >= -7.0: return 1.0   # D
+    return 0.0                        # F
+
+
 def _compute_trade_score(
     participants: list[dict],
     db: "Session",
     league_categories: list[str],
+    league: Any = None,
+    player_ages: Optional[dict] = None,
 ) -> tuple[float, float]:
-    """Score both sides of a trade. Returns (side_a_score, side_b_score)."""
+    """Score both sides of a trade using the trade_evaluator engine.
+
+    Delegates to evaluate_trade() which applies:
+      - Talent-density adjustment (star concentration bonus)
+      - Keeper-league age multipliers when applicable
+      - Draft pick values (2nd round > 3rd round > later)
+
+    Falls back to a simple rank-delta if the evaluator fails.
+    """
     if len(participants) < 2:
         return 2.0, 2.0
 
-    def _side_score(side: dict) -> float:
+    try:
+        from fantasai.brain.trade_evaluator import evaluate_trade, TradeContext
+        from fantasai.api.v1.recommendations import _compute_rankings
+
+        has_keepers = _is_keeper_league(league) if league else False
+
+        with db.no_autoflush:
+            lookback, predictive = _compute_rankings(db, league_categories)
+
+        pred_map = {r.player_id: r for r in predictive}
+        lb_map   = {r.player_id: r for r in lookback}
+
+        def _ranking(pid: Optional[int]):
+            if not pid:
+                return None
+            return pred_map.get(pid) or lb_map.get(pid)
+
+        def _picks_for(side: dict, key: str) -> list[str]:
+            return [_pick_round_to_str(pk.get("round")) for pk in side.get(key, [])]
+
+        def _score_side(this: dict) -> float:
+            giving    = [r for p in this.get("players_dropped", []) if (r := _ranking(p.get("player_id")))]
+            receiving = [r for p in this.get("players_added",   []) if (r := _ranking(p.get("player_id")))]
+            ctx = TradeContext(
+                giving_rankings=giving,
+                receiving_rankings=receiving,
+                giving_picks=_picks_for(this, "picks_dropped"),
+                receiving_picks=_picks_for(this, "picks_added"),
+                team_strengths={},
+                scoring_categories=league_categories,
+                has_keepers=has_keepers,
+                player_ages=player_ages or {},
+            )
+            result = evaluate_trade(ctx)
+            return _eval_diff_to_grade_score(result.value_differential)
+
+        return _score_side(participants[0]), _score_side(participants[1])
+
+    except Exception:
+        _log.debug("_compute_trade_score: evaluate_trade failed, using rank-delta fallback", exc_info=True)
+
+    # ── Fallback: simple average-rank delta ──────────────────────────────────
+    def _side_score_fallback(side: dict) -> float:
         gained = side.get("players_added", [])
-        lost = side.get("players_dropped", [])
+        lost   = side.get("players_dropped", [])
         if not gained and not lost:
             return 2.0
+        gain_ranks = [_get_player_rank(db, p.get("player_id"), league_categories) for p in gained]
+        loss_ranks = [_get_player_rank(db, p.get("player_id"), league_categories) for p in lost]
+        avg_gain = (sum(r for r in gain_ranks if r) / max(1, sum(1 for r in gain_ranks if r))) if any(gain_ranks) else 300
+        avg_loss = (sum(r for r in loss_ranks if r) / max(1, sum(1 for r in loss_ranks if r))) if any(loss_ranks) else 300
+        delta = avg_loss - avg_gain
+        if delta >= 100: return 4.3
+        if delta >= 60:  return 4.0
+        if delta >= 30:  return 3.7
+        if delta >= 10:  return 3.3
+        if delta >= -10: return 3.0
+        if delta >= -30: return 2.3
+        if delta >= -60: return 1.7
+        if delta >= -100: return 1.0
+        return 0.0
 
-        gain_ranks = [
-            _get_player_rank(db, p.get("player_id"), league_categories)
-            for p in gained
-        ]
-        loss_ranks = [
-            _get_player_rank(db, p.get("player_id"), league_categories)
-            for p in lost
-        ]
-
-        avg_gain = (
-            sum(r for r in gain_ranks if r is not None) / max(1, sum(1 for r in gain_ranks if r is not None))
-            if any(r is not None for r in gain_ranks) else 300
-        )
-        avg_loss = (
-            sum(r for r in loss_ranks if r is not None) / max(1, sum(1 for r in loss_ranks if r is not None))
-            if any(r is not None for r in loss_ranks) else 300
-        )
-
-        # Better deal = gained better players than you gave up
-        delta = avg_loss - avg_gain  # positive = gained better rank (lower number)
-        if delta >= 100:
-            return 4.3  # A+
-        if delta >= 60:
-            return 4.0  # A
-        if delta >= 30:
-            return 3.7  # A-
-        if delta >= 10:
-            return 3.3  # B+
-        if delta >= -10:
-            return 3.0  # B — roughly even
-        if delta >= -30:
-            return 2.3  # C+
-        if delta >= -60:
-            return 1.7  # C-
-        if delta >= -100:
-            return 1.0  # D
-        return 0.0      # F
-
-    return _side_score(participants[0]), _side_score(participants[1])
+    return _side_score_fallback(participants[0]), _side_score_fallback(participants[1])
 
 
 def _get_player_facts(db: "Session", player_id: Optional[int], player_name: str) -> str:
@@ -766,8 +839,22 @@ def _build_trade_side_prompt(
     this_grade = this_side.get("_grade_letter", "?")
     this_team_key = this_side.get("team_key", "")
 
-    receives = ", ".join(p.get("player_name", "?") for p in this_side.get("players_added", []))
-    gives_up = ", ".join(p.get("player_name", "?") for p in this_side.get("players_dropped", []))
+    receives_players = ", ".join(p.get("player_name", "?") for p in this_side.get("players_added", []))
+    gives_up_players = ", ".join(p.get("player_name", "?") for p in this_side.get("players_dropped", []))
+
+    # Format draft picks received / given up for this side
+    def _pick_label(pick: dict) -> str:
+        rnd = pick.get("round", "?")
+        orig = pick.get("original_team_name", "")
+        return f"Round {rnd} pick" + (f" (originally {orig})" if orig else "")
+
+    picks_added = this_side.get("picks_added", [])
+    picks_dropped = this_side.get("picks_dropped", [])
+    receives_picks = ", ".join(_pick_label(pk) for pk in picks_added)
+    gives_up_picks = ", ".join(_pick_label(pk) for pk in picks_dropped)
+
+    receives = ", ".join(filter(None, [receives_players, receives_picks])) or "(nothing)"
+    gives_up = ", ".join(filter(None, [gives_up_players, gives_up_picks])) or "(nothing)"
 
     # Team strengths/weaknesses context
     strength_summary = ""
@@ -776,22 +863,42 @@ def _build_trade_side_prompt(
         if s:
             strength_summary = f"\n{this_mgr}'s team categories — {s}."
 
-    # Keeper-league age context
+    # Keeper-league age + pick context
     keeper_note = ""
-    if has_keepers and player_ages:
-        age_parts = []
-        for p in this_side.get("players_added", []) + this_side.get("players_dropped", []):
-            pid = p.get("player_id")
-            if pid and pid in player_ages:
-                age_parts.append(f"{p.get('player_name', '?')} age {player_ages[pid]}")
-        if age_parts:
-            keeper_note = f"\nKEEPER LEAGUE: Factor in future value — {', '.join(age_parts)}. Younger players (≤25) carry more dynasty weight."
+    if has_keepers:
+        keeper_parts = []
+        if player_ages:
+            age_parts = []
+            for p in this_side.get("players_added", []) + this_side.get("players_dropped", []):
+                pid = p.get("player_id")
+                if pid and pid in player_ages:
+                    age_parts.append(f"{p.get('player_name', '?')} age {player_ages[pid]}")
+            if age_parts:
+                keeper_parts.append(f"player ages: {', '.join(age_parts)}")
+        if picks_added or picks_dropped:
+            pick_desc_parts = []
+            if picks_added:
+                pick_desc_parts.append(f"gains {receives_picks}")
+            if picks_dropped:
+                pick_desc_parts.append(f"gives up {gives_up_picks}")
+            keeper_parts.append("draft picks: " + "; ".join(pick_desc_parts))
+        if keeper_parts:
+            keeper_note = (
+                f"\nKEEPER LEAGUE: Factor in future value — {'; '.join(keeper_parts)}. "
+                "Younger players (≤25) and early-round picks carry more dynasty weight."
+            )
 
     txn_desc = (
         f"TRADE — {this_mgr}'s perspective:\n"
-        f"  {this_mgr} RECEIVES: {receives or '(nothing)'}\n"
-        f"  {this_mgr} GIVES UP: {gives_up or '(nothing)'}\n"
+        f"  {this_mgr} RECEIVES: {receives}\n"
+        f"  {this_mgr} GIVES UP: {gives_up}\n"
         f"GRADE FOR {this_mgr.upper()}: {this_grade}"
+    )
+
+    pick_instruction = (
+        " If draft picks are included, factor in round value — earlier rounds are significant "
+        "dynasty capital, especially in keeper leagues."
+        if (picks_added or picks_dropped) else ""
     )
 
     return (
@@ -800,8 +907,7 @@ def _build_trade_side_prompt(
         f"{txn_desc}\n\n"
         f"{stat_instructions}\n\n"
         f"Write a 2-sentence verdict on whether {this_mgr} won or lost this trade. "
-        f"Be specific about what they gain and give up. "
-        f"If this is a keeper league, weigh age and future value appropriately. "
+        f"Be specific about what they gain and give up, including any draft picks.{pick_instruction} "
         f"Use ONLY the player data above — never cite stats or injuries not listed. "
         f"Direct, opinionated, no hedging."
     )
@@ -870,6 +976,20 @@ def _build_txn_shared_context(
         rank_str = f" | ROS-rank-at-move=#{rank}" if rank else ""
         facts = _get_player_facts(db, pid, pname)
         data_block_lines.append(f"  - {facts}{rank_str}")
+
+    # Include draft picks for trade transactions (keeper leagues).
+    if txn_type == "trade":
+        all_picks: list[str] = []
+        for side in participants:
+            team_name = side.get("team_name", side.get("team_key", "?"))
+            for pick in side.get("picks_added", []):
+                orig = pick.get("original_team_name", "")
+                round_label = f"Round {pick.get('round', '?')}"
+                owner_note = f" (originally {orig})" if orig and orig != team_name else ""
+                all_picks.append(f"  - {team_name} RECEIVES: {round_label} draft pick{owner_note}")
+        if all_picks:
+            data_block_lines.append("DRAFT PICKS INCLUDED IN TRADE:")
+            data_block_lines.extend(all_picks)
 
     data_block = "\n".join(data_block_lines)
 
@@ -1163,7 +1283,7 @@ def grade_transaction(
         grade_score = sum(all_scores) / len(all_scores) if all_scores else 2.0
 
     else:  # trade
-        has_keepers = (league.settings or {}).get("keepers_per_team", 0) > 0
+        has_keepers = _is_keeper_league(league)
         player_ages: dict[int, int] = {}
         if has_keepers:
             try:
@@ -1178,7 +1298,7 @@ def grade_transaction(
             except Exception:
                 pass
 
-        score_a, score_b = _compute_trade_score(participants, db, categories)
+        score_a, score_b = _compute_trade_score(participants, db, categories, league=league, player_ages=player_ages)
         grade_score = (score_a + score_b) / 2
         if len(participants) >= 1:
             participants[0]["_grade_score"] = score_a

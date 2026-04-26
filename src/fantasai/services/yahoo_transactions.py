@@ -173,12 +173,32 @@ def fetch_league_transactions(access_token: str, league_key: str, count: int = 5
                         "destination_type": p_txn_data.get("destination_type", ""),
                     })
 
+            # Parse draft picks (trades only). Yahoo returns picks as a list
+            # directly on the meta block: meta["picks"] = [{"pick": {...}}, ...]
+            # Each pick has: round, source_team_key, destination_team_key,
+            # original_team_key, and corresponding _name fields.
+            picks: list[dict] = []
+            if txn_type == "trade":
+                raw_picks = meta.get("picks", [])
+                if isinstance(raw_picks, list):
+                    for pick_entry in raw_picks:
+                        p = pick_entry.get("pick", {}) if isinstance(pick_entry, dict) else {}
+                        if p:
+                            picks.append({
+                                "round": p.get("round", "?"),
+                                "source_team_key": p.get("source_team_key", ""),
+                                "destination_team_key": p.get("destination_team_key", ""),
+                                "original_team_key": p.get("original_team_key", ""),
+                                "original_team_name": p.get("original_team_name", ""),
+                            })
+
             if txn_id:
                 results.append({
                     "transaction_id": txn_id,
                     "type": txn_type,
                     "timestamp": timestamp,
                     "players": players,
+                    "picks": picks,
                     # For trades, also pull trader/tradee team keys
                     "trader_team_key": meta.get("trader_team_key", ""),
                     "tradee_team_key": meta.get("tradee_team_key", ""),
@@ -301,6 +321,8 @@ def build_participants(
                     "team_name": team.get("team_name", ""),
                     "players_added": [],
                     "players_dropped": [],
+                    "picks_added": [],
+                    "picks_dropped": [],
                 }
             sides[dest_key]["players_added"].append({
                 "player_name": p.get("name", ""),
@@ -314,12 +336,44 @@ def build_participants(
                     "team_name": team.get("team_name", ""),
                     "players_added": [],
                     "players_dropped": [],
+                    "picks_added": [],
+                    "picks_dropped": [],
                 }
             if src_key:
                 sides[src_key]["players_dropped"].append({
                     "player_name": p.get("name", ""),
                     "player_id": _pid(p),
                 })
+
+        # Attach draft picks to the correct side.
+        # A pick travels from source_team → destination_team.
+        # destination team "adds" it; source team "drops" it.
+        picks = txn.get("picks", [])
+        for pick in picks:
+            dest_key = pick.get("destination_team_key", "")
+            src_key = pick.get("source_team_key", "")
+            pick_info = {
+                "round": pick.get("round", "?"),
+                "original_team_name": pick.get("original_team_name", ""),
+                "original_team_key": pick.get("original_team_key", ""),
+            }
+            for key in (dest_key, src_key):
+                if key and key not in sides:
+                    team = teams_by_key.get(key, {})
+                    sides[key] = {
+                        "manager_name": team.get("manager_name", ""),
+                        "team_key": key,
+                        "team_name": team.get("team_name", ""),
+                        "players_added": [],
+                        "players_dropped": [],
+                        "picks_added": [],
+                        "picks_dropped": [],
+                    }
+            if dest_key in sides:
+                sides[dest_key]["picks_added"].append(pick_info)
+            if src_key in sides:
+                sides[src_key]["picks_dropped"].append(pick_info)
+
         return list(sides.values())
 
     return []

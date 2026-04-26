@@ -493,6 +493,16 @@ def _draw_trade_side_card(img, draw, participants: list, side_idx: int, db: "Ses
                       team_pos, font=_load_font(11), fill=_MUTED)
         y += 22
 
+    # Draft picks received
+    for pick in side.get("picks_added", [])[:2]:
+        rnd = pick.get("round", "?")
+        orig = pick.get("original_team_name", "")
+        label = f"+ Round {rnd} pick"
+        if orig:
+            label += f"  ({orig})"
+        draw.text((48, y + 2), label, font=font_player, fill=_GREEN)
+        y += 22
+
     y += 6
     draw.text((40, y), "GIVES UP", font=font_label, fill=_RED)
     y += 16
@@ -503,6 +513,16 @@ def _draw_trade_side_card(img, draw, participants: list, side_idx: int, db: "Ses
         if team_pos:
             draw.text((48 + draw.textlength(f"- {pname}", font=font_player) + 8, y + 4),
                       team_pos, font=_load_font(11), fill=_MUTED)
+        y += 22
+
+    # Draft picks given up
+    for pick in side.get("picks_dropped", [])[:2]:
+        rnd = pick.get("round", "?")
+        orig = pick.get("original_team_name", "")
+        label = f"- Round {rnd} pick"
+        if orig:
+            label += f"  ({orig})"
+        draw.text((48, y + 2), label, font=font_player, fill=_MUTED)
         y += 22
 
     # Divider before rationale

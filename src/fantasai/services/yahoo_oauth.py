@@ -202,6 +202,27 @@ def fetch_league_settings(access_token: str, league_key: str) -> dict[str, Any]:
                 except ValueError:
                     pass
 
+        # Detect keeper league via uses_roster_import and roster_import_deadline.
+        # Yahoo's settings XML does not expose a dedicated "keeper_league" boolean,
+        # but keeper leagues always have roster import enabled (that's how owners
+        # designate keepers before the draft).  can_trade_draft_picks is also
+        # a supporting signal.
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag == "uses_roster_import" and elem.text:
+                result["uses_roster_import"] = elem.text.strip() == "1"
+            if tag == "roster_import_deadline" and elem.text:
+                result["roster_import_deadline"] = elem.text.strip()
+            if tag == "can_trade_draft_picks" and elem.text:
+                result["can_trade_draft_picks"] = elem.text.strip() == "1"
+
+        # Derive a single is_keeper_league flag so downstream code doesn't
+        # need to inspect multiple raw fields.
+        result["is_keeper_league"] = bool(
+            result.get("uses_roster_import")
+            or result.get("roster_import_deadline")
+        )
+
         # Extract league start date (waiver/free-agent pickup period start)
         for elem in root.iter():
             tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
