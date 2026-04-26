@@ -820,6 +820,25 @@ def _build_txn_shared_context(
         "PLAYER DATA (live DB — authoritative; ignore any conflicting training knowledge):",
     ]
 
+    # Build a map of player_id → rank_at_move.
+    # Prefer stored historical rank (set at original grading time) so the rank
+    # shown in a blurb never silently changes if the player is re-graded later.
+    # Fall back to live lookup (first grading, or participant has no stored rank).
+    stored_rank_map: dict[int, int] = {}
+    if txn_type in ("add", "drop"):
+        for p in participants:
+            pid = p.get("player_id")
+            stored = p.get("_ros_rank_at_grade")
+            if pid and stored is not None:
+                stored_rank_map[pid] = stored
+    else:
+        for side in participants:
+            for p in side.get("players_added", []) + side.get("players_dropped", []):
+                pid = p.get("player_id")
+                stored = p.get("_ros_rank_at_grade")
+                if pid and stored is not None:
+                    stored_rank_map[pid] = stored
+
     players_to_lookup: list[tuple[Optional[int], str]] = []
     if txn_type in ("add", "drop"):
         for p in participants:
@@ -835,8 +854,10 @@ def _build_txn_shared_context(
         if key in seen_ids:
             continue
         seen_ids.add(key)
-        rank = _get_player_rank(db, pid, categories)
-        rank_str = f" | predictive-ROS-rank=#{rank}" if rank else ""
+        rank = stored_rank_map.get(pid) if pid else None
+        if rank is None:
+            rank = _get_player_rank(db, pid, categories)
+        rank_str = f" | ROS-rank-at-move=#{rank}" if rank else ""
         facts = _get_player_facts(db, pid, pname)
         data_block_lines.append(f"  - {facts}{rank_str}")
 
@@ -861,10 +882,9 @@ def _build_txn_shared_context(
         "- Stats labeled '[2026 Steamer projection]' are full-season projections; "
         "say 'projects for X' or 'Steamer projects', never 'has X'.\n"
         "- 'proj-HR', 'proj-K', etc. are projected season totals, not current stats.\n"
-        "- 'predictive-ROS-rank' is our internal Rest-of-Season ranking model; "
-        "refer to it as 'ranked #N in our Predictive (Rest-of-Season) rankings'. "
-        "Never say 'our season projections' — always say 'Predictive (Rest-of-Season) rankings' "
-        "so the user knows exactly which list to look at.\n"
+        "- 'ROS-rank-at-move' is the player's Rest-of-Season predictive rank AT THE TIME this move happened — "
+        "a historical snapshot, not the current rank. Say 'ranked #N at the time of this move' or "
+        "'was ranked #N when this trade happened'. Never say 'currently ranked' or 'is ranked'.\n"
         "K/9 benchmarks for starters: elite=10.0+, above avg=9.0-9.9, avg=8.0-8.9, "
         "below avg=7.0-7.9, poor=<7.0. Do not call anything below 9.0 'elite'.\n"
         "POSITIONS ARE AUTHORITATIVE: A player's eligible position(s) are listed "
@@ -1163,6 +1183,31 @@ def grade_transaction(
     txn.grade_score = grade_score
     txn.graded_at = datetime.now(tz=timezone.utc)
 
+    # Freeze ranks at grading time so re-grades of old transactions show the
+    # historical rank (not today's rank).  Only written if not already stored.
+    try:
+        rank_map = _get_live_rank_map(db, categories)
+        if rank_map:
+            _participants = txn.participants or []
+            _changed = False
+            if txn_type in ("add", "drop"):
+                for p in _participants:
+                    pid = p.get("player_id")
+                    if pid and "_ros_rank_at_grade" not in p and pid in rank_map:
+                        p["_ros_rank_at_grade"] = rank_map[pid]
+                        _changed = True
+            else:
+                for side in _participants:
+                    for p in side.get("players_added", []) + side.get("players_dropped", []):
+                        pid = p.get("player_id")
+                        if pid and "_ros_rank_at_grade" not in p and pid in rank_map:
+                            p["_ros_rank_at_grade"] = rank_map[pid]
+                            _changed = True
+            if _changed:
+                txn.participants = _participants
+    except Exception:
+        pass
+
     from fantasai.brain.writer_persona import SYSTEM_PROMPT as _WRITER_PERSONA
     _move_grade_system = _WRITER_PERSONA + (
         "\n\n"
@@ -1184,8 +1229,9 @@ def grade_transaction(
         "6. Stats labeled '[2026 Steamer projection — full-season]' are projections — always "
         "frame them as such: 'Steamer projects X this season'. Never quote as observed fact.\n"
         "   Stats labeled '[2026 actual — N G/PA/IP]' are real; flag the sample if under 50 PA / 5 GS.\n"
-        "7. 'predictive-ROS-rank' = our internal Rest-of-Season model. "
-        "Say 'ranked #N in our Predictive (Rest-of-Season) rankings' — never 'our season projections'.\n"
+        "7. 'ROS-rank-at-move' = the player's Rest-of-Season rank AT THE TIME this move happened. "
+        "Say 'ranked #N at the time of this move' or 'was ranked #N when this trade happened'. "
+        "Never say 'currently ranked' or 'is ranked #N'.\n"
         "8. K/9 benchmarks: elite=10.0+, above avg=9.0–9.9, avg=8.0–8.9, below avg=7.0–7.9.\n"
         "9. Always 'Name (TEAM)' on first mention when team is provided.\n"
         "10. Apply the ADVANCED STATS FRAMEWORK: if the verdict hinges on xERA vs ERA, \n"

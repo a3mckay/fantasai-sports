@@ -373,6 +373,58 @@ def get_shared_card(
     )
 
 
+@router.post("/{transaction_id}/regrade", status_code=200)
+def regrade_single_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Re-grade a single transaction in-place and return the updated record."""
+    txn = db.get(Transaction, transaction_id)
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    from fantasai.models.user import YahooConnection
+    conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
+    if not conn or conn.league_key != txn.league_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Reset grade + stored rank snapshots so grading runs fresh
+    txn.grade_letter = None
+    txn.grade_score = None
+    txn.grade_rationale = None
+    txn.graded_at = None
+    txn.card_image_path = None
+    # Clear stored rank snapshots so live rank is re-captured at this moment
+    _parts = txn.participants or []
+    for p in _parts:
+        p.pop("_ros_rank_at_grade", None)
+        for key in ("players_added", "players_dropped"):
+            for entry in p.get(key, []):
+                entry.pop("_ros_rank_at_grade", None)
+        p.pop("_grade_rationale", None)
+        p.pop("_card_image_path", None)
+    txn.participants = _parts
+    db.commit()
+
+    try:
+        from fantasai.config import settings
+        from fantasai.models.league import League
+        from fantasai.brain.move_grader import grade_transaction
+
+        league = db.query(League).filter(League.league_id == txn.league_id).first()
+        if not league:
+            raise HTTPException(status_code=404, detail="League not found")
+        grade_transaction(db, txn, league)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("regrade_single_transaction: failed for txn %d: %s", transaction_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Re-grade failed: {exc}")
+
+    pos_map = _build_positions_map([txn], db)
+    return _txn_to_read(txn, pos_map)
+
+
 @router.post("/regrade", status_code=202)
 def regrade_transactions(
     background_tasks: BackgroundTasks,
