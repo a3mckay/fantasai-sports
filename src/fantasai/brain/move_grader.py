@@ -62,8 +62,11 @@ def _get_live_rank_map(db: "Session", categories: list[str]) -> dict[int, int]:
     try:
         from fantasai.api.v1.recommendations import _compute_rankings, _inject_prospect_rankings
         from fantasai.engine.projection import ProjectionHorizon
-        _, predictive = _compute_rankings(db, categories or [], horizon=ProjectionHorizon.SEASON)
-        enriched = _inject_prospect_rankings(predictive, db)
+        # no_autoflush prevents dirty session objects (e.g. partially-graded txn)
+        # from being flushed mid-query, which would abort the PG transaction.
+        with db.no_autoflush:
+            _, predictive = _compute_rankings(db, categories or [], horizon=ProjectionHorizon.SEASON)
+            enriched = _inject_prospect_rankings(predictive, db)
         rank_map: dict[int, int] = {r.player_id: r.overall_rank for r in enriched}
         _LIVE_RANK_CACHE[cache_key] = (_time.monotonic(), rank_map)
         return rank_map
@@ -710,11 +713,12 @@ def _get_team_strength_summary(team_key: str, categories: list[str], db: "Sessio
         from fantasai.brain.recommender import _compute_team_strengths
         from fantasai.models.league import Team
 
-        team = db.query(Team).filter(Team.team_id == team_key).first()
-        if not team or not team.roster:
-            return ""
+        with db.no_autoflush:
+            team = db.query(Team).filter(Team.team_id == team_key).first()
+            if not team or not team.roster:
+                return ""
+            lookback, _ = _compute_rankings(db, categories or [])
 
-        lookback, _ = _compute_rankings(db, categories or [])
         lb_map = {r.player_id: r for r in lookback}
         roster_rankings = [lb_map[pid] for pid in (team.roster or []) if pid in lb_map]
         if not roster_rankings:
