@@ -713,11 +713,16 @@ def _get_team_strength_summary(team_key: str, categories: list[str], db: "Sessio
         from fantasai.brain.recommender import _compute_team_strengths
         from fantasai.models.league import Team
 
-        with db.no_autoflush:
-            team = db.query(Team).filter(Team.team_id == team_key).first()
-            if not team or not team.roster:
-                return ""
-            lookback, _ = _compute_rankings(db, categories or [])
+        # Use a savepoint so any SQL error (e.g. type mismatch) only rolls back
+        # this nested block and does NOT abort the outer transaction.
+        with db.begin_nested():
+            with db.no_autoflush:
+                # team_key is a Yahoo string key (e.g. "469.l.60209.t.11") —
+                # must query yahoo_team_key, not the integer team_id PK.
+                team = db.query(Team).filter(Team.yahoo_team_key == team_key).first()
+                if not team or not team.roster:
+                    return ""
+                lookback, _ = _compute_rankings(db, categories or [])
 
         lb_map = {r.player_id: r for r in lookback}
         roster_rankings = [lb_map[pid] for pid in (team.roster or []) if pid in lb_map]
@@ -735,6 +740,7 @@ def _get_team_strength_summary(team_key: str, categories: list[str], db: "Sessio
             parts.append(f"weak: {', '.join(weak)}")
         return "; ".join(parts)
     except Exception:
+        _log.debug("_get_team_strength_summary: failed for %s", team_key, exc_info=True)
         return ""
 
 
