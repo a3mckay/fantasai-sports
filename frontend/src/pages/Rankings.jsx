@@ -171,23 +171,32 @@ export default function Rankings() {
     ?? null
   )
 
-  // Build player_id → team_name ownership map from ALL teams (used for badges
-  // and the "All Available Players" scope).
+  // Build player_id → team_name and name → team_name ownership maps.
   // team.roster from /auth/league is [{player_id, name}] — enriched objects.
-  const ownedByMap = {}
+  //
+  // The name-keyed map (ownedByNameMap) is the critical fallback: when a roster
+  // player was synced as a stub (couldn't be name-resolved at sync time), the stored
+  // player_id may differ from the FanGraphs ID the rankings engine uses. Matching
+  // by name ensures the ownership badge always appears even in that case.
+  const ownedByMap     = {}   // player_id → team_name
+  const ownedByNameMap = {}   // normalised name → team_name
   if (league?.teams) {
     for (const team of league.teams) {
       for (const p of team.roster || []) {
         ownedByMap[p.player_id] = team.team_name
+        if (p.name) ownedByNameMap[p.name.trim().toLowerCase()] = team.team_name
       }
     }
   }
 
-  // Build a fast Set of the user's own roster player IDs for the "My Team"
-  // and "My Team + Free Agents" roster filters.  Using a Set avoids the
-  // undefined===undefined trap that occurred when myTeam was null.
-  const myRosterIds = new Set(
-    myTeam?.roster?.map(p => p.player_id) ?? []
+  // Helper: look up ownership by player_id first, then by name as fallback.
+  const getOwner = p =>
+    ownedByMap[p.player_id] ?? ownedByNameMap[(p.name || '').trim().toLowerCase()]
+
+  // Build Sets for the user's own roster — again keyed by both player_id and name.
+  const myRosterIds   = new Set(myTeam?.roster?.map(p => p.player_id) ?? [])
+  const myRosterNames = new Set(
+    myTeam?.roster?.map(p => p.name?.trim().toLowerCase()).filter(Boolean) ?? []
   )
 
   const [mode, setMode]             = useState('predictive')
@@ -352,8 +361,9 @@ export default function Rankings() {
       : levelFilter === 'MiLB' ? p.is_prospect === true
       : /* MLB */               p.is_prospect !== true
 
-    const isOnMyTeam = myRosterIds.has(p.player_id)
-    const isOwned    = ownedByMap[p.player_id] !== undefined
+    const isOnMyTeam = myRosterIds.has(p.player_id) ||
+                       myRosterNames.has((p.name || '').trim().toLowerCase())
+    const isOwned    = getOwner(p) !== undefined
     const rosterOk =
       rosterFilter === 'all'         ? true
       : rosterFilter === 'mine'        ? (myTeam !== null && isOnMyTeam)
@@ -654,9 +664,9 @@ export default function Rankings() {
                           </span>
                         )}
                         {/* Ownership badge — shows team name */}
-                        {ownedByMap[player.player_id] && (
+                        {getOwner(player) && (
                           <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-950/50 border border-emerald-800/50 rounded px-1.5 py-0.5 leading-none">
-                            {ownedByMap[player.player_id]}
+                            {getOwner(player)}
                           </span>
                         )}
                         {/* MiLB prospect badge — shown for minor-league players injected via PAV */}
