@@ -173,6 +173,7 @@ export default function Rankings() {
 
   // Build player_id → team_name ownership map from ALL teams (used for badges
   // and the "All Available Players" scope).
+  // team.roster from /auth/league is [{player_id, name}] — enriched objects.
   const ownedByMap = {}
   if (league?.teams) {
     for (const team of league.teams) {

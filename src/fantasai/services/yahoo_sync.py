@@ -185,6 +185,26 @@ def _create_stub_players_for_unmatched(
         clean_name = _PAREN.sub("", name).strip()
         positions   = entry.get("eligible_positions") or []
 
+        # Before creating/updating a stub, check whether the player now exists in
+        # the DB as a real FanGraphs player (stats may have been synced since the
+        # last roster sync).  If so, use the real ID so the ownership map works.
+        from sqlalchemy import func as _sqlfunc
+        real_player = (
+            db.query(Player)
+            .filter(
+                Player.player_id > 0,
+                _sqlfunc.lower(Player.name) == clean_name.lower(),
+            )
+            .first()
+        )
+        if real_player is not None:
+            resolved[name] = real_player.player_id
+            _log.info(
+                "Resolved previously-unmatched '%s' to real FanGraphs ID %d on re-sync",
+                clean_name, real_player.player_id,
+            )
+            continue
+
         # Upsert the stub
         stub = db.get(Player, stub_id)
         if stub is None:

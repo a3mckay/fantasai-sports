@@ -31,3 +31,6 @@ MLB fantasy baseball assistant. Three-layer architecture: Engine (data + scoring
 
 ## PRD
 Full product requirements in `fantasy-sports-helperPRD.md` at repo root.
+
+## Feature Reference
+Full feature documentation in `@FEATURES.md` — covers all API endpoints, brain modules, services, and engine layer design decisions. Generated from a complete codebase audit (13 sections).

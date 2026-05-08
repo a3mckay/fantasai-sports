@@ -578,6 +578,8 @@ def activate_league(
 
 def _build_league_payload(user: User, league: "Any", db: Session) -> dict[str, Any]:
     """Build the full league payload shared by GET /auth/league and POST /auth/leagues/{id}/activate."""
+    from sqlalchemy import func as _sqlfunc
+
     from fantasai.models.league import Team
     from fantasai.models.player import Player as PlayerModel
 
@@ -596,7 +598,35 @@ def _build_league_payload(user: User, league: "Any", db: Session) -> dict[str, A
         )
         player_name_map = {r.player_id: r.name for r in rows}
 
+    # Build a name → real FanGraphs player_id map for resolving stubs on-the-fly.
+    # Stubs have negative player_ids (Yahoo numeric ID, negated). When a stub is in
+    # a team's roster but the real FanGraphs player now exists in the DB (because
+    # stats have since been synced), we swap the stub ID for the real ID so that
+    # the frontend ownedByMap correctly marks the player as owned in Rankings.
+    stub_ids = [pid for pid in all_roster_ids if pid < 0]
+    stub_to_real: dict[int, int] = {}
+    if stub_ids:
+        stub_names = [player_name_map[pid] for pid in stub_ids if pid in player_name_map]
+        if stub_names:
+            real_rows = (
+                db.query(PlayerModel.player_id, PlayerModel.name)
+                .filter(
+                    PlayerModel.player_id > 0,
+                    _sqlfunc.lower(PlayerModel.name).in_([n.lower() for n in stub_names]),
+                )
+                .all()
+            )
+            real_name_to_id = {r.name.lower(): r.player_id for r in real_rows}
+            for stub_pid in stub_ids:
+                stub_name = player_name_map.get(stub_pid, "").lower()
+                if stub_name and stub_name in real_name_to_id:
+                    stub_to_real[stub_pid] = real_name_to_id[stub_name]
+
     my_team = next((t for t in all_teams if t.owner_user_id == user.id), None)
+
+    def _resolve_pid(pid: int) -> int:
+        """Return the real FanGraphs player_id, swapping out stubs when possible."""
+        return stub_to_real.get(pid, pid) if pid < 0 else pid
 
     teams_out = [
         {
@@ -605,7 +635,10 @@ def _build_league_payload(user: User, league: "Any", db: Session) -> dict[str, A
             "manager_name": t.manager_name,
             "is_mine": t.owner_user_id == user.id,
             "roster": [
-                {"player_id": pid, "name": player_name_map.get(pid, f"Player {pid}")}
+                {
+                    "player_id": _resolve_pid(pid),
+                    "name": player_name_map.get(pid, f"Player {pid}"),
+                }
                 for pid in (t.roster or [])
             ],
             "roster_names": t.roster_names or [],
