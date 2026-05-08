@@ -726,6 +726,13 @@ def _inject_prospect_rankings(
     )
 
     for pp, player in profiles:
+        # Skip stub players (negative player_ids created by _create_stub_players_for_unmatched
+        # in yahoo_sync.py when a Yahoo roster player can't be resolved to a FanGraphs ID).
+        # Stubs have no stats and should never appear in rankings — they only exist so
+        # owned players show on the roster UI even when unresolved.
+        if player.player_id < 0:
+            continue
+
         proxy = pp.proxy_mlb_rank or 999
         if player.player_id in existing_by_id:
             # Already in MLB rankings (has FanGraphs projections).
@@ -763,6 +770,30 @@ def _inject_prospect_rankings(
             pav_score=pp.pav_score,
         )
         working.append(pr)
+
+    # Deduplicate by name: if a stub slipped through (e.g. resolved to a positive ID
+    # that differs from the FanGraphs entry), keep only the highest-scored entry per
+    # player name so the same real-world player never appears twice.
+    seen_names: dict[str, object] = {}
+    deduped: list = []
+    for r in working:
+        key = (r.name or "").strip().lower()
+        if not key:
+            deduped.append(r)
+            continue
+        if key not in seen_names:
+            seen_names[key] = r
+            deduped.append(r)
+        else:
+            prev = seen_names[key]
+            # Keep the non-prospect entry (has real stats); otherwise keep higher score.
+            if (not r.is_prospect and prev.is_prospect) or (
+                r.is_prospect == prev.is_prospect and (r.score or 0) > (prev.score or 0)
+            ):
+                deduped.remove(prev)
+                deduped.append(r)
+                seen_names[key] = r
+    working = deduped
 
     # Sort by PAV/FanGraphs rank (prospects win ties) then renumber sequentially.
     working.sort(key=lambda r: (r.overall_rank, 0 if r.is_prospect else 1))

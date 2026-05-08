@@ -603,20 +603,55 @@ def _build_league_payload(user: User, league: "Any", db: Session) -> dict[str, A
     # a team's roster but the real FanGraphs player now exists in the DB (because
     # stats have since been synced), we swap the stub ID for the real ID so that
     # the frontend ownedByMap correctly marks the player as owned in Rankings.
+    #
+    # When multiple positive-ID players share a name (rare but possible), prefer the
+    # one with actual 2026 season stats — that's the same player_id the rankings engine
+    # will use, ensuring the ownedByMap lookup succeeds.
     stub_ids = [pid for pid in all_roster_ids if pid < 0]
     stub_to_real: dict[int, int] = {}
     if stub_ids:
+        from fantasai.models.player import PlayerStats as _PlayerStats
         stub_names = [player_name_map[pid] for pid in stub_ids if pid in player_name_map]
         if stub_names:
+            stub_names_lower = [n.lower() for n in stub_names]
+            # Fetch all positive-ID players with matching names.
             real_rows = (
                 db.query(PlayerModel.player_id, PlayerModel.name)
                 .filter(
                     PlayerModel.player_id > 0,
-                    _sqlfunc.lower(PlayerModel.name).in_([n.lower() for n in stub_names]),
+                    _sqlfunc.lower(PlayerModel.name).in_(stub_names_lower),
                 )
                 .all()
             )
-            real_name_to_id = {r.name.lower(): r.player_id for r in real_rows}
+            # Group by normalised name; prefer rows that have actual 2026 stats.
+            from collections import defaultdict as _dd
+            name_to_candidates: dict[str, list[int]] = _dd(list)
+            for r in real_rows:
+                name_to_candidates[r.name.lower()].append(r.player_id)
+
+            if name_to_candidates:
+                all_candidate_ids = [pid for pids in name_to_candidates.values() for pid in pids]
+                pids_with_stats: set[int] = {
+                    pid for (pid,) in (
+                        db.query(_PlayerStats.player_id)
+                        .filter(
+                            _PlayerStats.player_id.in_(all_candidate_ids),
+                            _PlayerStats.season == 2026,
+                            _PlayerStats.data_source == "actual",
+                        )
+                        .distinct()
+                        .all()
+                    )
+                }
+
+            real_name_to_id: dict[str, int] = {}
+            for name_lower, candidates in name_to_candidates.items():
+                # Prefer candidate with 2026 actual stats; otherwise largest player_id
+                # (FanGraphs assigns higher IDfg to more recently added players).
+                with_stats = [p for p in candidates if p in pids_with_stats]
+                chosen = max(with_stats) if with_stats else max(candidates)
+                real_name_to_id[name_lower] = chosen
+
             for stub_pid in stub_ids:
                 stub_name = player_name_map.get(stub_pid, "").lower()
                 if stub_name and stub_name in real_name_to_id:
