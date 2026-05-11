@@ -428,16 +428,25 @@ def regrade_single_transaction(
 @router.post("/regrade", status_code=202)
 def regrade_transactions(
     background_tasks: BackgroundTasks,
+    transaction_type: Optional[str] = Query(
+        default=None,
+        description="Limit to a single transaction type (add | drop | trade). Omit to regrade all.",
+    ),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Re-grade all existing transactions for the user's league.
+    """Re-grade existing transactions for the user's league.
 
-    Clears grade_letter/grade_rationale/card_image_path on every transaction
+    Clears grade_letter/grade_rationale/card_image_path on matching transactions
     so the next poll cycle regenerates them with the current grader logic.
-    Runs in the background — takes ~30s for 25 transactions.
+    Pass `transaction_type=trade` to backfill only trade rationales (e.g. after
+    a per-side prompt change) without disturbing add/drop grades.
+    Runs in the background — takes ~30s per 25 transactions.
     """
     from fantasai.models.user import YahooConnection
+
+    if transaction_type and transaction_type not in ("add", "drop", "trade"):
+        raise HTTPException(status_code=400, detail="transaction_type must be add, drop, or trade")
 
     conn = db.query(YahooConnection).filter(YahooConnection.user_id == user.id).first()
     if not conn or not conn.league_key:
@@ -445,7 +454,7 @@ def regrade_transactions(
 
     league_id = conn.league_key
 
-    def _do_regrade(lid: str) -> None:
+    def _do_regrade(lid: str, txn_type: Optional[str]) -> None:
         try:
             from fantasai.config import settings
             from fantasai.database import SessionLocal
@@ -455,11 +464,14 @@ def regrade_transactions(
 
             _db = SessionLocal()
             try:
-                # Reset all grades so _grade_ungraded picks them up
-                _db.query(Transaction).filter(
+                # Reset matching grades so _grade_ungraded picks them up
+                reset_q = _db.query(Transaction).filter(
                     Transaction.league_id == lid,
                     Transaction.grade_letter.isnot(None),
-                ).update(
+                )
+                if txn_type:
+                    reset_q = reset_q.filter(Transaction.transaction_type == txn_type)
+                reset_q.update(
                     {
                         "grade_letter": None,
                         "grade_score": None,
@@ -491,8 +503,9 @@ def regrade_transactions(
         except Exception:
             logger.error("regrade_transactions: failed for league %s", lid, exc_info=True)
 
-    background_tasks.add_task(_do_regrade, league_id)
-    return {"status": "regrading", "message": "Re-grading all transactions in background"}
+    background_tasks.add_task(_do_regrade, league_id, transaction_type)
+    scope = transaction_type or "all"
+    return {"status": "regrading", "message": f"Re-grading {scope} transactions in background"}
 
 
 @router.post("/poll")

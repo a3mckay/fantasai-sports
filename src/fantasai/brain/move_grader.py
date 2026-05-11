@@ -888,17 +888,26 @@ def _build_trade_side_prompt(
                 "Younger players (≤25) and early-round picks carry more dynasty weight."
             )
 
+    other_mgr = other_side.get("manager_name", "the other team")
     txn_desc = (
-        f"TRADE — {this_mgr}'s perspective:\n"
+        f"TRADE — write strictly from {this_mgr}'s perspective ({other_mgr}'s side is "
+        f"covered by a separate blurb; do NOT grade or summarize their side here):\n"
         f"  {this_mgr} RECEIVES: {receives}\n"
         f"  {this_mgr} GIVES UP: {gives_up}\n"
         f"GRADE FOR {this_mgr.upper()}: {this_grade}"
     )
 
     pick_instruction = (
-        " If draft picks are included, factor in round value — earlier rounds are significant "
-        "dynasty capital, especially in keeper leagues."
+        " If draft picks are included, factor in round value — earlier rounds are meaningful "
+        "future capital in a keeper league."
         if (picks_added or picks_dropped) else ""
+    )
+
+    league_kind = "keeper league" if has_keepers else "redraft league"
+    keeper_voice_note = (
+        " This is a KEEPER league (not a dynasty league) — frame picks and youth as "
+        "next-season keeper value, not multi-decade dynasty capital."
+        if has_keepers else ""
     )
 
     return (
@@ -906,7 +915,10 @@ def _build_trade_side_prompt(
         f"{strength_summary}{keeper_note}\n\n"
         f"{txn_desc}\n\n"
         f"{stat_instructions}\n\n"
-        f"Write a 2-sentence verdict on whether {this_mgr} won or lost this trade. "
+        f"Write a 2-sentence verdict on whether {this_mgr} won or lost this trade in a "
+        f"{league_kind}. Stay focused on {this_mgr} — you may reference {other_mgr} as "
+        f"context (what they gave up, why they did the deal) but the verdict must be "
+        f"about {this_mgr}.{keeper_voice_note} "
         f"Be specific about what they gain and give up, including any draft picks.{pick_instruction} "
         f"Use ONLY the player data above — never cite stats or injuries not listed. "
         f"Direct, opinionated, no hedging."
