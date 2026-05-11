@@ -817,8 +817,7 @@ def _get_team_strength_summary(team_key: str, categories: list[str], db: "Sessio
         return ""
 
 
-def _build_trade_side_prompt(
-    side_idx: int,
+def _build_trade_joint_prompt(
     participants: list[dict],
     data_block: str,
     stat_instructions: str,
@@ -828,101 +827,154 @@ def _build_trade_side_prompt(
     player_ages: dict[int, int],
     db: "Session",
 ) -> str:
-    """Build a per-side trade rationale prompt from the perspective of side `side_idx`."""
+    """Build a single prompt that produces both per-side trade verdicts in one pass.
+
+    Writing both blurbs in the same call guarantees logical consistency: the LLM
+    sees both grades at once and cannot have the lower-graded team described as
+    having won the deal.
+    """
     if len(participants) < 2:
         return ""
 
-    this_side = participants[side_idx]
-    other_side = participants[1 - side_idx]
+    side_a, side_b = participants[0], participants[1]
+    mgr_a = side_a.get("manager_name", "Team 1")
+    mgr_b = side_b.get("manager_name", "Team 2")
+    grade_a = side_a.get("_grade_letter", "?")
+    grade_b = side_b.get("_grade_letter", "?")
 
-    this_mgr = this_side.get("manager_name", f"Team {side_idx + 1}")
-    this_grade = this_side.get("_grade_letter", "?")
-    this_team_key = this_side.get("team_key", "")
-
-    receives_players = ", ".join(p.get("player_name", "?") for p in this_side.get("players_added", []))
-    gives_up_players = ", ".join(p.get("player_name", "?") for p in this_side.get("players_dropped", []))
-
-    # Format draft picks received / given up for this side
     def _pick_label(pick: dict) -> str:
         rnd = pick.get("round", "?")
         orig = pick.get("original_team_name", "")
         return f"Round {rnd} pick" + (f" (originally {orig})" if orig else "")
 
-    picks_added = this_side.get("picks_added", [])
-    picks_dropped = this_side.get("picks_dropped", [])
-    receives_picks = ", ".join(_pick_label(pk) for pk in picks_added)
-    gives_up_picks = ", ".join(_pick_label(pk) for pk in picks_dropped)
+    def _side_lines(side: dict) -> tuple[str, str]:
+        receives = ", ".join(filter(None, [
+            ", ".join(p.get("player_name", "?") for p in side.get("players_added", [])),
+            ", ".join(_pick_label(pk) for pk in side.get("picks_added", [])),
+        ])) or "(nothing)"
+        gives_up = ", ".join(filter(None, [
+            ", ".join(p.get("player_name", "?") for p in side.get("players_dropped", [])),
+            ", ".join(_pick_label(pk) for pk in side.get("picks_dropped", [])),
+        ])) or "(nothing)"
+        return receives, gives_up
 
-    receives = ", ".join(filter(None, [receives_players, receives_picks])) or "(nothing)"
-    gives_up = ", ".join(filter(None, [gives_up_players, gives_up_picks])) or "(nothing)"
+    recv_a, give_a = _side_lines(side_a)
+    recv_b, give_b = _side_lines(side_b)
 
-    # Team strengths/weaknesses context
-    strength_summary = ""
-    if this_team_key:
-        s = _get_team_strength_summary(this_team_key, categories, db)
-        if s:
-            strength_summary = f"\n{this_mgr}'s team categories — {s}."
+    # Team strengths
+    strength_lines: list[str] = []
+    for side, mgr in [(side_a, mgr_a), (side_b, mgr_b)]:
+        team_key = side.get("team_key", "")
+        if team_key:
+            s = _get_team_strength_summary(team_key, categories, db)
+            if s:
+                strength_lines.append(f"{mgr}'s team categories — {s}.")
+    strength_block = ("\nTEAM CONTEXT:\n" + "\n".join(strength_lines)) if strength_lines else ""
 
-    # Keeper-league age + pick context
-    keeper_note = ""
+    # Keeper context for both sides
+    keeper_block = ""
     if has_keepers:
-        keeper_parts = []
-        if player_ages:
-            age_parts = []
-            for p in this_side.get("players_added", []) + this_side.get("players_dropped", []):
-                pid = p.get("player_id")
-                if pid and pid in player_ages:
-                    age_parts.append(f"{p.get('player_name', '?')} age {player_ages[pid]}")
-            if age_parts:
-                keeper_parts.append(f"player ages: {', '.join(age_parts)}")
-        if picks_added or picks_dropped:
-            pick_desc_parts = []
-            if picks_added:
-                pick_desc_parts.append(f"gains {receives_picks}")
-            if picks_dropped:
-                pick_desc_parts.append(f"gives up {gives_up_picks}")
-            keeper_parts.append("draft picks: " + "; ".join(pick_desc_parts))
+        keeper_parts: list[str] = []
+        for side, mgr in [(side_a, mgr_a), (side_b, mgr_b)]:
+            side_parts: list[str] = []
+            if player_ages:
+                age_strs = []
+                for p in side.get("players_added", []) + side.get("players_dropped", []):
+                    pid = p.get("player_id")
+                    if pid and pid in player_ages:
+                        age_strs.append(f"{p.get('player_name', '?')} age {player_ages[pid]}")
+                if age_strs:
+                    side_parts.append(f"ages: {', '.join(age_strs)}")
+            picks_in  = side.get("picks_added", [])
+            picks_out = side.get("picks_dropped", [])
+            if picks_in:
+                side_parts.append(f"gains {', '.join(_pick_label(pk) for pk in picks_in)}")
+            if picks_out:
+                side_parts.append(f"gives up {', '.join(_pick_label(pk) for pk in picks_out)}")
+            if side_parts:
+                keeper_parts.append(f"  {mgr}: {'; '.join(side_parts)}")
         if keeper_parts:
-            keeper_note = (
-                f"\nKEEPER LEAGUE: Factor in future value — {'; '.join(keeper_parts)}. "
-                "Younger players (≤25) and early-round picks carry more dynasty weight."
+            keeper_block = (
+                "\nKEEPER LEAGUE — factor in future value:\n"
+                + "\n".join(keeper_parts)
+                + "\nYounger players (≤25) and early-round picks carry meaningful keeper value. "
+                "Frame this as keeper-league value, NOT multi-decade dynasty capital."
             )
 
-    other_mgr = other_side.get("manager_name", "the other team")
-    txn_desc = (
-        f"TRADE — write strictly from {this_mgr}'s perspective ({other_mgr}'s side is "
-        f"covered by a separate blurb; do NOT grade or summarize their side here):\n"
-        f"  {this_mgr} RECEIVES: {receives}\n"
-        f"  {this_mgr} GIVES UP: {gives_up}\n"
-        f"GRADE FOR {this_mgr.upper()}: {this_grade}"
-    )
-
-    pick_instruction = (
-        " If draft picks are included, factor in round value — earlier rounds are meaningful "
-        "future capital in a keeper league."
-        if (picks_added or picks_dropped) else ""
-    )
+    # Establish winner from grade scores so the consistency rule is explicit
+    score_a = _GRADE_SCORES.get(grade_a, 2.0)
+    score_b = _GRADE_SCORES.get(grade_b, 2.0)
+    diff = round(score_a - score_b, 2)
+    if abs(diff) < 0.4:
+        winner_context = (
+            f"GRADE RELATIONSHIP: Both teams received similar grades "
+            f"({mgr_a}: {grade_a}, {mgr_b}: {grade_b}) — this trade is roughly fair. "
+            "Neither blurb should declare a clear winner. Both can note what each side got."
+        )
+    elif diff > 0:
+        winner_context = (
+            f"GRADE RELATIONSHIP: {mgr_a} ({grade_a}) won this trade; "
+            f"{mgr_b} ({grade_b}) got the worse end. "
+            f"{mgr_a}'s blurb should reflect a win. "
+            f"{mgr_b}'s blurb should reflect they made the losing deal — "
+            f"do NOT describe {mgr_b} as having 'fleeced', 'won', or 'outsmarted' anyone."
+        )
+    else:
+        winner_context = (
+            f"GRADE RELATIONSHIP: {mgr_b} ({grade_b}) won this trade; "
+            f"{mgr_a} ({grade_a}) got the worse end. "
+            f"{mgr_b}'s blurb should reflect a win. "
+            f"{mgr_a}'s blurb should reflect they made the losing deal — "
+            f"do NOT describe {mgr_a} as having 'fleeced', 'won', or 'outsmarted' anyone."
+        )
 
     league_kind = "keeper league" if has_keepers else "redraft league"
-    keeper_voice_note = (
-        " This is a KEEPER league (not a dynasty league) — frame picks and youth as "
-        "next-season keeper value, not multi-decade dynasty capital."
-        if has_keepers else ""
+    has_picks = any(
+        side.get("picks_added") or side.get("picks_dropped")
+        for side in (side_a, side_b)
+    )
+    pick_note = (
+        " Factor in pick round value — earlier rounds are meaningful future capital in a keeper league."
+        if has_picks else ""
     )
 
     return (
         f"{data_block}{early_season_note}"
-        f"{strength_summary}{keeper_note}\n\n"
-        f"{txn_desc}\n\n"
+        f"{strength_block}{keeper_block}\n\n"
+        f"TRADE SUMMARY ({league_kind}):\n"
+        f"  {mgr_a} (GRADE: {grade_a})\n"
+        f"    RECEIVES: {recv_a}\n"
+        f"    GIVES UP: {give_a}\n\n"
+        f"  {mgr_b} (GRADE: {grade_b})\n"
+        f"    RECEIVES: {recv_b}\n"
+        f"    GIVES UP: {give_b}\n\n"
+        f"{winner_context}\n\n"
         f"{stat_instructions}\n\n"
-        f"Write a 2-sentence verdict on whether {this_mgr} won or lost this trade in a "
-        f"{league_kind}. Stay focused on {this_mgr} — you may reference {other_mgr} as "
-        f"context (what they gave up, why they did the deal) but the verdict must be "
-        f"about {this_mgr}.{keeper_voice_note} "
-        f"Be specific about what they gain and give up, including any draft picks.{pick_instruction} "
+        f"Write exactly two 2-sentence verdicts — one per team — using the markers below. "
+        f"The verdicts MUST be logically consistent with the grades and the GRADE RELATIONSHIP above. "
+        f"Each verdict focuses on that team's outcome; you may reference the other team as context. "
         f"Use ONLY the player data above — never cite stats or injuries not listed. "
-        f"Direct, opinionated, no hedging."
+        f"Direct, opinionated, no hedging.{pick_note}\n\n"
+        f"[VERDICT_0]\n"
+        f"<2-sentence verdict for {mgr_a}>\n\n"
+        f"[VERDICT_1]\n"
+        f"<2-sentence verdict for {mgr_b}>"
     )
+
+
+def _parse_joint_trade_verdicts(text: str) -> tuple[str, str]:
+    """Extract [VERDICT_0] and [VERDICT_1] blocks from a joint trade response."""
+    import re
+    v0 = re.search(r"\[VERDICT_0\](.*?)(?:\[VERDICT_1\]|\Z)", text, re.DOTALL)
+    v1 = re.search(r"\[VERDICT_1\](.*?)(?:\[VERDICT_0\]|\Z)", text, re.DOTALL)
+    part0 = v0.group(1).strip() if v0 else ""
+    part1 = v1.group(1).strip() if v1 else ""
+    # If markers were missing, split on first blank line as last-resort fallback
+    if not part0 and not part1:
+        halves = text.strip().split("\n\n", 1)
+        part0 = halves[0].strip()
+        part1 = halves[1].strip() if len(halves) > 1 else ""
+    return part0, part1
 
 
 def _build_txn_shared_context(
@@ -1388,43 +1440,43 @@ def grade_transaction(
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
             if txn_type == "trade" and len(participants) >= 2:
-                # ── Two per-side rationales for trades ────────────────────────
+                # ── Single coordinated call for both trade sides ───────────────
+                # One call sees both grades, preventing contradictory verdicts
+                # (e.g. lower-graded team described as having won the deal).
                 data_block, stat_instructions, early_season_note = _build_txn_shared_context(
                     txn, league, db
                 )
-                side_rationales: list[str] = []
-                for side_idx in range(2):
-                    side_prompt = _build_trade_side_prompt(
-                        side_idx=side_idx,
-                        participants=participants,
-                        data_block=data_block,
-                        stat_instructions=stat_instructions,
-                        early_season_note=early_season_note,
-                        categories=categories,
-                        has_keepers=has_keepers,
-                        player_ages=player_ages,
-                        db=db,
+                joint_prompt = _build_trade_joint_prompt(
+                    participants=participants,
+                    data_block=data_block,
+                    stat_instructions=stat_instructions,
+                    early_season_note=early_season_note,
+                    categories=categories,
+                    has_keepers=has_keepers,
+                    player_ages=player_ages,
+                    db=db,
+                )
+                try:
+                    resp = client.messages.create(
+                        model="claude-haiku-4-5",
+                        max_tokens=600,
+                        system=_move_grade_system,
+                        messages=[{"role": "user", "content": joint_prompt}],
                     )
-                    try:
-                        resp = client.messages.create(
-                            model="claude-haiku-4-5",
-                            max_tokens=300,
-                            system=_move_grade_system,
-                            messages=[{"role": "user", "content": side_prompt}],
-                        )
-                        side_rationale = resp.content[0].text.strip()
-                    except Exception:
-                        _log.error(
-                            "grade_transaction: Claude call failed for trade side %d txn %s",
-                            side_idx, txn.yahoo_transaction_id, exc_info=True
-                        )
-                        side_rationale = f"Grade: {participants[side_idx].get('_grade_letter', '?')}."
-                    side_rationales.append(side_rationale)
-                    participants[side_idx]["_grade_rationale"] = side_rationale
+                    raw = resp.content[0].text.strip()
+                    rationale_0, rationale_1 = _parse_joint_trade_verdicts(raw)
+                except Exception:
+                    _log.error(
+                        "grade_transaction: joint trade Claude call failed for txn %s",
+                        txn.yahoo_transaction_id, exc_info=True
+                    )
+                    rationale_0 = f"Grade: {participants[0].get('_grade_letter', '?')}."
+                    rationale_1 = f"Grade: {participants[1].get('_grade_letter', '?')}."
 
+                participants[0]["_grade_rationale"] = rationale_0
+                participants[1]["_grade_rationale"] = rationale_1
                 txn.participants = participants
-                # Combined rationale: both sides' verdicts separated by a divider
-                txn.grade_rationale = "\n\n".join(side_rationales)
+                txn.grade_rationale = "\n\n".join([rationale_0, rationale_1])
 
             else:
                 prompt = _build_prompt(txn, league, db, stream_ctx=stream_ctx, matchup_ctx=matchup_ctx)
