@@ -41,6 +41,18 @@ export default function AdminPanel() {
     }
   }
 
+  async function regradeTransactions(txnType) {
+    const label = txnType ? `${txnType}s` : 'all transactions'
+    if (!confirm(`Re-grade ${label}? Existing blurbs will be rewritten with the current prompt logic.`)) return
+    try {
+      const qs = txnType ? `?transaction_type=${txnType}` : ''
+      await req('POST', `/api/v1/transactions/regrade${qs}`)
+      alert(`Re-grading ${label} in background. Check Move Grades in ~60 seconds.`)
+    } catch (e) {
+      alert('Failed: ' + e.message)
+    }
+  }
+
   // Redirect non-admins
   useEffect(() => {
     if (user && user.role !== 'admin') navigate('/', { replace: true })
@@ -96,14 +108,22 @@ export default function AdminPanel() {
           <h2 className="text-lg font-semibold text-white">Transaction Diagnostics</h2>
         </div>
         <div className="bg-navy-900 border border-navy-700 rounded-xl p-4 space-y-3">
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <button onClick={loadTxnStatus} disabled={txnStatusLoading}
               className="px-3 py-1.5 text-xs bg-field-800 hover:bg-field-700 text-white rounded border border-field-600 transition-colors">
               {txnStatusLoading ? 'Loading…' : 'Check Status'}
             </button>
+            <button onClick={() => regradeTransactions('trade')}
+              className="px-3 py-1.5 text-xs bg-amber-900/40 hover:bg-amber-800/60 text-amber-300 rounded border border-amber-700 transition-colors">
+              Re-grade Trades
+            </button>
+            <button onClick={() => regradeTransactions(null)}
+              className="px-3 py-1.5 text-xs bg-navy-800 hover:bg-navy-700 text-slate-300 rounded border border-navy-600 transition-colors">
+              Re-grade All Transactions
+            </button>
             <button onClick={forceReimport}
               className="px-3 py-1.5 text-xs bg-red-900/40 hover:bg-red-800/60 text-red-300 rounded border border-red-700 transition-colors">
-              Force Re-import All Transactions
+              Force Re-import All
             </button>
           </div>
           {txnStatus && (
