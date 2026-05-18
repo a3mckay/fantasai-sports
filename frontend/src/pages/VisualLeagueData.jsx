@@ -298,30 +298,50 @@ const QUADRANTS = [
     sub: 'Beating expectations',
     x1: 0, x2: 50, y1: 50, y2: 100,
     fill: '#f87171', textColor: '#fca5a5',
-    pos: 'insideTopLeft',
+    corner: 'top-left',
   },
   {
     label: 'Contenders',
     sub: 'Skill + results',
     x1: 50, x2: 100, y1: 50, y2: 100,
     fill: '#4ade80', textColor: '#86efac',
-    pos: 'insideTopRight',
+    corner: 'top-right',
   },
   {
     label: 'Rebuilding',
     sub: 'Weak and losing',
     x1: 0, x2: 50, y1: 0, y2: 50,
-    fill: '#94a3b8', textColor: '#94a3b8',
-    pos: 'insideBottomLeft',
+    fill: '#94a3b8', textColor: '#cbd5e1',
+    corner: 'bottom-left',
   },
   {
     label: 'Unlucky',
     sub: 'Stronger than record shows',
     x1: 50, x2: 100, y1: 0, y2: 50,
     fill: '#fbbf24', textColor: '#fde68a',
-    pos: 'insideBottomRight',
+    corner: 'bottom-right',
   },
 ]
+
+// Renders quadrant title + subtitle directly on the chart in the appropriate corner
+function QuadrantLabel(q) {
+  return ({ viewBox }) => {
+    if (!viewBox) return null
+    const { x, y, width, height } = viewBox
+    const isRight  = q.corner.includes('right')
+    const isBottom = q.corner.includes('bottom')
+    const PAD = 10
+    const tx = isRight  ? x + width  - PAD : x + PAD
+    const ty = isBottom ? y + height - PAD - 14 : y + PAD + 4
+    const anchor = isRight ? 'end' : 'start'
+    return (
+      <g>
+        <text x={tx} y={ty}      fill={q.textColor} fontSize={12} fontWeight={700} textAnchor={anchor} opacity={0.85}>{q.label}</text>
+        <text x={tx} y={ty + 15} fill={q.textColor} fontSize={9}  fontWeight={400} textAnchor={anchor} opacity={0.55}>{q.sub}</text>
+      </g>
+    )
+  }
+}
 
 function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
   const scatterData = useMemo(() => teams.map(t => {
@@ -359,15 +379,8 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
             <ReferenceArea
               key={q.label}
               x1={q.x1} x2={q.x2} y1={q.y1} y2={q.y2}
-              fill={q.fill} fillOpacity={0.05}
-              label={{
-                value: q.label,
-                position: q.pos,
-                fill: q.textColor,
-                fontSize: 11,
-                fontWeight: 600,
-                opacity: 0.7,
-              }}
+              fill={q.fill} fillOpacity={0.09}
+              label={QuadrantLabel(q)}
             />
           ))}
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
@@ -392,17 +405,6 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
           <Scatter data={scatterData} shape={<CustomDot />} isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {QUADRANTS.map(q => (
-          <div key={q.label} className="flex items-start gap-2 p-2 rounded-lg bg-navy-800/50 border border-navy-700/50">
-            <span style={{ color: q.textColor }} className="text-base leading-none mt-0.5">■</span>
-            <div>
-              <span className="font-semibold text-slate-200">{q.label}</span>
-              <span className="text-slate-500 ml-1">— {q.sub}</span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
