@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   BarChart2, ArrowLeftRight, Search, Star, Users,
-  Trophy, Zap, Menu, X, Activity, TrendingUp, UserCircle, Shield, LogOut, ScrollText, Swords, Grid3X3
+  Trophy, Zap, Menu, X, Activity, TrendingUp, UserCircle, Shield, LogOut, ScrollText, Swords, Grid3X3, PieChart
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
@@ -10,6 +10,7 @@ const NAV = [
   { to: '/',              icon: Activity,       label: 'Home'               },
   { to: '/rankings',      icon: TrendingUp,     label: 'Rankings'           },
   { to: '/scoring-grid',  icon: Grid3X3,        label: 'League Scoring Grid'   },
+  { to: '/visual-data',   icon: PieChart,       label: 'Visual League Data'    },
   { to: '/league-power',  icon: Zap,            label: 'League Power Rankings' },
   { to: '/transactions',  icon: ScrollText,     label: 'Move Grades'        },
   { to: '/find-player',   icon: Search,         label: 'Recommend a Player' },

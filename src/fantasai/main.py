@@ -49,6 +49,7 @@ from fantasai.api.v1.transactions import router as transactions_router
 from fantasai.api.v1.matchups import router as matchups_router  # noqa: E402
 from fantasai.api.v1.explore import router as explore_router  # noqa: E402
 from fantasai.api.v1.scoring_grid import router as scoring_grid_router  # noqa: E402
+from fantasai.api.v1.visual_data import router as visual_data_router  # noqa: E402
 
 _log = logging.getLogger(__name__)
 
@@ -606,3 +607,4 @@ app.include_router(transactions_router, prefix="/api/v1")
 app.include_router(matchups_router, prefix="/api/v1")
 app.include_router(explore_router, prefix="/api/v1")
 app.include_router(scoring_grid_router, prefix="/api/v1")
+app.include_router(visual_data_router, prefix="/api/v1")

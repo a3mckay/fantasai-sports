@@ -113,6 +113,11 @@ export const refreshScoringGrid = (week) => {
 }
 export const getSeasonRecord = () => get('/api/v1/scoring-grid/season-record')
 
+// ── Visual League Data ────────────────────────────────────────────────────────
+export const getLeagueVisualData = () => get('/api/v1/visual-data/league')
+export const getMonteCarlo = (seasonWeeks = 22) =>
+  get(`/api/v1/visual-data/monte-carlo?season_weeks=${seasonWeeks}`)
+
 // ── Explore Players ───────────────────────────────────────────────────────────
 export const getPlayer = (playerId) => get(`/api/v1/players/${playerId}`)
 

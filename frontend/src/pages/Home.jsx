@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, Swords, ScrollText, Grid3X3, ChevronRight, RefreshCw } from 'lucide-react'
+import { TrendingUp, BarChart2, ArrowLeftRight, Star, Users, Trophy, Search, Zap, Swords, ScrollText, Grid3X3, PieChart, ChevronRight, RefreshCw } from 'lucide-react'
 import { useLeague } from '../contexts/LeagueContext'
 
 // Order mirrors the left-hand nav
@@ -17,6 +17,13 @@ const FEATURES = [
     color: 'field',
     title: 'League Scoring Grid',
     description: "Every team's weekly stats side-by-side. See how you stack up in each category against the whole league.",
+  },
+  {
+    to: '/visual-data',
+    icon: PieChart,
+    color: 'field',
+    title: 'Visual League Data',
+    description: 'Team progression, category heat maps, luck vs skill, head-to-head matrix, Monte Carlo forecasts, and more — 11 league visualizations.',
   },
   {
     to: '/league-power',
