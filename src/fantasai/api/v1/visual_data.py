@@ -38,7 +38,7 @@ def get_league_visual_data(
     from fantasai.models.scoring_grid import ScoringGridSnapshot
     from fantasai.services.scoring_grid_service import _SEASON
 
-    conn, _ = _get_conn_and_token(user, db)
+    conn, access_token = _get_conn_and_token(user, db)
     league_key = conn.league_key
 
     league = db.get(League, league_key)
@@ -160,6 +160,22 @@ def get_league_visual_data(
     pairings_by_week: dict[int, list] = {}
     for ma in stored_matchups:
         pairings_by_week.setdefault(ma.week, []).append((ma.team1_key, ma.team2_key))
+
+    # ── Back-fill any weeks with snapshot data but no stored pairings ───────────
+    # MatchupAnalysis is only written when the Matchup Analyzer is used, so early
+    # weeks of the season are often missing.  Fetch those weeks directly from Yahoo.
+    from fantasai.services.matchup_service import fetch_league_scoreboard as _fetch_sb
+
+    all_snapshot_weeks = {s.week for s in snapshots}
+    missing_weeks = sorted(all_snapshot_weeks - set(pairings_by_week.keys()))
+    if missing_weeks and access_token:
+        for w in missing_weeks:
+            raw = _fetch_sb(access_token, league_key, week=w)
+            for m in raw:
+                t1 = m.get("team1_key", "")
+                t2 = m.get("team2_key", "")
+                if t1 and t2:
+                    pairings_by_week.setdefault(w, []).append((t1, t2))
 
     snap_by_week = {s.week: s for s in snapshots}
     for week, pairs in pairings_by_week.items():
