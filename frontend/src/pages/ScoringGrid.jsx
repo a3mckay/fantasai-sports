@@ -216,7 +216,7 @@ export default function ScoringGrid() {
               <Grid3X3 className="w-5 h-5 text-leather-400" />
               League Scoring Grid
             </h1>
-            {aggRecord && selectedTeamKey && (
+            {activeTab === 'grid' && aggRecord && selectedTeamKey && (
               <p className="text-sm text-slate-400 mt-0.5">
                 <span className="text-field-300 font-semibold">{aggRecord.wins}W</span>
                 {' – '}
@@ -228,7 +228,7 @@ export default function ScoringGrid() {
             )}
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
+          {activeTab === 'grid' && <div className="flex items-center gap-3 flex-wrap">
             {teams.length > 0 && (
               <div className="flex flex-col gap-0.5">
                 <label className="text-xs text-slate-500 uppercase tracking-wide">Perspective</label>
@@ -277,7 +277,7 @@ export default function ScoringGrid() {
                 </div>
               </div>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* ── Tabs ── */}
