@@ -71,8 +71,8 @@ function SeasonRecord() {
         <span className="text-slate-600">{categories_count} cats/week</span>
       </p>
 
-      <div className="rounded-lg border border-navy-700 shadow-lg overflow-hidden">
-        <table className="w-full text-sm border-collapse">
+      <div className="rounded-lg border border-navy-700 shadow-lg overflow-x-auto">
+        <table className="w-full text-sm border-collapse min-w-max">
           <thead>
             <tr className="bg-navy-800 border-b border-navy-700">
               <th className="w-10 px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">#</th>
