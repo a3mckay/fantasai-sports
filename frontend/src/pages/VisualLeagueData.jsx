@@ -413,17 +413,6 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
           <Scatter data={scatterData} shape={<CustomDot />} isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {QUADRANTS.map(q => (
-          <div key={q.label} className="flex items-start gap-2 p-2 rounded-lg bg-navy-800/50 border border-navy-700/50">
-            <span style={{ color: q.textColor }} className="text-base leading-none mt-0.5">■</span>
-            <div>
-              <span className="font-semibold text-slate-200">{q.label}</span>
-              <span className="text-slate-500 ml-1">— {q.sub}</span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
