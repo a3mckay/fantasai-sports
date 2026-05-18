@@ -380,14 +380,12 @@ function QuadrantLabel(q) {
   }
 }
 
-function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
+function LuckSkillScatter({ teams, catAllplay, catActual, colors }) {
   const scatterData = useMemo(() => teams.map(t => {
-    const apPct = apWinPct(catAllplay, t.team_key) * 100
-    const ar = actualRecord[t.team_key] ?? { wins: 0, losses: 0, ties: 0 }
-    const actTotal = ar.wins + ar.losses + ar.ties
-    const actPct = actTotal ? (ar.wins + 0.5 * ar.ties) / actTotal * 100 : 50
+    const apPct    = apWinPct(catAllplay, t.team_key) * 100  // all-play category win%
+    const actPct   = apWinPct(catActual,  t.team_key) * 100  // actual schedule category win%
     return { x: apPct, y: actPct, name: t.team_name, team_key: t.team_key, is_mine: t.is_mine }
-  }), [teams, catAllplay, actualRecord])
+  }), [teams, catAllplay, catActual])
 
   const CustomDot = ({ cx, cy, payload }) => {
     const color = colors[payload.team_key]
@@ -407,7 +405,8 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-slate-500">
-        X = all-play win% (true strength — schedule-independent). Y = actual schedule win%.
+        X = all-play category win% (true strength — vs every team, schedule-independent).
+        Y = actual category win% from real scheduled matchups (matches Yahoo standings).
         The dashed diagonal = exactly on skill. Distance above/below shows luck impact.
       </p>
       <ResponsiveContainer width="100%" height={420}>
@@ -434,7 +433,7 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
             label={{ value: 'All-Play Win%  (true strength →)', position: 'insideBottom', offset: -14, fill: '#475569', fontSize: 11 }} />
           <YAxis type="number" dataKey="y" name="Actual Schedule Win%" domain={[0, 100]}
             tick={{ fill: '#64748b', fontSize: 11 }}
-            label={{ value: 'Actual Schedule Win%', angle: -90, position: 'insideLeft', offset: 14, fill: '#475569', fontSize: 11 }} />
+            label={{ value: 'Actual Category Win%  (real schedule)', angle: -90, position: 'insideLeft', offset: 14, fill: '#475569', fontSize: 11 }} />
           <Tooltip
             contentStyle={tooltipStyle}
             labelStyle={tooltipLabelStyle}
@@ -1016,7 +1015,7 @@ export default function VisualLeagueData() {
           <div className="pt-2">
             {activeTab === 'progression' && <ProgressionChart teams={data.teams} weeklyAllplay={data.weekly_allplay} weeklyActual={data.weekly_actual ?? {}} currentWeek={data.current_week} colors={colors} mode={mode} />}
             {activeTab === 'heatmap'     && <CategoryHeatMap teams={sortedTeams} activeCats={data.active_cats} catAllplay={data.cat_allplay} catActual={data.cat_actual ?? {}} teamColors={colors} mode={mode} />}
-            {activeTab === 'luck'        && <LuckSkillScatter teams={data.teams} catAllplay={data.cat_allplay} actualRecord={data.actual_record} colors={colors} />}
+            {activeTab === 'luck'        && <LuckSkillScatter teams={data.teams} catAllplay={data.cat_allplay} catActual={data.cat_actual ?? {}} colors={colors} />}
             {activeTab === 'trends'      && <CategoryTrends teams={data.teams} activeCats={data.active_cats} weeklyStats={data.weekly_stats} currentWeek={data.current_week} colors={colors} mode={mode} />}
             {activeTab === 'h2h'         && <H2HMatrix teams={sortedTeams} h2hResults={data.h2h_results} teamColors={colors} />}
             {activeTab === 'waterfall'   && <WaterfallChart teams={data.teams} weeklyAllplay={data.weekly_allplay} weeklyActual={data.weekly_actual ?? {}} currentWeek={data.current_week} colors={colors} mode={mode} />}
