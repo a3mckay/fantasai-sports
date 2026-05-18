@@ -897,10 +897,10 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
           <ReferenceLine x={medX} stroke="#334155" strokeDasharray="5 5" strokeWidth={1.5} label={{ value: 'avg median', fill: '#475569', fontSize: 9, position: 'insideTopRight' }} />
           <ReferenceLine y={medY} stroke="#334155" strokeDasharray="5 5" strokeWidth={1.5} label={{ value: 'std median', fill: '#475569', fontSize: 9, position: 'insideTopLeft' }} />
-          <XAxis type="number" dataKey="x" name="Avg Weekly Points" domain={['auto', 'auto']}
+          <XAxis type="number" dataKey="x" name="Avg Weekly Points" domain={[minX, maxX]}
             tick={{ fill: '#64748b', fontSize: 11 }}
             label={{ value: 'Average Weekly All-Play Points  (higher = stronger →)', position: 'insideBottom', offset: -14, fill: '#475569', fontSize: 10 }} />
-          <YAxis type="number" dataKey="y" name="Std Dev" domain={[0, 'auto']}
+          <YAxis type="number" dataKey="y" name="Std Dev" domain={[0, maxY]}
             tick={{ fill: '#64748b', fontSize: 11 }}
             label={{ value: 'Std Dev  (↑ = more volatile)', angle: -90, position: 'insideLeft', offset: 12, fill: '#475569', fontSize: 10 }} />
           <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle}
