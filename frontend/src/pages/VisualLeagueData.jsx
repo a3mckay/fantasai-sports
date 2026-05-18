@@ -33,8 +33,8 @@ const TABS = [
   { id: 'waterfall',   label: 'Margin',     icon: BarChart2   },
   { id: 'montecarlo',  label: 'Forecast',   icon: Shuffle     },
   { id: 'radar',       label: 'Radar',      icon: Hexagon     },
-  { id: 'depth',       label: 'Depth',      icon: Layers      },
   { id: 'volatility',  label: 'Volatility', icon: Flame       },
+  { id: 'depth',       label: 'Depth',      icon: Layers      },
   { id: 'trades',      label: 'Trades',     icon: ArrowLeftRight },
 ]
 
@@ -861,10 +861,10 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
   const minX = scatterData.length ? Math.min(...scatterData.map(d => d.x)) * 0.85 : 0
 
   const VQUADS = [
-    { x1: minX, x2: medX, y1: medY, y2: maxY, fill: '#f87171', label: 'Chaotic',               pos: 'insideTopLeft',    textColor: '#fca5a5' },
-    { x1: medX, x2: maxX, y1: medY, y2: maxY, fill: '#fbbf24', label: 'Boom/Bust',              pos: 'insideTopRight',   textColor: '#fde68a' },
-    { x1: minX, x2: medX, y1: 0,    y2: medY, fill: '#94a3b8', label: 'Consistently Weak',      pos: 'insideBottomLeft', textColor: '#94a3b8' },
-    { x1: medX, x2: maxX, y1: 0,    y2: medY, fill: '#4ade80', label: 'Consistent Contenders',  pos: 'insideBottomRight',textColor: '#86efac' },
+    { x1: minX, x2: medX, y1: medY, y2: maxY, fill: '#f87171', label: 'Chaotic',               sub: 'Below average and unpredictable', corner: 'top-left',     textColor: '#fca5a5' },
+    { x1: medX, x2: maxX, y1: medY, y2: maxY, fill: '#fbbf24', label: 'Boom/Bust',              sub: 'Strong but swings wildly',        corner: 'top-right',    textColor: '#fde68a' },
+    { x1: minX, x2: medX, y1: 0,    y2: medY, fill: '#94a3b8', label: 'Consistently Weak',      sub: 'Predictably below average',       corner: 'bottom-left',  textColor: '#cbd5e1' },
+    { x1: medX, x2: maxX, y1: 0,    y2: medY, fill: '#4ade80', label: 'Consistent Contenders',  sub: 'High output, week in week out',   corner: 'bottom-right', textColor: '#86efac' },
   ]
 
   const CustomDot = ({ cx, cy, payload }) => {
@@ -889,8 +889,9 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
           {VQUADS.map(q => (
             <ReferenceArea key={q.label}
               x1={q.x1} x2={q.x2} y1={q.y1} y2={q.y2}
-              fill={q.fill} fillOpacity={0.05}
-              label={{ value: q.label, position: q.pos, fill: q.textColor, fontSize: 10, fontWeight: 600, opacity: 0.7 }}
+              fill={q.fill} fillOpacity={0.12}
+              stroke="none"
+              label={QuadrantLabel(q)}
             />
           ))}
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
@@ -914,22 +915,6 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
           <Scatter data={scatterData} shape={<CustomDot />} isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        {VQUADS.map(q => (
-          <div key={q.label} className="flex items-start gap-2 p-2 rounded-lg bg-navy-800/50 border border-navy-700/50">
-            <span style={{ color: q.textColor }} className="text-base leading-none mt-0.5">■</span>
-            <div>
-              <span className="font-semibold text-slate-200">{q.label}</span>
-              <p className="text-slate-500 mt-0.5">
-                {q.label === 'Consistent Contenders' && 'High output, week in week out. Tough to beat.'}
-                {q.label === 'Boom/Bust' && 'Strong on average but swings wildly. Can steal any week or collapse.'}
-                {q.label === 'Consistently Weak' && 'Predictably below average. Rebuilding or roster-limited.'}
-                {q.label === 'Chaotic' && 'Below average AND unpredictable. Hard to trade with or plan around.'}
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
