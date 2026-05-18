@@ -452,41 +452,64 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Chart 4 — Category Trends
 // ────────────────────────────────────────────────────────────────────────────
-function CategoryTrends({ teams, activeCats, weeklyStats, currentWeek, colors }) {
+function CategoryTrends({ teams, activeCats, weeklyStats, currentWeek, colors, mode }) {
   const [selectedCat, setSelectedCat] = useState(activeCats[0] ?? '')
   const [visible, setVisible] = useState(() => new Set(teams.map(t => t.team_key)))
   const toggle = k => setVisible(prev => {
     const n = new Set(prev); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n
   })
 
+  const isTS = mode === 'true_strength'
+
   const chartData = useMemo(() => Array.from({ length: currentWeek }, (_, i) => {
     const w = i + 1
     const row = { week: w }
-    teams.forEach(t => {
-      const v = weeklyStats[t.team_key]?.[String(w)]?.[selectedCat]
-      if (v != null) row[t.team_key] = Number(v)
-    })
+    if (isTS) {
+      // All-play win% for this category this week vs every other team
+      const isLower = LOWER_IS_BETTER_CATS.has(selectedCat)
+      const vals = teams.map(t => ({
+        tk: t.team_key,
+        v: weeklyStats[t.team_key]?.[String(w)]?.[selectedCat],
+      })).filter(x => x.v != null)
+      vals.forEach(({ tk, v }) => {
+        const others = vals.filter(x => x.tk !== tk)
+        if (!others.length) return
+        const wins = others.filter(x => isLower ? x.v > v : x.v < v).length
+        const ties = others.filter(x => x.v === v).length
+        row[tk] = Math.round((wins + 0.5 * ties) / others.length * 100)
+      })
+    } else {
+      // Raw stat values
+      teams.forEach(t => {
+        const v = weeklyStats[t.team_key]?.[String(w)]?.[selectedCat]
+        if (v != null) row[t.team_key] = Number(v)
+      })
+    }
     return row
-  }), [teams, weeklyStats, selectedCat, currentWeek])
+  }), [teams, weeklyStats, selectedCat, currentWeek, isTS])
 
-  const fmt = v => {
+  const fmtRaw = v => {
     if (v == null) return '—'
     if (['AVG', 'OBP', 'SLG', 'OPS'].includes(selectedCat)) return Number(v).toFixed(3).replace(/^0\./, '.')
     if (['ERA', 'WHIP'].includes(selectedCat)) return Number(v).toFixed(2)
     return Math.round(v)
   }
+  const fmt = v => isTS ? `${v}%` : fmtRaw(v)
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <label className="text-xs text-slate-500 uppercase tracking-wide">Category</label>
         <select value={selectedCat} onChange={e => setSelectedCat(e.target.value)}
           className="text-sm bg-navy-800 border border-navy-600 rounded px-2 py-1.5 text-slate-200 focus:outline-none focus:ring-1 focus:ring-leather-400">
           {activeCats.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
-        {(selectedCat === 'ERA' || selectedCat === 'WHIP') && (
+        {!isTS && LOWER_IS_BETTER_CATS.has(selectedCat) && (
           <span className="text-xs text-slate-500 italic">lower is better</span>
         )}
+        <span className="text-xs text-slate-600">
+          {isTS ? `Win% vs every other team in ${selectedCat} each week` : `Raw ${selectedCat} totals each week`}
+        </span>
       </div>
       <TeamToggles teams={teams} colors={colors} visible={visible} onToggle={toggle} onSetAll={setVisible} />
       <ResponsiveContainer width="100%" height={340}>
@@ -494,8 +517,10 @@ function CategoryTrends({ teams, activeCats, weeklyStats, currentWeek, colors })
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" />
           <XAxis dataKey="week" tick={{ fill: '#64748b', fontSize: 11 }}
             label={{ value: 'Week', position: 'insideBottom', offset: -4, fill: '#475569', fontSize: 11 }} />
-          <YAxis tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={fmt} />
-          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} labelFormatter={w => `Week ${w}`} formatter={v => [fmt(v)]} />
+          <YAxis tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={fmt}
+            domain={isTS ? [0, 100] : ['auto', 'auto']} unit={isTS ? '%' : undefined} />
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle}
+            labelFormatter={w => `Week ${w}`} formatter={v => [fmt(v)]} />
           {teams.filter(t => visible.has(t.team_key)).map(t => (
             <Line key={t.team_key} type="monotone" dataKey={t.team_key} name={t.team_name}
               stroke={colors[t.team_key]} strokeWidth={2}
@@ -573,15 +598,17 @@ function H2HMatrix({ teams, h2hResults, teamColors }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Chart 6 — Matchup Margin Waterfall
 // ────────────────────────────────────────────────────────────────────────────
-function WaterfallChart({ teams, weeklyAllplay, currentWeek, colors }) {
+function WaterfallChart({ teams, weeklyAllplay, weeklyActual, currentWeek, colors, mode }) {
   const [selectedKey, setSelectedKey] = useState(() => teams.find(t => t.is_mine)?.team_key ?? teams[0]?.team_key ?? '')
+
+  const weeklyData = mode === 'actual' ? weeklyActual : weeklyAllplay
 
   const chartData = useMemo(() => Array.from({ length: currentWeek }, (_, i) => {
     const w = i + 1
-    const wk = weeklyAllplay[selectedKey]?.[String(w)]
+    const wk = weeklyData[selectedKey]?.[String(w)]
     const margin = wk ? wk.wins - wk.losses : 0
     return { week: `Wk ${w}`, pos: Math.max(0, margin), neg: Math.min(0, margin), margin, wins: wk?.wins ?? 0, losses: wk?.losses ?? 0, ties: wk?.ties ?? 0 }
-  }), [selectedKey, weeklyAllplay, currentWeek])
+  }), [selectedKey, weeklyData, currentWeek])
 
   return (
     <div className="space-y-4">
@@ -592,7 +619,12 @@ function WaterfallChart({ teams, weeklyAllplay, currentWeek, colors }) {
           {teams.map(t => <option key={t.team_key} value={t.team_key}>{t.team_name}{t.is_mine ? ' (Me)' : ''}</option>)}
         </select>
       </div>
-      <p className="text-xs text-slate-500">Weekly all-play margin (category wins − losses vs every other team). Green = net positive, red = net negative.</p>
+      <p className="text-xs text-slate-500">
+        {mode === 'actual'
+          ? 'Weekly category margin from real scheduled matchup (wins − losses vs actual opponent).'
+          : 'Weekly all-play margin (category wins − losses vs every other team).'}
+        {' '}Green = net positive, red = net negative.
+      </p>
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" vertical={false} />
@@ -751,26 +783,31 @@ function MonteCarloChart() {
 // ────────────────────────────────────────────────────────────────────────────
 // Chart 8 — Category Radar
 // ────────────────────────────────────────────────────────────────────────────
-function CategoryRadar({ teams, activeCats, catAllplay, colors }) {
+function CategoryRadar({ teams, activeCats, catAllplay, catActual, colors, mode }) {
   const [visible, setVisible] = useState(() => new Set(teams.map(t => t.team_key)))
   const toggle = k => setVisible(prev => {
     const n = new Set(prev); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n
   })
 
+  const catData = mode === 'actual' ? catActual : catAllplay
+
   const radarData = useMemo(() => activeCats.map(cat => {
     const entry = { cat }
     teams.forEach(t => {
-      const d = catAllplay[t.team_key]?.[cat]
+      const d = catData[t.team_key]?.[cat]
       const total = d ? d.wins + d.losses + d.ties : 0
       entry[t.team_key] = total ? Math.round((d.wins + 0.5 * d.ties) / total * 100) : 50
     })
     return entry
-  }), [teams, activeCats, catAllplay])
+  }), [teams, activeCats, catData])
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-500">
-        All-play win% per scoring category. Outer edge = 100% (dominating), center = 0%. Compare roster builds across teams.
+        {mode === 'actual'
+          ? 'Category win% from real scheduled matchups only.'
+          : 'Category win% vs every team across all weeks — removes schedule luck.'}
+        {' '}Outer edge = 100%, center = 0%. Compare roster builds across teams.
       </p>
       <TeamToggles teams={teams} colors={colors} visible={visible} onToggle={toggle} onSetAll={setVisible} />
       <ResponsiveContainer width="100%" height={420}>
@@ -901,7 +938,8 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Main Page
 // ────────────────────────────────────────────────────────────────────────────
-const MODE_TABS = new Set(['progression', 'heatmap'])
+const MODE_TABS = new Set(['progression', 'heatmap', 'trends', 'waterfall', 'radar'])
+const LOWER_IS_BETTER_CATS = new Set(['ERA', 'WHIP'])
 
 export default function VisualLeagueData() {
   const [data, setData] = useState(null)
@@ -979,11 +1017,11 @@ export default function VisualLeagueData() {
             {activeTab === 'progression' && <ProgressionChart teams={data.teams} weeklyAllplay={data.weekly_allplay} weeklyActual={data.weekly_actual ?? {}} currentWeek={data.current_week} colors={colors} mode={mode} />}
             {activeTab === 'heatmap'     && <CategoryHeatMap teams={sortedTeams} activeCats={data.active_cats} catAllplay={data.cat_allplay} catActual={data.cat_actual ?? {}} teamColors={colors} mode={mode} />}
             {activeTab === 'luck'        && <LuckSkillScatter teams={data.teams} catAllplay={data.cat_allplay} actualRecord={data.actual_record} colors={colors} />}
-            {activeTab === 'trends'      && <CategoryTrends teams={data.teams} activeCats={data.active_cats} weeklyStats={data.weekly_stats} currentWeek={data.current_week} colors={colors} />}
+            {activeTab === 'trends'      && <CategoryTrends teams={data.teams} activeCats={data.active_cats} weeklyStats={data.weekly_stats} currentWeek={data.current_week} colors={colors} mode={mode} />}
             {activeTab === 'h2h'         && <H2HMatrix teams={sortedTeams} h2hResults={data.h2h_results} teamColors={colors} />}
-            {activeTab === 'waterfall'   && <WaterfallChart teams={data.teams} weeklyAllplay={data.weekly_allplay} currentWeek={data.current_week} colors={colors} />}
+            {activeTab === 'waterfall'   && <WaterfallChart teams={data.teams} weeklyAllplay={data.weekly_allplay} weeklyActual={data.weekly_actual ?? {}} currentWeek={data.current_week} colors={colors} mode={mode} />}
             {activeTab === 'montecarlo'  && <MonteCarloChart />}
-            {activeTab === 'radar'       && <CategoryRadar teams={data.teams} activeCats={data.active_cats} catAllplay={data.cat_allplay} colors={colors} />}
+            {activeTab === 'radar'       && <CategoryRadar teams={data.teams} activeCats={data.active_cats} catAllplay={data.cat_allplay} catActual={data.cat_actual ?? {}} colors={colors} mode={mode} />}
             {activeTab === 'depth'       && <ComingSoon title="Roster Depth Contribution" description="Shows what proportion of each team's category wins come from their top 3 players vs the rest of the roster. Requires per-player roster data from Yahoo — coming soon." />}
             {activeTab === 'volatility'  && <VolatilityChart teams={data.teams} weeklyAllplay={data.weekly_allplay} currentWeek={data.current_week} colors={colors} />}
             {activeTab === 'trades'      && <ComingSoon title="Trade Impact Timeline" description="Overlays your league's transaction history on the team progression chart — so you can see whether trades and waiver pickups actually moved the needle. Coming soon." />}
