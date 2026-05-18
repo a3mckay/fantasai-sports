@@ -183,6 +183,141 @@ def debug_raw_yahoo_response(
     }
 
 
+@router.get("/season-record")
+def get_season_record(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return cumulative season category W-L-T standings.
+
+    For every stored week, retrieves each team's actual stats (ScoringGridSnapshot)
+    and their actual opponent (MatchupAnalysis; falls back to Yahoo scoreboard fetch).
+    Computes per-category wins/losses/ties for each matchup and sums across all weeks.
+    """
+    from fantasai.models.league import League, Team
+    from fantasai.models.matchup import MatchupAnalysis
+    from fantasai.models.scoring_grid import ScoringGridSnapshot
+    from fantasai.services.matchup_service import fetch_league_scoreboard
+    from fantasai.services.scoring_grid_service import _SEASON
+
+    conn, access_token = _get_conn_and_token(user, db)
+    league_key = conn.league_key
+
+    league = db.get(League, league_key)
+    categories = league.scoring_categories if league else []
+    lower_is_better = set(_LOWER_IS_BETTER)
+
+    my_team = (
+        db.query(Team)
+        .filter(Team.league_id == league_key, Team.owner_user_id == user.id)
+        .first()
+    )
+    my_team_key = my_team.yahoo_team_key if my_team else None
+
+    # All stored weekly snapshots for this league
+    snapshots = (
+        db.query(ScoringGridSnapshot)
+        .filter(
+            ScoringGridSnapshot.league_id == league_key,
+            ScoringGridSnapshot.season == _SEASON,
+        )
+        .order_by(ScoringGridSnapshot.week)
+        .all()
+    )
+    snap_by_week = {s.week: s for s in snapshots}
+
+    # Build week → [(team1_key, team2_key)] from stored MatchupAnalysis
+    pairings_by_week: dict[int, list[tuple[str, str]]] = {}
+    stored_matchups = (
+        db.query(MatchupAnalysis)
+        .filter(MatchupAnalysis.league_id == league_key)
+        .all()
+    )
+    for ma in stored_matchups:
+        pairings_by_week.setdefault(ma.week, []).append((ma.team1_key, ma.team2_key))
+
+    # For weeks with snapshots but no stored pairings, fetch from Yahoo scoreboard
+    for week in sorted(snap_by_week):
+        if week in pairings_by_week:
+            continue
+        try:
+            sb = fetch_league_scoreboard(access_token, league_key, week=week)
+            pairings_by_week[week] = [
+                (m["team1_key"], m["team2_key"])
+                for m in sb
+                if m.get("team1_key") and m.get("team2_key")
+            ]
+        except Exception:
+            logger.warning("Could not fetch scoreboard pairings for league %s week %s", league_key, week)
+
+    # Seed records from team metadata in snapshots
+    records: dict[str, dict] = {}
+    for snap in snapshots:
+        for tm in snap.teams_meta or []:
+            tk = tm.get("team_key")
+            if tk and tk not in records:
+                records[tk] = {
+                    "team_key": tk,
+                    "team_name": tm.get("team_name", tk),
+                    "manager_name": tm.get("manager_name"),
+                    "wins": 0, "losses": 0, "ties": 0,
+                    "is_mine": tk == my_team_key,
+                }
+
+    # Compute per-category W-L-T for each matchup in each week
+    weeks_counted = []
+    for week, snap in sorted(snap_by_week.items()):
+        pairings = pairings_by_week.get(week, [])
+        if not pairings:
+            continue
+        weeks_counted.append(week)
+        team_stats = snap.team_stats or {}
+
+        for t1_key, t2_key in pairings:
+            t1_stats = team_stats.get(t1_key, {})
+            t2_stats = team_stats.get(t2_key, {})
+            if not t1_stats or not t2_stats:
+                continue
+
+            for tk in (t1_key, t2_key):
+                if tk not in records:
+                    records[tk] = {
+                        "team_key": tk, "team_name": tk,
+                        "wins": 0, "losses": 0, "ties": 0,
+                        "is_mine": tk == my_team_key,
+                    }
+
+            for cat in categories:
+                v1 = t1_stats.get(cat)
+                v2 = t2_stats.get(cat)
+                if v1 is None or v2 is None:
+                    continue
+                invert = cat in lower_is_better
+                if v1 == v2:
+                    records[t1_key]["ties"] += 1
+                    records[t2_key]["ties"] += 1
+                elif (v1 > v2) != invert:
+                    records[t1_key]["wins"] += 1
+                    records[t2_key]["losses"] += 1
+                else:
+                    records[t2_key]["wins"] += 1
+                    records[t1_key]["losses"] += 1
+
+    # Sort: most wins first, then fewest losses
+    standings = sorted(records.values(), key=lambda r: (-r["wins"], r["losses"]))
+    for i, row in enumerate(standings, 1):
+        row["rank"] = i
+        total = row["wins"] + row["losses"] + row["ties"]
+        row["win_pct"] = round(row["wins"] / total, 3) if total else 0.0
+
+    return {
+        "standings": standings,
+        "categories_count": len(categories),
+        "weeks_counted": weeks_counted,
+        "my_team_key": my_team_key,
+    }
+
+
 @router.post("/refresh")
 def refresh_scoring_grid(
     week: Optional[int] = None,

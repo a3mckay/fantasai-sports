@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Grid3X3 } from 'lucide-react'
-import { getScoringGrid } from '../lib/api'
+import { ChevronLeft, ChevronRight, Grid3X3, Trophy } from 'lucide-react'
+import { getScoringGrid, getSeasonRecord } from '../lib/api'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
 
@@ -33,6 +33,96 @@ function cellBg(result) {
     case 'tie':  return 'text-slate-500'
     default:     return 'text-slate-400'
   }
+}
+
+// ---------------------------------------------------------------------------
+// Season Record tab
+// ---------------------------------------------------------------------------
+function SeasonRecord() {
+  const [data, setData]     = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]   = useState(null)
+
+  useEffect(() => {
+    getSeasonRecord()
+      .then(d => { setData(d); setLoading(false) })
+      .catch(e => { setError(e.message); setLoading(false) })
+  }, [])
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
+      <Spinner /><span>Loading season record…</span>
+    </div>
+  )
+  if (error) return <ErrorBanner message={error} />
+
+  const { standings = [], categories_count = 0, weeks_counted = [], my_team_key } = data ?? {}
+  const weeksLabel = weeks_counted.length === 0 ? 'No data yet'
+    : weeks_counted.length === 1 ? `Week ${weeks_counted[0]}`
+    : `Weeks ${weeks_counted[0]}–${weeks_counted[weeks_counted.length - 1]}`
+
+  // leader's wins for GB calculation
+  const leaderWins = standings[0]?.wins ?? 0
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-500">
+        Category W-L-T vs actual weekly opponents · {weeksLabel} ·{' '}
+        <span className="text-slate-600">{categories_count} cats/week</span>
+      </p>
+
+      <div className="rounded-lg border border-navy-700 shadow-lg overflow-hidden">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-navy-800 border-b border-navy-700">
+              <th className="w-10 px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">#</th>
+              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">Team</th>
+              <th className="px-3 py-2 text-center text-xs font-semibold text-field-400 uppercase tracking-wider">W</th>
+              <th className="px-3 py-2 text-center text-xs font-semibold text-stitch-400 uppercase tracking-wider">L</th>
+              <th className="px-3 py-2 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">T</th>
+              <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wider">Win%</th>
+              <th className="px-3 py-2 text-center text-xs font-semibold text-slate-500 uppercase tracking-wider">GB</th>
+            </tr>
+          </thead>
+          <tbody>
+            {standings.map((row, idx) => {
+              const isMine = row.team_key === my_team_key
+              const gb = idx === 0 ? '—' : ((leaderWins - row.wins) / 2).toFixed(1)
+              const rowBg = isMine ? 'bg-navy-700/60' : idx % 2 === 0 ? 'bg-navy-900' : 'bg-navy-800/60'
+              return (
+                <tr key={row.team_key} className={`border-b border-navy-700/50 ${rowBg}`}>
+                  <td className="px-3 py-2 text-xs text-slate-600 tabular-nums">{row.rank}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {isMine && <span className="text-leather-400 text-[10px] font-bold">▶</span>}
+                      <span className={`text-sm font-medium ${isMine ? 'text-leather-200' : 'text-slate-200'}`}>
+                        {row.team_name}
+                      </span>
+                      {isMine && <span className="text-[10px] text-slate-500">(me)</span>}
+                    </div>
+                    {row.manager_name && (
+                      <div className="text-[11px] text-slate-600 ml-3.5">{row.manager_name}</div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-center text-sm font-semibold text-field-400 tabular-nums">{row.wins}</td>
+                  <td className="px-3 py-2 text-center text-sm font-semibold text-stitch-400 tabular-nums">{row.losses}</td>
+                  <td className="px-3 py-2 text-center text-sm text-slate-500 tabular-nums">{row.ties}</td>
+                  <td className="px-3 py-2 text-center text-xs text-slate-400 tabular-nums">
+                    {(row.win_pct * 100).toFixed(1)}%
+                  </td>
+                  <td className="px-3 py-2 text-center text-xs text-slate-500 tabular-nums">{gb}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-slate-600">
+        Category wins/losses counted vs. your actual opponent each week. Ties counted as ties.
+      </p>
+    </div>
+  )
 }
 
 export default function ScoringGrid() {
@@ -112,6 +202,7 @@ export default function ScoringGrid() {
   }
 
   const aggRecord = selectedTeamKey ? getAggregateRecord() : null
+  const [activeTab, setActiveTab] = useState('grid')
 
   // Break out of Layout's max-w-4xl px-4 md:px-8 py-8 container
   return (
@@ -189,9 +280,32 @@ export default function ScoringGrid() {
           </div>
         </div>
 
-        {error && <ErrorBanner message={error} />}
+        {/* ── Tabs ── */}
+        <div className="flex gap-1 border-b border-navy-700">
+          {[
+            { id: 'grid', label: 'Scoring Grid', icon: Grid3X3 },
+            { id: 'season', label: 'Season Record', icon: Trophy },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                activeTab === tab.id
+                  ? 'border-field-500 text-field-300'
+                  : 'border-transparent text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <tab.icon className="w-3.5 h-3.5" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
-        {loading ? (
+        {activeTab === 'grid' ? (
+          <>
+            {error && <ErrorBanner message={error} />}
+
+            {loading ? (
           <div className="flex items-center justify-center py-16 gap-3 text-slate-400">
             <Spinner />
             <span>Loading scoring grid…</span>
@@ -306,6 +420,10 @@ export default function ScoringGrid() {
           <div className="text-center py-16 text-slate-500">
             No scoring data available yet.
           </div>
+        )}
+          </>
+        ) : (
+          <SeasonRecord />
         )}
 
       </div>

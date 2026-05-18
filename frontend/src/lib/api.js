@@ -111,6 +111,7 @@ export const refreshScoringGrid = (week) => {
   const params = week != null ? `?week=${week}` : ''
   return req('POST', `/api/v1/scoring-grid/refresh${params}`)
 }
+export const getSeasonRecord = () => get('/api/v1/scoring-grid/season-record')
 
 // ── Explore Players ───────────────────────────────────────────────────────────
 export const getPlayer = (playerId) => get(`/api/v1/players/${playerId}`)
