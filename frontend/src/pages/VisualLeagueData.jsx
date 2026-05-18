@@ -59,7 +59,11 @@ const tooltipStyle = {
   border: '1px solid #1e3a5f',
   borderRadius: '8px',
   fontSize: '12px',
+  color: '#e2e8f0',
 }
+
+const tooltipLabelStyle = { color: '#94a3b8', marginBottom: 4 }
+const tooltipItemStyle  = { color: '#e2e8f0' }
 
 // ── Team Toggles (with Select / Deselect All) ─────────────────────────────────
 function TeamToggles({ teams, colors, visible, onToggle, onSetAll }) {
@@ -399,6 +403,8 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
             label={{ value: 'Actual Schedule Win%', angle: -90, position: 'insideLeft', offset: 14, fill: '#475569', fontSize: 11 }} />
           <Tooltip
             contentStyle={tooltipStyle}
+            labelStyle={tooltipLabelStyle}
+            itemStyle={tooltipItemStyle}
             formatter={(val, name) => [`${Number(val).toFixed(1)}%`, name]}
             cursor={{ strokeDasharray: '3 3', stroke: '#334155' }}
           />
@@ -455,7 +461,7 @@ function CategoryTrends({ teams, activeCats, weeklyStats, currentWeek, colors })
           <XAxis dataKey="week" tick={{ fill: '#64748b', fontSize: 11 }}
             label={{ value: 'Week', position: 'insideBottom', offset: -4, fill: '#475569', fontSize: 11 }} />
           <YAxis tick={{ fill: '#64748b', fontSize: 11 }} tickFormatter={fmt} />
-          <Tooltip contentStyle={tooltipStyle} labelFormatter={w => `Week ${w}`} formatter={v => [fmt(v)]} />
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} labelFormatter={w => `Week ${w}`} formatter={v => [fmt(v)]} />
           {teams.filter(t => visible.has(t.team_key)).map(t => (
             <Line key={t.team_key} type="monotone" dataKey={t.team_key} name={t.team_name}
               stroke={colors[t.team_key]} strokeWidth={2}
@@ -558,7 +564,7 @@ function WaterfallChart({ teams, weeklyAllplay, currentWeek, colors }) {
           <CartesianGrid strokeDasharray="3 3" stroke="#1e3a5f" vertical={false} />
           <XAxis dataKey="week" tick={{ fill: '#64748b', fontSize: 11 }} />
           <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
-          <Tooltip contentStyle={tooltipStyle}
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle}
             formatter={(val, key, props) => {
               const d = props.payload
               return [`${d.wins}W – ${d.losses}L – ${d.ties}T  (net: ${d.margin > 0 ? '+' : ''}${d.margin})`, 'Result']
@@ -737,7 +743,7 @@ function CategoryRadar({ teams, activeCats, catAllplay, colors }) {
         <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="72%">
           <PolarGrid stroke="#1e3a5f" />
           <PolarAngleAxis dataKey="cat" tick={{ fill: '#64748b', fontSize: 11 }} />
-          <Tooltip contentStyle={tooltipStyle} formatter={v => [`${v}%`]} />
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle} formatter={v => [`${v}%`]} />
           {teams.filter(t => visible.has(t.team_key)).map(t => (
             <Radar key={t.team_key} name={t.team_name} dataKey={t.team_key}
               stroke={colors[t.team_key]} fill={colors[t.team_key]}
@@ -826,7 +832,7 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
           <YAxis type="number" dataKey="y" name="Std Dev" domain={[0, 'auto']}
             tick={{ fill: '#64748b', fontSize: 11 }}
             label={{ value: 'Std Dev  (↑ = more volatile)', angle: -90, position: 'insideLeft', offset: 12, fill: '#475569', fontSize: 10 }} />
-          <Tooltip contentStyle={tooltipStyle}
+          <Tooltip contentStyle={tooltipStyle} labelStyle={tooltipLabelStyle} itemStyle={tooltipItemStyle}
             formatter={(v, name, props) => {
               const d = props?.payload
               if (!d) return [v, name]
