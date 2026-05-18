@@ -106,6 +106,30 @@ function TeamToggles({ teams, colors, visible, onToggle, onSetAll }) {
   )
 }
 
+// ── True Strength / Actual toggle ─────────────────────────────────────────────
+function ModeToggle({ mode, onChange }) {
+  return (
+    <div className="flex items-center gap-1 p-0.5 bg-navy-800 border border-navy-700 rounded-lg self-start">
+      {[
+        { id: 'true_strength', label: 'True Strength' },
+        { id: 'actual',        label: 'Actual' },
+      ].map(opt => (
+        <button
+          key={opt.id}
+          onClick={() => onChange(opt.id)}
+          className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+            mode === opt.id
+              ? 'bg-field-700 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function ComingSoon({ title, description }) {
   return (
     <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
@@ -119,17 +143,19 @@ function ComingSoon({ title, description }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Chart 1 — Team Progression
 // ────────────────────────────────────────────────────────────────────────────
-function ProgressionChart({ teams, weeklyAllplay, currentWeek, colors }) {
+function ProgressionChart({ teams, weeklyAllplay, weeklyActual, currentWeek, colors, mode }) {
   const [visible, setVisible] = useState(() => new Set(teams.map(t => t.team_key)))
   const toggle = k => setVisible(prev => {
     const n = new Set(prev); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n
   })
 
+  const weeklyData = mode === 'actual' ? weeklyActual : weeklyAllplay
+
   const chartData = useMemo(() => {
     const pts = (tk, upTo) => {
       let s = 0
       for (let w = 1; w <= upTo; w++) {
-        const wk = weeklyAllplay[tk]?.[String(w)]
+        const wk = weeklyData[tk]?.[String(w)]
         if (wk) s += wk.wins * 2 + wk.ties
       }
       return s
@@ -158,7 +184,7 @@ function ProgressionChart({ teams, weeklyAllplay, currentWeek, colors }) {
       rows.push(row)
     }
     return rows
-  }, [teams, weeklyAllplay, currentWeek])
+  }, [teams, weeklyData, currentWeek])
 
   // Custom tooltip — suppress bridge-point dashes (week currentWeek-1 _d entries)
   const CustomTooltip = useCallback(({ active, payload, label }) => {
@@ -197,19 +223,21 @@ function ProgressionChart({ teams, weeklyAllplay, currentWeek, colors }) {
     teams.forEach(t => {
       let cum = 0
       for (let w = 1; w <= currentWeek; w++) {
-        const wk = weeklyAllplay[t.team_key]?.[String(w)]
+        const wk = weeklyData[t.team_key]?.[String(w)]
         if (wk) cum += wk.wins * 2 + wk.ties
       }
       mx = Math.max(mx, cum)
     })
     return mx
-  }, [teams, weeklyAllplay, currentWeek])
+  }, [teams, weeklyData, currentWeek])
 
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-500">
-        Cumulative all-play points (win = 2, tie = 1) vs every other team each week.
-        Solid = completed week · dashed = current week in progress.
+        {mode === 'actual'
+          ? 'Cumulative points from real scheduled matchups (category wins = 2, ties = 1).'
+          : 'Cumulative all-play points (win = 2, tie = 1) vs every other team each week — removes schedule luck.'}
+        {' '}Solid = completed week · dashed = current week in progress.
       </p>
       <TeamToggles teams={teams} colors={colors} visible={visible} onToggle={toggle} onSetAll={setVisible} />
       <ResponsiveContainer width="100%" height={380}>
@@ -236,9 +264,10 @@ function ProgressionChart({ teams, weeklyAllplay, currentWeek, colors }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Chart 2 — Category Heat Map
 // ────────────────────────────────────────────────────────────────────────────
-function CategoryHeatMap({ teams, activeCats, catAllplay, teamColors }) {
+function CategoryHeatMap({ teams, activeCats, catAllplay, catActual, teamColors, mode }) {
+  const catData = mode === 'actual' ? catActual : catAllplay
   function cellData(tk, cat) {
-    const d = catAllplay[tk]?.[cat]
+    const d = catData[tk]?.[cat]
     if (!d) return { pct: 0.5, label: '—' }
     const total = d.wins + d.losses + d.ties
     if (!total) return { pct: 0.5, label: '—' }
@@ -251,7 +280,10 @@ function CategoryHeatMap({ teams, activeCats, catAllplay, teamColors }) {
   return (
     <div className="space-y-3">
       <p className="text-xs text-slate-500">
-        All-play win% per category across all weeks. <span className="text-field-400">Green</span> = category strength, <span className="text-stitch-400">red</span> = weakness.
+        {mode === 'actual'
+          ? 'Category win% from real scheduled matchups only.'
+          : 'Category win% vs every team across all weeks — removes schedule luck.'}
+        {' '}<span className="text-field-400">Green</span> = strength, <span className="text-stitch-400">red</span> = weakness.
       </p>
       <div className="overflow-x-auto rounded-lg border border-navy-700">
         <table className="w-full text-xs border-collapse min-w-max">
@@ -869,11 +901,14 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
 // ────────────────────────────────────────────────────────────────────────────
 // Main Page
 // ────────────────────────────────────────────────────────────────────────────
+const MODE_TABS = new Set(['progression', 'heatmap'])
+
 export default function VisualLeagueData() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState('progression')
+  const [mode, setMode] = useState('true_strength')
 
   useEffect(() => {
     getLeagueVisualData()
@@ -921,6 +956,18 @@ export default function VisualLeagueData() {
           ))}
         </div>
 
+        {/* Mode toggle — only on charts that support it */}
+        {!loading && !error && data && MODE_TABS.has(activeTab) && (
+          <div className="flex items-center gap-3">
+            <ModeToggle mode={mode} onChange={setMode} />
+            <span className="text-xs text-slate-600">
+              {mode === 'true_strength'
+                ? 'vs every team each week — removes schedule luck'
+                : 'from real scheduled matchups only'}
+            </span>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
             <Spinner /><span>Loading league data…</span>
@@ -929,8 +976,8 @@ export default function VisualLeagueData() {
           <ErrorBanner message={error} />
         ) : data ? (
           <div className="pt-2">
-            {activeTab === 'progression' && <ProgressionChart teams={data.teams} weeklyAllplay={data.weekly_allplay} currentWeek={data.current_week} colors={colors} />}
-            {activeTab === 'heatmap'     && <CategoryHeatMap teams={sortedTeams} activeCats={data.active_cats} catAllplay={data.cat_allplay} teamColors={colors} />}
+            {activeTab === 'progression' && <ProgressionChart teams={data.teams} weeklyAllplay={data.weekly_allplay} weeklyActual={data.weekly_actual ?? {}} currentWeek={data.current_week} colors={colors} mode={mode} />}
+            {activeTab === 'heatmap'     && <CategoryHeatMap teams={sortedTeams} activeCats={data.active_cats} catAllplay={data.cat_allplay} catActual={data.cat_actual ?? {}} teamColors={colors} mode={mode} />}
             {activeTab === 'luck'        && <LuckSkillScatter teams={data.teams} catAllplay={data.cat_allplay} actualRecord={data.actual_record} colors={colors} />}
             {activeTab === 'trends'      && <CategoryTrends teams={data.teams} activeCats={data.active_cats} weeklyStats={data.weekly_stats} currentWeek={data.current_week} colors={colors} />}
             {activeTab === 'h2h'         && <H2HMatrix teams={sortedTeams} h2hResults={data.h2h_results} teamColors={colors} />}

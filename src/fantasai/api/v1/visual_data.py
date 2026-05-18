@@ -147,8 +147,11 @@ def get_league_visual_data(
                 h2h.setdefault(t2, {}).setdefault(t1, {"wins": 0, "losses": 0, "ties": 0})
                 h2h[t2][t1]["wins"] += w2; h2h[t2][t1]["losses"] += l2; h2h[t2][t1]["ties"] += tie2
 
-    # ── Actual matchup record from MatchupAnalysis pairings ──────────────────
+    # ── Actual matchup record + weekly actual + per-category actual ──────────
     actual_record: dict = {tm["team_key"]: {"wins": 0, "losses": 0, "ties": 0} for tm in teams_meta}
+    weekly_actual: dict = {}  # {team_key: {week_str: {wins,losses,ties}}} — cat W-L-T in real matchup
+    cat_actual: dict = {}     # {team_key: {cat: {wins,losses,ties}}}       — cat W-L-T vs real opponent
+
     stored_matchups = (
         db.query(MatchupAnalysis)
         .filter(MatchupAnalysis.league_id == league_key)
@@ -164,22 +167,43 @@ def get_league_visual_data(
         if not snap:
             continue
         ts = snap.team_stats or {}
+        week_str = str(week)
         for t1, t2 in pairs:
             s1 = ts.get(t1, {}); s2 = ts.get(t2, {})
             if not s1 or not s2:
                 continue
-            w1 = l1 = 0
+            w1 = l1 = tie1 = 0
+            w2 = l2 = tie2 = 0
             for cat in active_cats:
                 v1 = s1.get(cat); v2 = s2.get(cat)
                 if v1 is None or v2 is None:
                     continue
                 invert = cat in lower_is_better
+
+                cat_actual.setdefault(t1, {}).setdefault(cat, {"wins": 0, "losses": 0, "ties": 0})
+                cat_actual.setdefault(t2, {}).setdefault(cat, {"wins": 0, "losses": 0, "ties": 0})
+
                 if v1 == v2:
-                    pass
+                    cat_actual[t1][cat]["ties"] += 1
+                    cat_actual[t2][cat]["ties"] += 1
+                    tie1 += 1; tie2 += 1
                 elif (v1 > v2) != invert:
-                    w1 += 1
+                    cat_actual[t1][cat]["wins"] += 1
+                    cat_actual[t2][cat]["losses"] += 1
+                    w1 += 1; l2 += 1
                 else:
-                    l1 += 1
+                    cat_actual[t2][cat]["wins"] += 1
+                    cat_actual[t1][cat]["losses"] += 1
+                    l1 += 1; w2 += 1
+
+            # Weekly actual aggregates (category wins in the real matchup that week)
+            wa = weekly_actual.setdefault(t1, {}).setdefault(week_str, {"wins": 0, "losses": 0, "ties": 0})
+            wa["wins"] += w1; wa["losses"] += l1; wa["ties"] += tie1
+
+            wb = weekly_actual.setdefault(t2, {}).setdefault(week_str, {"wins": 0, "losses": 0, "ties": 0})
+            wb["wins"] += w2; wb["losses"] += l2; wb["ties"] += tie2
+
+            # Overall actual record (who won the matchup)
             if w1 > l1:
                 if t1 in actual_record: actual_record[t1]["wins"] += 1
                 if t2 in actual_record: actual_record[t2]["losses"] += 1
@@ -195,8 +219,10 @@ def get_league_visual_data(
         "current_week": current_week,
         "active_cats": active_cats,
         "weekly_allplay": weekly_allplay,
+        "weekly_actual": weekly_actual,
         "weekly_stats": weekly_stats,
         "cat_allplay": cat_allplay,
+        "cat_actual": cat_actual,
         "h2h_results": h2h,
         "actual_record": actual_record,
         "my_team_key": my_team_key,
