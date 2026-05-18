@@ -329,15 +329,20 @@ function LuckSkillScatter({ teams, catAllplay, actualRecord, colors }) {
     const ar = actualRecord[t.team_key] ?? { wins: 0, losses: 0, ties: 0 }
     const actTotal = ar.wins + ar.losses + ar.ties
     const actPct = actTotal ? (ar.wins + 0.5 * ar.ties) / actTotal * 100 : 50
-    return { x: apPct, y: actPct, name: t.team_name, team_key: t.team_key }
+    return { x: apPct, y: actPct, name: t.team_name, team_key: t.team_key, is_mine: t.is_mine }
   }), [teams, catAllplay, actualRecord])
 
   const CustomDot = ({ cx, cy, payload }) => {
     const color = colors[payload.team_key]
+    const isMe = payload.is_mine
     return (
       <g>
-        <circle cx={cx} cy={cy} r={7} fill={color} fillOpacity={0.85} stroke={color} strokeWidth={1} />
-        <text x={cx + 10} y={cy + 4} fontSize={10} fill={color}>{payload.name}</text>
+        {/* Outer glow ring for user's team */}
+        {isMe && <circle cx={cx} cy={cy} r={14} fill="none" stroke={color} strokeWidth={2} strokeOpacity={0.35} />}
+        <circle cx={cx} cy={cy} r={isMe ? 9 : 6} fill={color} fillOpacity={isMe ? 1 : 0.75}
+          stroke={isMe ? '#ffffff' : color} strokeWidth={isMe ? 1.5 : 0.5} />
+        <text x={cx + (isMe ? 13 : 10)} y={cy + 4} fontSize={isMe ? 11 : 10}
+          fontWeight={isMe ? '700' : '400'} fill={color}>{payload.name}</text>
       </g>
     )
   }
@@ -873,6 +878,14 @@ export default function VisualLeagueData() {
     return map
   }, [data])
 
+  // User's team first, then everyone else — used for table-based charts
+  const sortedTeams = useMemo(() => {
+    if (!data) return []
+    const mine   = data.teams.filter(t => t.is_mine)
+    const others = data.teams.filter(t => !t.is_mine)
+    return [...mine, ...others]
+  }, [data])
+
   return (
     <div className="-mx-4 md:-mx-8 -mt-8 min-h-full">
       <div className="px-4 md:px-6 py-6 space-y-4">
@@ -907,10 +920,10 @@ export default function VisualLeagueData() {
         ) : data ? (
           <div className="pt-2">
             {activeTab === 'progression' && <ProgressionChart teams={data.teams} weeklyAllplay={data.weekly_allplay} currentWeek={data.current_week} colors={colors} />}
-            {activeTab === 'heatmap'     && <CategoryHeatMap teams={data.teams} activeCats={data.active_cats} catAllplay={data.cat_allplay} teamColors={colors} />}
+            {activeTab === 'heatmap'     && <CategoryHeatMap teams={sortedTeams} activeCats={data.active_cats} catAllplay={data.cat_allplay} teamColors={colors} />}
             {activeTab === 'luck'        && <LuckSkillScatter teams={data.teams} catAllplay={data.cat_allplay} actualRecord={data.actual_record} colors={colors} />}
             {activeTab === 'trends'      && <CategoryTrends teams={data.teams} activeCats={data.active_cats} weeklyStats={data.weekly_stats} currentWeek={data.current_week} colors={colors} />}
-            {activeTab === 'h2h'         && <H2HMatrix teams={data.teams} h2hResults={data.h2h_results} teamColors={colors} />}
+            {activeTab === 'h2h'         && <H2HMatrix teams={sortedTeams} h2hResults={data.h2h_results} teamColors={colors} />}
             {activeTab === 'waterfall'   && <WaterfallChart teams={data.teams} weeklyAllplay={data.weekly_allplay} currentWeek={data.current_week} colors={colors} />}
             {activeTab === 'montecarlo'  && <MonteCarloChart />}
             {activeTab === 'radar'       && <CategoryRadar teams={data.teams} activeCats={data.active_cats} catAllplay={data.cat_allplay} colors={colors} />}
