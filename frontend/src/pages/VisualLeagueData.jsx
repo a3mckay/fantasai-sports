@@ -381,11 +381,18 @@ function QuadrantLabel(q) {
 }
 
 function LuckSkillScatter({ teams, catAllplay, catActual, colors }) {
+  const [visible, setVisible] = useState(() => new Set(teams.map(t => t.team_key)))
+  const toggle = k => setVisible(prev => {
+    const n = new Set(prev); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n
+  })
+
   const scatterData = useMemo(() => teams.map(t => {
     const apPct    = apWinPct(catAllplay, t.team_key) * 100  // all-play category win%
     const actPct   = apWinPct(catActual,  t.team_key) * 100  // actual schedule category win%
     return { x: apPct, y: actPct, name: t.team_name, team_key: t.team_key, is_mine: t.is_mine }
   }), [teams, catAllplay, catActual])
+
+  const visibleData = useMemo(() => scatterData.filter(d => visible.has(d.team_key)), [scatterData, visible])
 
   const CustomDot = ({ cx, cy, payload }) => {
     const color = colors[payload.team_key]
@@ -409,6 +416,7 @@ function LuckSkillScatter({ teams, catAllplay, catActual, colors }) {
         Y = actual category win% from real scheduled matchups (matches Yahoo standings).
         The dashed diagonal = exactly on skill. Distance above/below shows luck impact.
       </p>
+      <TeamToggles teams={teams} colors={colors} visible={visible} onToggle={toggle} onSetAll={setVisible} />
       <ResponsiveContainer width="100%" height={420}>
         <ScatterChart margin={{ top: 20, right: 40, left: 0, bottom: 24 }}>
           {QUADRANTS.map(q => (
@@ -441,7 +449,7 @@ function LuckSkillScatter({ teams, catAllplay, catActual, colors }) {
             formatter={(val, name) => [`${Number(val).toFixed(1)}%`, name]}
             cursor={{ strokeDasharray: '3 3', stroke: '#334155' }}
           />
-          <Scatter data={scatterData} shape={<CustomDot />} isAnimationActive={false} />
+          <Scatter data={visibleData} shape={<CustomDot />} isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
     </div>
@@ -829,6 +837,12 @@ function CategoryRadar({ teams, activeCats, catAllplay, catActual, colors, mode 
 // Chart 10 — Volatility Scatter (avg vs consistency)
 // ────────────────────────────────────────────────────────────────────────────
 function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
+  const [visible, setVisible] = useState(() => new Set(teams.map(t => t.team_key)))
+  const toggle = k => setVisible(prev => {
+    const n = new Set(prev); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n
+  })
+
+  // Full dataset — used for stable median/domain calculations regardless of visibility
   const scatterData = useMemo(() => {
     return teams.map(t => {
       const weeks = Array.from({ length: currentWeek }, (_, i) => {
@@ -847,10 +861,13 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
     }).filter(Boolean)
   }, [teams, weeklyAllplay, currentWeek])
 
-  // Medians for reference lines (dividing quadrants)
-  const sorted = d => [...scatterData.map(s => s[d])].sort((a, b) => a - b)
+  // Only the visible subset — passed to <Scatter>
+  const visibleData = useMemo(() => scatterData.filter(d => visible.has(d.team_key)), [scatterData, visible])
+
+  // Medians computed from ALL teams so quadrants stay stable while toggling
+  const sortedVals = d => [...scatterData.map(s => s[d])].sort((a, b) => a - b)
   const med = d => {
-    const s = sorted(d); const m = Math.floor(s.length / 2)
+    const s = sortedVals(d); const m = Math.floor(s.length / 2)
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
   }
   const medX = scatterData.length ? med('x') : 0
@@ -884,6 +901,7 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
         Y-axis = standard deviation (how consistent — <span className="text-field-400">lower is steadier</span>).
         Dashed lines = league medians.
       </p>
+      <TeamToggles teams={teams} colors={colors} visible={visible} onToggle={toggle} onSetAll={setVisible} />
       <ResponsiveContainer width="100%" height={400}>
         <ScatterChart margin={{ top: 16, right: 40, left: 0, bottom: 24 }}>
           {VQUADS.map(q => (
@@ -912,7 +930,7 @@ function VolatilityChart({ teams, weeklyAllplay, currentWeek, colors }) {
                 : [`${d.y} pts`, 'Std Dev']
             }}
           />
-          <Scatter data={scatterData} shape={<CustomDot />} isAnimationActive={false} />
+          <Scatter data={visibleData} shape={<CustomDot />} isAnimationActive={false} />
         </ScatterChart>
       </ResponsiveContainer>
     </div>
