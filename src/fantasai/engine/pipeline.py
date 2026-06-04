@@ -908,7 +908,10 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
             except (TypeError, ValueError):
                 continue
             d = row.to_dict()
-            def _pct(v): return round(v * 100, 2) if v is not None else None
+            # Baseball Savant returns brl_percent / ev95percent already as
+            # percentage numbers (e.g. 11.0 for 11%) — store as-is so the UI
+            # can format with one decimal place.
+            def _pct(v): return round(v, 2) if v is not None else None
             batter_adv.setdefault(mlbam, {}).update({
                 "Barrel%":  _pct(_fval_sc(d, "brl_percent")),
                 "HardHit%": _pct(_fval_sc(d, "ev95percent")),
@@ -1050,7 +1053,7 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
             except (TypeError, ValueError):
                 continue
             d = row.to_dict()
-            def _pct(v): return round(v * 100, 2) if v is not None else None
+            def _pct(v): return round(v, 2) if v is not None else None
             pitcher_adv.setdefault(mlbam, {}).update({
                 "Barrel%":  _pct(_fval_sc(d, "brl_percent")),
                 "HardHit%": _pct(_fval_sc(d, "ev95percent")),

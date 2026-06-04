@@ -58,12 +58,14 @@ def list_players(
         except Exception:
             # unaccent() unavailable — roll back the failed transaction first
             # (PostgreSQL rejects all queries after an error until rollback),
-            # then pull a broader set and filter in memory.
+            # then filter the full player set in Python so accent folding still
+            # works. A fixed-size pre-limit would silently miss players past the
+            # alphabetical cutoff (e.g. "Tyler Soderstrom" with >2000 players).
             db.rollback()
             base_q = db.query(Player)
             if team:
                 base_q = base_q.filter(Player.team == team.upper())
-            candidates = base_q.order_by(Player.name).limit(2000).all()
+            candidates = base_q.order_by(Player.name).all()
             players = [p for p in candidates if norm_query in _normalize(p.name)]
             players = players[offset: offset + limit]
     else:

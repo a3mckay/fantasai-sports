@@ -773,7 +773,9 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
 
     synced = 0
     not_found = 0
+    cleared = 0
     errors: list[str] = []
+    still_injured_pids: set[int] = set()
 
     try:
         teams_resp = httpx.get(
@@ -791,6 +793,7 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
     mlbam_map: dict[int, int] = {p.mlbam_id: p.player_id for p in all_players}  # type: ignore[index]
 
     now_utc = datetime.now(timezone.utc)
+    fetched_any_team = False
 
     for team in teams:
         team_id = team.get("id")
@@ -807,6 +810,7 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             )
             il_resp.raise_for_status()
             roster = il_resp.json().get("roster", [])
+            fetched_any_team = True
         except Exception as exc:
             errors.append(f"team {team_id}: {exc}")
             continue
@@ -829,6 +833,8 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             if not player_id:
                 not_found += 1
                 continue
+
+            still_injured_pids.add(player_id)
 
             if "60" in status_code:
                 status = "il_60"
@@ -875,6 +881,23 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
 
             synced += 1
 
+    # Clear stale InjuryRecord rows for players no longer on any IL.
+    # Guardrails: only run cleanup when we fetched every team without errors
+    # AND found at least one injured player — protects against accidentally
+    # nuking all records if the upstream API returns an empty league-wide IL.
+    if fetched_any_team and not errors and still_injured_pids:
+        stale = db.query(InjuryRecord).filter(
+            ~InjuryRecord.player_id.in_(still_injured_pids)
+        ).all()
+        for record in stale:
+            player_obj = db.get(Player, record.player_id)
+            # Preserve manual "fragile" flag; clear auto-classified flags.
+            if player_obj and player_obj.risk_flag != "fragile":
+                player_obj.risk_flag = None
+                player_obj.risk_note = None
+            db.delete(record)
+            cleared += 1
+
     db.commit()
 
     # Bust the rankings cache so changes take effect immediately
@@ -883,6 +906,7 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
 
     return {
         "synced": synced,
+        "cleared_stale": cleared,
         "not_found_in_db": not_found,
         "team_errors": errors,
         "status": "ok",
