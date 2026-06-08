@@ -295,7 +295,22 @@ def fetch_and_store_scoring_grid(
             "All team stat fetches returned empty for league %s week %s",
             league_key, actual_week,
         )
-        return None
+        # If we already have a non-empty snapshot for this week, keep it — don't
+        # overwrite good data with empty data (e.g. a mid-week re-fetch before games).
+        existing_snap = (
+            db.query(ScoringGridSnapshot)
+            .filter(
+                ScoringGridSnapshot.league_id == league_key,
+                ScoringGridSnapshot.season == _SEASON,
+                ScoringGridSnapshot.week == actual_week,
+            )
+            .first()
+        )
+        if existing_snap and any((existing_snap.team_stats or {}).values()):
+            return existing_snap
+        # No good snapshot yet — fall through and store an empty one so the week
+        # number is recorded in the DB. current_week will correctly advance to
+        # this week even before any stats accumulate.
 
     existing = (
         db.query(ScoringGridSnapshot)

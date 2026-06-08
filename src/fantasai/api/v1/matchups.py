@@ -110,15 +110,34 @@ def _to_read(
 
 
 def _current_week(db: Session, league_id: str, season: int = 2026) -> int:
-    """Return the most recent fantasy week stored for this league/season, or 1 if none.
+    """Return the current fantasy week for this league/season, or 1 if none.
+
+    Prefers the ScoringGridSnapshot max week — it is refreshed live from
+    Yahoo's scoreboard on every user request, so it advances to the new week
+    as soon as the scoreboard rolls over (even before any matchup analysis runs).
+    Falls back to MatchupAnalysis max week for leagues where the scoring grid
+    has never been fetched.
 
     Filters by season so stale rows from previous seasons (or rows stored with
-    wrong ISO week numbers) don't pollute the result.  Fantasy weeks are always
-    small integers (1–26); ISO calendar weeks in April are ~14–15, so without
-    this filter users would see incorrect week-15 matchups in early April.
+    wrong ISO week numbers) don't pollute the result.
     """
     from sqlalchemy import func
+    from fantasai.models.scoring_grid import ScoringGridSnapshot
+    from fantasai.services.scoring_grid_service import _SEASON
 
+    # Primary: scoring grid snapshot — tracks week rollovers via live Yahoo scoreboard
+    sg_week = (
+        db.query(func.max(ScoringGridSnapshot.week))
+        .filter(
+            ScoringGridSnapshot.league_id == league_id,
+            ScoringGridSnapshot.season == _SEASON,
+        )
+        .scalar()
+    )
+    if sg_week is not None:
+        return sg_week
+
+    # Fallback: matchup analysis max week
     result = (
         db.query(func.max(MatchupAnalysis.week))
         .filter(
