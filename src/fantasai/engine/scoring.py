@@ -63,18 +63,18 @@ Z_SCORE_CAP = 3.5
 
 # Maximum weights when fully ramped (at or above the PA/IP threshold)
 STATCAST_WEIGHT_MAX = 0.35
-ACCUM_WEIGHT_MAX    = 0.20
+ACCUM_WEIGHT_MAX    = 0.25   # raised from 0.20 at ~1/3 season to let YTD pull more weight
 LATE_DECAY_MAX      = 0.13   # additional Steamer decay after 300 PA
 
 # PA ramp thresholds for batters
 STATCAST_PA_FULL    = 150
-ACCUM_PA_FULL       = 300
+ACCUM_PA_FULL       = 200    # lowered from 300 — at ~1/3 season, 200 PA is reachable
 LATE_DECAY_PA_START = 300
 LATE_DECAY_PA_FULL  = 550    # late_decay fully phased in at 550 PA
 
 # IP ramp thresholds for pitchers (mirror at ~1/5.5 of PA equivalents)
 STATCAST_IP_FULL    = 30
-ACCUM_IP_FULL       = 60
+ACCUM_IP_FULL       = 45     # lowered from 60 — ~1/3 season IP for a regular starter
 LATE_DECAY_IP_START = 60
 LATE_DECAY_IP_FULL  = 110
 
@@ -90,7 +90,7 @@ SP_CATEGORY_WEIGHTS: dict[str, float] = {
 }
 RP_CATEGORY_WEIGHTS: dict[str, float] = {
     "IP": 1.0, "K": 1.0, "SO": 1.0, "SV": 1.0, "HLD": 1.0,
-    "ERA": 1.0, "WHIP": 1.0, "W": 0.25, "QS": 0.10,
+    "ERA": 0.35, "WHIP": 0.35, "W": 0.25, "QS": 0.10,
 }
 
 # Bayesian update priors for the Steamer component.
@@ -99,8 +99,8 @@ RP_CATEGORY_WEIGHTS: dict[str, float] = {
 # their real-world performance.  At 57 PA (Walker), actual_w = 57/357 = 16%.
 # At 300 PA, actual_w = 50%.  The update is applied to rate stats and per-PA
 # counting rates — projected PA/IP volume is unchanged.
-_STEAMER_PRIOR_PA = 300.0   # batter: "Steamer is worth 300 PA of prior evidence"
-_STEAMER_PRIOR_IP = 50.0    # pitcher: "Steamer is worth 50 IP of prior evidence"
+_STEAMER_PRIOR_PA = 200.0   # batter: "Steamer is worth 200 PA of prior evidence" (was 300 pre-mid-season)
+_STEAMER_PRIOR_IP = 35.0    # pitcher: "Steamer is worth 35 IP of prior evidence" (was 50 pre-mid-season)
 
 # Meaningful xStat gap thresholds for outperformer flag
 # Values below these are noise; above → flag as outperformer
@@ -699,6 +699,9 @@ class ScoringEngine:
                 cat: float(round(cat_zscores[cat][i], 3))
                 for cat in cat_zscores
             }
+            # Apply SP/RP role weights before summing so volume-limited relievers
+            # don't get full credit for ERA/WHIP they accumulate over 62 IP.
+            contributions = _apply_role_category_weights(contributions, player.positions)
             raw_score = sum(contributions.values())
             scarcity_mult = _get_scarcity_multiplier(player.positions)
             rankings.append(
@@ -1120,12 +1123,17 @@ def _score_accumulated(
             zs = -zs
         zs = np.clip(zs, -Z_SCORE_CAP, Z_SCORE_CAP)
 
-        # Apply role weights for pitchers
-        role_weight = 1.0
+        # Apply SP/RP category weight per player
         if is_pitcher:
-            # Use average weight across the pool — individual weighting happens later
-            role_weight = 1.0  # applied per-player in blend step
-        composite += zs
+            role_weights = np.array([
+                SP_CATEGORY_WEIGHTS.get(cat, 1.0) if "SP" in (p.positions or [])
+                else RP_CATEGORY_WEIGHTS.get(cat, 1.0) if "RP" in (p.positions or [])
+                else 1.0
+                for p in players
+            ])
+            composite += zs * role_weights
+        else:
+            composite += zs
 
     return composite.tolist()
 
@@ -1171,7 +1179,21 @@ def _bayesian_blend_steamer(
             if sv is not None and av is not None:
                 new_rate[key] = steamer_w * sv + actual_w * av
 
-        return _dc_replace(steamer, rate_stats=new_rate)
+        # Blend W-per-IP so openers / low-win-rate pitchers (e.g. Castillo used
+        # as opener with 0-1 W in 12 starts) don't carry Steamer's optimistic
+        # full-rotation W projection unmodified.
+        new_cnt = dict(steamer.counting_stats or {})
+        steamer_ip = float(new_cnt.get("IP") or 1.0)
+        cnt_p = player.counting_stats or {}
+        steamer_w_count = new_cnt.get("W")
+        if steamer_w_count is not None and steamer_ip > 0 and actual_ip > 0:
+            steamer_w_per_ip = steamer_w_count / steamer_ip
+            actual_w_count = float(cnt_p.get("W") or 0)
+            actual_w_per_ip = actual_w_count / actual_ip
+            blended_w_per_ip = steamer_w * steamer_w_per_ip + actual_w * actual_w_per_ip
+            new_cnt["W"] = blended_w_per_ip * steamer_ip
+
+        return _dc_replace(steamer, rate_stats=new_rate, counting_stats=new_cnt)
 
     else:
         actual_pa = float((player.counting_stats or {}).get("PA") or 0)
@@ -1271,8 +1293,18 @@ def _score_steamer_component(
         if cat in LOWER_IS_BETTER:
             zs = -zs
         zs = np.clip(zs, -Z_SCORE_CAP, Z_SCORE_CAP)
-        composite += zs
-        cat_zscores[cat] = zs.tolist()
+
+        # Apply SP/RP category weight per player so e.g. ERA/WHIP contribute
+        # less for relievers (62 IP) than for starters (170 IP).
+        role_weights = np.array([
+            SP_CATEGORY_WEIGHTS.get(cat, 1.0) if "SP" in (p.positions or [])
+            else RP_CATEGORY_WEIGHTS.get(cat, 1.0) if "RP" in (p.positions or [])
+            else 1.0
+            for p in players
+        ])
+        weighted_zs = zs * role_weights
+        composite += weighted_zs
+        cat_zscores[cat] = weighted_zs.tolist()
 
     # Build per-player category contributions dicts
     contributions: list[dict[str, float]] = [

@@ -399,13 +399,19 @@ def generate_rankings_blurbs(
     def _fmt_metric(key: str, val: float) -> str:
         """Format a raw metric value for a prompt data block.
 
-        Percentage stats (Barrel%, SwStr%, etc.) are stored as fractions (0–1)
-        in the DB — e.g. Barrel%=0.111 means 11.1%.  Multiply by 100 so the
-        model sees "11.1%" not "0.1%".
+        FanGraphs fraction-form stats (BB%, K%, SwStr%, etc.) are stored as
+        decimals (0.085 = 8.5%) and need * 100.  Baseball Savant percentage-form
+        stats (Barrel%, HardHit%, Sweet-Spot%, PulledFB%) are stored as their
+        actual percentage values (21.7) and must NOT be multiplied.
         """
-        pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "HardHit%", "Barrel%", "Sweet-Spot%", "PulledFB%", "K-BB%"}
+        # FanGraphs stats stored as fractions → multiply by 100
+        pct_keys = {"SwStr%", "CSW%", "BB%", "K%", "GB%", "K-BB%"}
+        # Statcast stats already in percentage form → display directly
+        pct_direct_keys = {"HardHit%", "Barrel%", "Sweet-Spot%", "PulledFB%"}
         if key in pct_keys:
             return f"{key}: {val * 100:.1f}%"
+        if key in pct_direct_keys:
+            return f"{key}: {val:.1f}%"
         if key in {"xwOBA", "xBA", "xSLG", "OBP", "AVG"}:
             return f"{key}: {val:.3f}"
         if key == "Sprint Speed":

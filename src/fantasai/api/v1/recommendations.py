@@ -749,6 +749,12 @@ def _inject_prospect_rankings(
                 # prospects appear where their talent warrants rather than where
                 # FanGraphs' conservative projection places them.
                 existing.overall_rank = proxy
+                # Also ensure score reflects the PAV proxy so the final sort-by-score
+                # places this player at the right position (a negative Steamer score
+                # would otherwise sink them far below their intended rank).
+                pav_proxy_score = round((pp.pav_score or 0) / 25.0, 3)
+                existing.score = max(existing.score or 0.0, pav_proxy_score)
+                existing.raw_score = max(existing.raw_score or 0.0, pav_proxy_score)
             continue
 
         # Pure MiLB player — inject a new entry at their PAV-equivalent rank.
@@ -760,8 +766,8 @@ def _inject_prospect_rankings(
             stat_type=pp.stat_type,
             overall_rank=proxy,
             position_rank=0,
-            score=round((pp.pav_score or 0) / 10.0, 3),
-            raw_score=round((pp.pav_score or 0) / 10.0, 3),
+            score=round((pp.pav_score or 0) / 25.0, 3),
+            raw_score=round((pp.pav_score or 0) / 25.0, 3),
             category_contributions={},
             injury_status="active",
             risk_flag=player.risk_flag,
@@ -795,8 +801,10 @@ def _inject_prospect_rankings(
                 seen_names[key] = r
     working = deduped
 
-    # Sort by PAV/FanGraphs rank (prospects win ties) then renumber sequentially.
-    working.sort(key=lambda r: (r.overall_rank, 0 if r.is_prospect else 1))
+    # Sort by score descending (prospects win ties at equal score) then renumber.
+    # Sorting by score rather than overall_rank ensures players with negative
+    # Steamer scores don't bubble up just because their overall_rank was set low.
+    working.sort(key=lambda r: (-(r.score or 0.0), 0 if r.is_prospect else 1))
     for i, r in enumerate(working):
         r.overall_rank = i + 1
 
