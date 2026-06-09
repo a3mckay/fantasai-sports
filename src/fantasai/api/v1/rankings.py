@@ -788,9 +788,16 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
     except Exception as exc:
         return {"error": f"Failed to fetch teams: {exc}", "synced": 0}
 
-    # Build mlbam_id → player_id lookup (batch)
+    # Build mlbam_id → [player_id, ...] lookup (batch).
+    # A single MLB player can have duplicate rows in our players table (e.g. a
+    # FanGraphs row and a Yahoo-synced row share the same mlbam_id).  Map to a
+    # list so injury records are written to every matching row — otherwise only
+    # the dict's last-written entry receives the IL status and the duplicate row
+    # used by the scoring engine stays "active".
     all_players = db.query(Player).filter(Player.mlbam_id.isnot(None)).all()
-    mlbam_map: dict[int, int] = {p.mlbam_id: p.player_id for p in all_players}  # type: ignore[index]
+    mlbam_map: dict[int, list[int]] = {}
+    for p in all_players:
+        mlbam_map.setdefault(int(p.mlbam_id), []).append(p.player_id)  # type: ignore[arg-type]
 
     now_utc = datetime.now(timezone.utc)
     fetched_any_team = False
@@ -829,12 +836,10 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
             if status_code not in _IL_CODES:
                 continue
 
-            player_id = mlbam_map.get(mlbam_id)
-            if not player_id:
+            player_ids = mlbam_map.get(mlbam_id)
+            if not player_ids:
                 not_found += 1
                 continue
-
-            still_injured_pids.add(player_id)
 
             if "60" in status_code:
                 status = "il_60"
@@ -850,34 +855,37 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
                 or None
             )
 
-            existing = db.query(InjuryRecord).filter(
-                InjuryRecord.player_id == player_id
-            ).first()
-            if existing:
-                existing.status = status
-                existing.injury_description = injury_note
-                existing.fetched_at = now_utc
-            else:
-                db.add(InjuryRecord(
-                    player_id=player_id,
-                    status=status,
-                    injury_description=injury_note,
-                    fetched_at=now_utc,
-                ))
+            for player_id in player_ids:
+                still_injured_pids.add(player_id)
 
-            # Auto-classify severity and set risk_flag on the Player row.
-            # Only call when there's an actual note — avoids 900+ Claude API
-            # calls on spring training rosters with no injury descriptions.
-            # "fragile" is never overwritten (manual-only flag).
-            if injury_note:
-                player_obj = db.get(Player, player_id)
-                if player_obj:
-                    maybe_apply_classification(
-                        player=player_obj,
-                        description=injury_note,
-                        il_status=status,
-                        api_key=settings.anthropic_api_key,
-                    )
+                existing = db.query(InjuryRecord).filter(
+                    InjuryRecord.player_id == player_id
+                ).first()
+                if existing:
+                    existing.status = status
+                    existing.injury_description = injury_note
+                    existing.fetched_at = now_utc
+                else:
+                    db.add(InjuryRecord(
+                        player_id=player_id,
+                        status=status,
+                        injury_description=injury_note,
+                        fetched_at=now_utc,
+                    ))
+
+                # Auto-classify severity and set risk_flag on the Player row.
+                # Only call when there's an actual note — avoids 900+ Claude API
+                # calls on spring training rosters with no injury descriptions.
+                # "fragile" is never overwritten (manual-only flag).
+                if injury_note:
+                    player_obj = db.get(Player, player_id)
+                    if player_obj:
+                        maybe_apply_classification(
+                            player=player_obj,
+                            description=injury_note,
+                            il_status=status,
+                            api_key=settings.anthropic_api_key,
+                        )
 
             synced += 1
 

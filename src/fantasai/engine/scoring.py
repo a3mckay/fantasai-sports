@@ -73,7 +73,7 @@ LATE_DECAY_PA_START = 300
 LATE_DECAY_PA_FULL  = 550    # late_decay fully phased in at 550 PA
 
 # IP ramp thresholds for pitchers (mirror at ~1/5.5 of PA equivalents)
-STATCAST_IP_FULL    = 30
+STATCAST_IP_FULL    = 50     # raised from 30: need ~9 starts before fully trusting stuff metrics
 ACCUM_IP_FULL       = 45     # lowered from 60 — ~1/3 season IP for a regular starter
 LATE_DECAY_IP_START = 60
 LATE_DECAY_IP_FULL  = 110
@@ -85,7 +85,7 @@ PITCHER_REPLACEMENT_RANK = 115
 # SP and RP category weight multipliers — applied to per-category z-scores.
 # SV is nearly irrelevant for SPs; W is reduced but not zeroed for RPs.
 SP_CATEGORY_WEIGHTS: dict[str, float] = {
-    "IP": 1.0, "W": 1.0, "K": 1.0, "SO": 1.0,
+    "IP": 1.0, "W": 0.65, "K": 1.0, "SO": 1.0,
     "ERA": 1.0, "WHIP": 1.0, "SV": 0.05, "HLD": 0.10, "QS": 1.0,
 }
 RP_CATEGORY_WEIGHTS: dict[str, float] = {
@@ -1183,15 +1183,37 @@ def _bayesian_blend_steamer(
         # as opener with 0-1 W in 12 starts) don't carry Steamer's optimistic
         # full-rotation W projection unmodified.
         new_cnt = dict(steamer.counting_stats or {})
-        steamer_ip = float(new_cnt.get("IP") or 1.0)
+        original_steamer_ip = float(new_cnt.get("IP") or 1.0)
         cnt_p = player.counting_stats or {}
         steamer_w_count = new_cnt.get("W")
-        if steamer_w_count is not None and steamer_ip > 0 and actual_ip > 0:
-            steamer_w_per_ip = steamer_w_count / steamer_ip
+        if steamer_w_count is not None and original_steamer_ip > 0 and actual_ip > 0:
+            steamer_w_per_ip = steamer_w_count / original_steamer_ip
             actual_w_count = float(cnt_p.get("W") or 0)
             actual_w_per_ip = actual_w_count / actual_ip
             blended_w_per_ip = steamer_w * steamer_w_per_ip + actual_w * actual_w_per_ip
-            new_cnt["W"] = blended_w_per_ip * steamer_ip
+            new_cnt["W"] = blended_w_per_ip * original_steamer_ip
+
+        # IP pace blend: bring projected season IP toward the player's actual pace.
+        # project_pitcher_stats caps projected IP at steamer_data.counting_stats["IP"],
+        # so reducing it here automatically reduces projected K, W, QS volume.
+        # This handles openers (Castillo: ~118 IP pace vs 165 Steamer), injury
+        # returns, and bad pitchers being pulled early (Imai: ~90 IP pace vs 175).
+        # We only reduce, never inflate — Steamer is the ceiling.
+        from datetime import date as _date
+        _days_elapsed = max(1, (_date.today() - _date(2026, 4, 1)).days)
+        _season_frac  = min(_days_elapsed / 183.0, 1.0)
+        if _season_frac > 0.05 and original_steamer_ip > 1.0:
+            ip_pace = actual_ip / _season_frac
+            blended_ip = steamer_w * original_steamer_ip + actual_w * ip_pace
+            if blended_ip < original_steamer_ip:
+                ip_scale = blended_ip / original_steamer_ip
+                new_cnt["IP"] = blended_ip
+                # Re-scale W so project_pitcher_stats sees correct W/IP rate at
+                # the blended volume (W was computed against original_steamer_ip above).
+                for _k in ("W", "SV", "HLD"):
+                    v = new_cnt.get(_k)
+                    if v is not None:
+                        new_cnt[_k] = v * ip_scale
 
         return _dc_replace(steamer, rate_stats=new_rate, counting_stats=new_cnt)
 
