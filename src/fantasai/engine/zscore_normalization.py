@@ -63,13 +63,14 @@ PITCHER_COMPOSITES: dict[str, list[tuple[str, bool]]] = {
         ("HardHit%",True),    # HardHit% against
     ],
     "command_outcomes": [
-        ("SIERA",     True),   # lower = better
-        ("xERA",      True),
-        ("xFIP",      True),
-        ("K-BB%",    False),   # higher = better
-        ("CSW%",     False),
-        ("O-Swing%", False),   # chase rate — higher = better for pitcher
-        ("SwStr%",   False),   # whiff rate — higher = better for pitcher
+        ("SIERA",      True),   # lower = better
+        ("xERA",       True),
+        ("xFIP",       True),
+        ("K-BB%",     False),   # higher = better
+        ("CSW%",      False),
+        ("O-Swing%",  False),   # chase rate — higher = better for pitcher
+        ("SwStr%",    False),   # whiff rate — higher = better for pitcher
+        ("PitchRV100",False),   # Savant weighted-avg run value/100 pitches (positive = good for pitcher)
     ],
 }
 
@@ -97,10 +98,11 @@ _PITCHER_METRIC_BUCKET: dict[str, str] = {
     "SIERA":     "advanced_stats",
     "xERA":      "advanced_stats",
     "xFIP":      "advanced_stats",
-    "K-BB%":     "advanced_stats",
-    "CSW%":      "advanced_stats",
-    "O-Swing%":  "advanced_stats",
-    "SwStr%":    "advanced_stats",
+    "K-BB%":      "advanced_stats",
+    "CSW%":       "advanced_stats",
+    "O-Swing%":   "advanced_stats",
+    "SwStr%":     "advanced_stats",
+    "PitchRV100": "advanced_stats",
 }
 
 # ---------------------------------------------------------------------------

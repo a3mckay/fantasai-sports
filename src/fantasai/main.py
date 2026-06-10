@@ -72,6 +72,7 @@ def _nightly_stats_refresh() -> None:
     from fantasai.engine.pipeline import (
         sync_current_season_stats,
         sync_mlb_api_current_season,
+        sync_savant_pitch_arsenal,
         sync_statcast_advanced_stats,
         sync_steamer_projections,
     )
@@ -98,7 +99,14 @@ def _nightly_stats_refresh() -> None:
         except Exception:
             _log.warning("Nightly refresh: Statcast sync failed, no advanced stats this cycle", exc_info=True)
 
-        # 4. FanGraphs — optional; adds wRC+, SIERA, Stuff+, CSW%, SwStr% if accessible
+        # 4. Savant pitch arsenal — fastball velocity (vFA) and weighted RV/100 (PitchRV100)
+        try:
+            pa_count = sync_savant_pitch_arsenal(db, season=2026)
+            _log.info("Nightly refresh: Savant pitch arsenal updated %d rows", pa_count)
+        except Exception:
+            _log.warning("Nightly refresh: Savant pitch arsenal sync failed", exc_info=True)
+
+        # 5. FanGraphs — optional; adds wRC+, SIERA, Stuff+, CSW%, SwStr% if accessible
         try:
             fg_count = sync_current_season_stats(db, season=2026)
             _log.info("Nightly refresh: FanGraphs upserted %d stat rows", fg_count)

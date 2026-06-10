@@ -1096,6 +1096,148 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
     return total_updated
 
 
+def sync_savant_pitch_arsenal(db: Session, season: int = 2026) -> int:
+    """Fetch pitch quality metrics from Baseball Savant and populate advanced_stats.
+
+    Two Savant endpoints (no FanGraphs dependency):
+      1. pitch-movement leaderboard (FF + SI): primary fastball avg velocity → vFA
+      2. pitch-arsenal-stats leaderboard: pitch-count-weighted run value / 100 → PitchRV100
+
+    PitchRV100 sign: positive = pitcher creates value (good), negative = batter creates value (bad).
+    Stored in advanced_stats for existing actual pitching rows only.
+
+    Returns: number of PlayerStats rows updated.
+    """
+    import csv
+    import io
+    import math
+    import urllib.request
+
+    rows_with_mlbam = db.query(Player.player_id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
+    mlbam_to_player_id: dict[int, int] = {r.mlbam_id: r.player_id for r in rows_with_mlbam}
+    if not mlbam_to_player_id:
+        logger.warning("sync_savant_pitch_arsenal: no players with mlbam_id — skipping")
+        return 0
+
+    def _fetch_csv(url: str) -> list[dict]:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read().decode("utf-8-sig")
+            return list(csv.DictReader(io.StringIO(raw)))
+        except Exception as e:
+            logger.warning("sync_savant_pitch_arsenal: fetch failed for %s: %s", url, e)
+            return []
+
+    def _fv(val: str) -> Optional[float]:
+        try:
+            f = float(val)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    # ── Step 1: Primary fastball velocity from pitch-movement ─────────────────
+    # For each pitcher, take the fastball type (FF or SI) with the higher pitch count
+    # as their primary. This handles both 4-seam and sinker-primary pitchers.
+    fastball_velo: dict[int, float] = {}  # mlbam_id → avg velocity
+
+    for pitch_type in ("FF", "SI"):
+        url = (
+            f"https://baseballsavant.mlb.com/leaderboard/pitch-movement"
+            f"?year={season}&team=&min=10&pitch_type={pitch_type}&type=pitcher&csv=true"
+        )
+        for row in _fetch_csv(url):
+            try:
+                mlbam = int(float(row.get("pitcher_id") or 0))
+            except (TypeError, ValueError):
+                continue
+            if mlbam == 0 or mlbam not in mlbam_to_player_id:
+                continue
+            speed = _fv(row.get("avg_speed"))
+            pitches = int(float(row.get("pitches_thrown") or 0))
+            if speed is None or pitches == 0:
+                continue
+            # Keep the fastball type with more pitches (pitcher's primary)
+            if mlbam not in fastball_velo or pitches > fastball_velo.get(mlbam, (0, 0))[1]:  # type: ignore[index]
+                fastball_velo[mlbam] = (speed, pitches)  # type: ignore[assignment]
+
+    # Unwrap to just velocity
+    fastball_velo_final: dict[int, float] = {
+        mlbam: v[0] for mlbam, v in fastball_velo.items()  # type: ignore[index]
+    }
+    logger.info("sync_savant_pitch_arsenal: got fastball velocity for %d pitchers", len(fastball_velo_final))
+
+    # ── Step 2: Weighted-average run value / 100 from pitch-arsenal-stats ─────
+    # Aggregate all pitch types: sum(rv100_i × pitches_i) / sum(pitches_i)
+    # Positive RV100 = pitch creates positive value for pitcher (good).
+    pitch_totals: dict[int, tuple[float, float]] = {}  # mlbam → (weighted_rv_sum, total_pitches)
+
+    url = (
+        f"https://baseballsavant.mlb.com/leaderboard/pitch-arsenal-stats"
+        f"?type=pitcher&min=10&team=&season={season}&range=year&csv=true"
+    )
+    for row in _fetch_csv(url):
+        try:
+            mlbam = int(float(row.get("player_id") or 0))
+        except (TypeError, ValueError):
+            continue
+        if mlbam == 0 or mlbam not in mlbam_to_player_id:
+            continue
+        rv100 = _fv(row.get("run_value_per_100"))
+        pitches = _fv(row.get("pitches"))
+        if rv100 is None or pitches is None or pitches <= 0:
+            continue
+        prev_rv, prev_p = pitch_totals.get(mlbam, (0.0, 0.0))
+        pitch_totals[mlbam] = (prev_rv + rv100 * pitches, prev_p + pitches)
+
+    rv100_by_mlbam: dict[int, float] = {
+        mlbam: round(rv_sum / total_p, 3)
+        for mlbam, (rv_sum, total_p) in pitch_totals.items()
+        if total_p > 0
+    }
+    logger.info("sync_savant_pitch_arsenal: got PitchRV100 for %d pitchers", len(rv100_by_mlbam))
+
+    # ── Step 3: Merge into existing actual pitching rows ──────────────────────
+    total_updated = 0
+    all_mlbam = set(fastball_velo_final) | set(rv100_by_mlbam)
+
+    for mlbam in all_mlbam:
+        player_id = mlbam_to_player_id.get(mlbam)
+        if not player_id:
+            continue
+        existing = (
+            db.query(PlayerStats)
+            .filter(
+                and_(
+                    PlayerStats.player_id == player_id,
+                    PlayerStats.season == season,
+                    PlayerStats.week.is_(None),
+                    PlayerStats.stat_type == "pitching",
+                    PlayerStats.data_source == "actual",
+                )
+            )
+            .first()
+        )
+        if existing is None:
+            continue
+        merged = dict(existing.advanced_stats or {})
+        if mlbam in fastball_velo_final:
+            merged["vFA"] = fastball_velo_final[mlbam]
+        if mlbam in rv100_by_mlbam:
+            merged["PitchRV100"] = rv100_by_mlbam[mlbam]
+        existing.advanced_stats = merged
+        total_updated += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.error("sync_savant_pitch_arsenal: commit failed", exc_info=True)
+
+    logger.info("sync_savant_pitch_arsenal: updated %d pitching rows", total_updated)
+    return total_updated
+
+
 def write_ranking_snapshots(
     db: Session,
     rankings: list,
