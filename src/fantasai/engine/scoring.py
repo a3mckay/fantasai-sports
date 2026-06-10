@@ -206,7 +206,7 @@ class PlayerRanking:
     positions: list[str]
     stat_type: str
     overall_rank: int = 0
-    position_rank: int = 0
+    position_ranks: dict[str, int] = field(default_factory=dict)  # {pos: rank} for every eligible position
     score: float = 0.0
     raw_score: float = 0.0  # before positional scarcity
     category_contributions: dict[str, float] = field(default_factory=dict)
@@ -1384,11 +1384,20 @@ def _get_scarcity_multiplier(positions: list[str]) -> float:
 
 
 def _assign_position_ranks(rankings: list[PlayerRanking]) -> None:
-    """Assign position-specific ranks within a ranked list."""
+    """Assign position-specific ranks for every eligible position.
+
+    The list must already be sorted best→worst (overall_rank order).
+    Each player receives a position_ranks dict covering ALL positions they
+    qualify at — e.g. a 1B/OF player gets {"1B": 12, "OF": 31}.
+
+    This enables the UI and downstream features (compare, trade, blurbs) to
+    show any or all of a player's position ranks.
+    """
     position_counters: dict[str, int] = {}
     for r in rankings:
+        r.position_ranks = {}
         for pos in r.positions:
-            position_counters.setdefault(pos, 0)
-            position_counters[pos] += 1
-            if r.position_rank == 0:  # take first (highest) position rank
-                r.position_rank = position_counters[pos]
+            if not pos:
+                continue
+            position_counters[pos] = position_counters.get(pos, 0) + 1
+            r.position_ranks[pos] = position_counters[pos]

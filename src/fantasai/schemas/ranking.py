@@ -28,6 +28,8 @@ class PlayerRankingRead(BaseModel):
     positions: list[str]
     stat_type: str
     overall_rank: int
+    # {pos: rank} for every position the player qualifies at — e.g. {"1B": 12, "OF": 31}
+    position_ranks: dict[str, int] = {}
     score: float
     raw_score: float
     category_contributions: dict[str, float]

@@ -765,7 +765,6 @@ def _inject_prospect_rankings(
             positions=list(player.positions or []),
             stat_type=pp.stat_type,
             overall_rank=proxy,
-            position_rank=0,
             score=round((pp.pav_score or 0) / 25.0, 3),
             raw_score=round((pp.pav_score or 0) / 25.0, 3),
             category_contributions={},

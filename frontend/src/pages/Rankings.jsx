@@ -148,7 +148,7 @@ function ShareBlurbButton({ player }) {
 
 const MODE_OPTIONS = [
   { val: 'predictive', label: 'Projections RoS' },
-  { val: 'current',    label: 'Current Season'  },
+  { val: 'current',    label: 'Season Rankings' },
 ]
 
 const HORIZON_OPTIONS = [
@@ -593,7 +593,7 @@ export default function Rankings() {
                   {trendHeader}
                 </th>
                 <th className="py-2.5 px-3 text-left">Player</th>
-                <th className="py-2.5 px-2 text-center w-16">Pos</th>
+                <th className="py-2.5 px-2 text-center w-24">Pos</th>
                 <th className="py-2.5 pl-2 pr-2 text-right w-20">Score</th>
                 <th className="py-2.5 pr-3 w-8" />
               </tr>
@@ -701,17 +701,20 @@ export default function Rankings() {
                       )}
                     </td>
 
-                    {/* Position pills */}
+                    {/* Position pills with position rank */}
                     <td className="py-3 px-2 text-center align-top pt-3.5">
                       <div className="flex flex-wrap gap-0.5 justify-center">
-                        {displayPositions(player).map(pos => (
-                          <span
-                            key={pos}
-                            className="stat-pill bg-navy-700 text-slate-400 text-[10px] px-1.5 py-0.5"
-                          >
-                            {pos}
-                          </span>
-                        ))}
+                        {displayPositions(player).map(pos => {
+                          const posRank = player.position_ranks?.[pos]
+                          return (
+                            <span
+                              key={pos}
+                              className="stat-pill bg-navy-700 text-slate-400 text-[10px] px-1.5 py-0.5 whitespace-nowrap"
+                            >
+                              {pos}{posRank != null ? ` #${posRank}` : ''}
+                            </span>
+                          )
+                        })}
                       </div>
                     </td>
 
