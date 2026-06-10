@@ -89,7 +89,7 @@ PITCHER_REPLACEMENT_RANK = 115
 # SP and RP category weight multipliers — applied to per-category z-scores.
 # SV is nearly irrelevant for SPs; W is reduced but not zeroed for RPs.
 SP_CATEGORY_WEIGHTS: dict[str, float] = {
-    "IP": 1.0, "W": 0.65, "K": 1.0, "SO": 1.0,
+    "IP": 1.0, "W": 1.0, "K": 1.0, "SO": 1.0,
     "ERA": 1.0, "WHIP": 1.0, "SV": 0.05, "HLD": 0.10, "QS": 1.0,
 }
 RP_CATEGORY_WEIGHTS: dict[str, float] = {
