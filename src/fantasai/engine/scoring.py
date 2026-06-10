@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 import numpy as np
@@ -31,6 +32,9 @@ from fantasai.engine.projection import (
     HORIZON_CONFIGS,
     project_hitter_stats,
     project_pitcher_stats,
+    _SEASON_START,
+    _SEASON_END,
+    _SEASON_DAYS,
 )
 from fantasai.engine.zscore_normalization import (
     compute_statcast_composites,
@@ -456,9 +460,30 @@ class ScoringEngine:
         per_player_steamer:  list[float] = []
         per_player_accum:    list[float] = []
 
+        # Season-progress floor for weight computation.
+        # Without this, a player who has pitched only 9 IP in June (e.g. just
+        # returned from a 10-week IL stint) gets ~88% Steamer weight while a
+        # healthy peer who has pitched 76 IP gets ~36%. Even if the healthy
+        # pitcher has a far superior Steamer projection AND better actual stats,
+        # the weight asymmetry can flip the ranking.
+        # The fix: compute weights using max(actual_ip, expected_ip_for_date)
+        # so the blend always reflects where we are in the season, not just
+        # what each individual has accumulated.
+        today = date.today()
+        season_frac = max(0.0, min(1.0, (today - _SEASON_START).days / _SEASON_DAYS))
+        _full_season_cfg = HORIZON_CONFIGS[ProjectionHorizon.SEASON]
+        _expected_floor = (
+            _full_season_cfg.sp_ip if is_pitcher else _full_season_cfg.hitter_pa
+        ) * season_frac
+
         for i, p in enumerate(players):
             cnt = p.counting_stats or {}
-            pa_or_ip = float(cnt.get("IP" if is_pitcher else "PA") or 0)
+            actual_pa_ip = float(cnt.get("IP" if is_pitcher else "PA") or 0)
+            # Apply season-progress floor only for active players.  IL players
+            # already have accum_w zeroed below; Steamer-only prospects have
+            # projected full-season counts which already exceed the floor.
+            on_il = getattr(p, "injury_status", "active") not in ("active", None, "")
+            pa_or_ip = max(actual_pa_ip, _expected_floor) if not on_il else actual_pa_ip
 
             statcast_w, accum_w, _late_decay_w, steamer_w = _compute_component_weights(
                 pa_or_ip, is_pitcher
@@ -467,7 +492,6 @@ class ScoringEngine:
             # IL players: zero the accumulated component — their low IP/PA reflects
             # injury absence, not underperformance. Shift accum weight to Steamer so
             # injured elite players rank on talent, not games missed.
-            on_il = getattr(p, "injury_status", "active") not in ("active", None, "")
             if on_il:
                 steamer_w += accum_w
                 accum_w = 0.0

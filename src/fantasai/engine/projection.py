@@ -199,7 +199,16 @@ def _availability_multiplier(player: NormalizedPlayerData, config: HorizonConfig
 
     status = player.injury_status
     if status == "active":
-        il_mult = 1.0
+        # For rest-of-season, even healthy players can only contribute for
+        # remaining days — an active pitcher in June can't project for 170 IP.
+        # WEEK/MONTH horizons are unaffected (player is fully available for
+        # those short windows).
+        if config == HORIZON_CONFIGS[ProjectionHorizon.SEASON]:
+            today = date.today()
+            remaining_days = max(0, (_SEASON_END - today).days)
+            il_mult = remaining_days / _SEASON_DAYS
+        else:
+            il_mult = 1.0
     elif status == "out_for_season":
         il_mult = 0.0
     else:
