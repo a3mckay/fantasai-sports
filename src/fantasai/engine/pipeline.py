@@ -702,7 +702,12 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
                 existing.data_source = "actual"
                 existing.counting_stats = counting_stats
                 existing.rate_stats = rate_stats
-                existing.advanced_stats = advanced_stats
+                # Merge: preserve Savant-only fields (SprintSpeed, BatSpeed,
+                # FastSwing%, Blast%, EV_FBLD, EV50, etc.) that FanGraphs
+                # does not return.  FanGraphs values win for keys it provides.
+                merged_adv = dict(existing.advanced_stats or {})
+                merged_adv.update({k: v for k, v in advanced_stats.items() if v is not None})
+                existing.advanced_stats = merged_adv
             total_upserted += 1
 
         try:
@@ -805,7 +810,12 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
                 existing.data_source = "actual"
                 existing.counting_stats = counting_stats
                 existing.rate_stats = rate_stats
-                existing.advanced_stats = advanced_stats
+                # Merge: preserve Savant-only fields (vFA, PitchRV100, SpinRate,
+                # Ext, EV, EV_FBLD, etc.) that FanGraphs does not return.
+                # FanGraphs values win for keys it provides.
+                merged_adv = dict(existing.advanced_stats or {})
+                merged_adv.update({k: v for k, v in advanced_stats.items() if v is not None})
+                existing.advanced_stats = merged_adv
             total_upserted += 1
 
         try:
@@ -864,14 +874,18 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
         except (TypeError, ValueError):
             return None
 
-    # Build MLBAM → player_id reverse map (only players with mlbam_id set)
+    # Build MLBAM → [player_id, ...] reverse map (only players with mlbam_id set).
+    # One mlbam_id can map to multiple player rows (e.g. a FanGraphs row and a
+    # Yahoo-synced row for the same player) — keep all so every row gets updated.
     rows = db.query(Player.player_id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
-    mlbam_to_player_id: dict[int, int] = {row.mlbam_id: row.player_id for row in rows}
-    if not mlbam_to_player_id:
+    mlbam_to_player_ids: dict[int, list[int]] = {}
+    for row in rows:
+        mlbam_to_player_ids.setdefault(row.mlbam_id, []).append(row.player_id)
+    if not mlbam_to_player_ids:
         logger.warning("sync_statcast_advanced_stats: no players with mlbam_id — skipping")
         return 0
 
-    logger.info("sync_statcast_advanced_stats: %d players with mlbam_id", len(mlbam_to_player_id))
+    logger.info("sync_statcast_advanced_stats: %d players with mlbam_id", len(mlbam_to_player_ids))
     total_updated = 0
 
     # ── Batting ──────────────────────────────────────────────────────────────
@@ -991,29 +1005,30 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
         logger.warning("Statcast sprint speed fetch failed (non-fatal)", exc_info=True)
 
     for mlbam, adv in batter_adv.items():
-        player_id = mlbam_to_player_id.get(mlbam)
-        if not player_id:
+        player_ids = mlbam_to_player_ids.get(mlbam)
+        if not player_ids:
             continue
-        existing = (
-            db.query(PlayerStats)
-            .filter(
-                and_(
-                    PlayerStats.player_id == player_id,
-                    PlayerStats.season == season,
-                    PlayerStats.week.is_(None),
-                    PlayerStats.stat_type == "batting",
-                    PlayerStats.data_source == "actual",
+        for player_id in player_ids:
+            existing = (
+                db.query(PlayerStats)
+                .filter(
+                    and_(
+                        PlayerStats.player_id == player_id,
+                        PlayerStats.season == season,
+                        PlayerStats.week.is_(None),
+                        PlayerStats.stat_type == "batting",
+                        PlayerStats.data_source == "actual",
+                    )
                 )
+                .first()
             )
-            .first()
-        )
-        if existing is None:
-            continue  # No base stats row yet — MLB API sync must run first
-        # Merge: preserve any existing keys not in this update (e.g. wRC+ if FanGraphs ran)
-        merged = dict(existing.advanced_stats or {})
-        merged.update({k: v for k, v in adv.items() if v is not None})
-        existing.advanced_stats = merged
-        total_updated += 1
+            if existing is None:
+                continue  # No base stats row yet — MLB API sync must run first
+            # Merge: preserve any existing keys not in this update (e.g. wRC+ if FanGraphs ran)
+            merged = dict(existing.advanced_stats or {})
+            merged.update({k: v for k, v in adv.items() if v is not None})
+            existing.advanced_stats = merged
+            total_updated += 1
 
     try:
         db.commit()
@@ -1063,28 +1078,29 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
         logger.warning("Statcast pitcher exit velo fetch failed", exc_info=True)
 
     for mlbam, adv in pitcher_adv.items():
-        player_id = mlbam_to_player_id.get(mlbam)
-        if not player_id:
+        player_ids = mlbam_to_player_ids.get(mlbam)
+        if not player_ids:
             continue
-        existing = (
-            db.query(PlayerStats)
-            .filter(
-                and_(
-                    PlayerStats.player_id == player_id,
-                    PlayerStats.season == season,
-                    PlayerStats.week.is_(None),
-                    PlayerStats.stat_type == "pitching",
-                    PlayerStats.data_source == "actual",
+        for player_id in player_ids:
+            existing = (
+                db.query(PlayerStats)
+                .filter(
+                    and_(
+                        PlayerStats.player_id == player_id,
+                        PlayerStats.season == season,
+                        PlayerStats.week.is_(None),
+                        PlayerStats.stat_type == "pitching",
+                        PlayerStats.data_source == "actual",
+                    )
                 )
+                .first()
             )
-            .first()
-        )
-        if existing is None:
-            continue
-        merged = dict(existing.advanced_stats or {})
-        merged.update({k: v for k, v in adv.items() if v is not None})
-        existing.advanced_stats = merged
-        total_updated += 1
+            if existing is None:
+                continue
+            merged = dict(existing.advanced_stats or {})
+            merged.update({k: v for k, v in adv.items() if v is not None})
+            existing.advanced_stats = merged
+            total_updated += 1
 
     try:
         db.commit()
@@ -1114,8 +1130,10 @@ def sync_savant_pitch_arsenal(db: Session, season: int = 2026) -> int:
     import urllib.request
 
     rows_with_mlbam = db.query(Player.player_id, Player.mlbam_id).filter(Player.mlbam_id.isnot(None)).all()
-    mlbam_to_player_id: dict[int, int] = {r.mlbam_id: r.player_id for r in rows_with_mlbam}
-    if not mlbam_to_player_id:
+    mlbam_to_player_ids: dict[int, list[int]] = {}
+    for r in rows_with_mlbam:
+        mlbam_to_player_ids.setdefault(r.mlbam_id, []).append(r.player_id)
+    if not mlbam_to_player_ids:
         logger.warning("sync_savant_pitch_arsenal: no players with mlbam_id — skipping")
         return 0
 
@@ -1151,7 +1169,7 @@ def sync_savant_pitch_arsenal(db: Session, season: int = 2026) -> int:
                 mlbam = int(float(row.get("pitcher_id") or 0))
             except (TypeError, ValueError):
                 continue
-            if mlbam == 0 or mlbam not in mlbam_to_player_id:
+            if mlbam == 0 or mlbam not in mlbam_to_player_ids:
                 continue
             speed = _fv(row.get("avg_speed"))
             pitches = int(float(row.get("pitches_thrown") or 0))
@@ -1181,7 +1199,7 @@ def sync_savant_pitch_arsenal(db: Session, season: int = 2026) -> int:
             mlbam = int(float(row.get("player_id") or 0))
         except (TypeError, ValueError):
             continue
-        if mlbam == 0 or mlbam not in mlbam_to_player_id:
+        if mlbam == 0 or mlbam not in mlbam_to_player_ids:
             continue
         rv100 = _fv(row.get("run_value_per_100"))
         pitches = _fv(row.get("pitches"))
@@ -1202,31 +1220,32 @@ def sync_savant_pitch_arsenal(db: Session, season: int = 2026) -> int:
     all_mlbam = set(fastball_velo_final) | set(rv100_by_mlbam)
 
     for mlbam in all_mlbam:
-        player_id = mlbam_to_player_id.get(mlbam)
-        if not player_id:
+        player_ids = mlbam_to_player_ids.get(mlbam)
+        if not player_ids:
             continue
-        existing = (
-            db.query(PlayerStats)
-            .filter(
-                and_(
-                    PlayerStats.player_id == player_id,
-                    PlayerStats.season == season,
-                    PlayerStats.week.is_(None),
-                    PlayerStats.stat_type == "pitching",
-                    PlayerStats.data_source == "actual",
+        for player_id in player_ids:
+            existing = (
+                db.query(PlayerStats)
+                .filter(
+                    and_(
+                        PlayerStats.player_id == player_id,
+                        PlayerStats.season == season,
+                        PlayerStats.week.is_(None),
+                        PlayerStats.stat_type == "pitching",
+                        PlayerStats.data_source == "actual",
+                    )
                 )
+                .first()
             )
-            .first()
-        )
-        if existing is None:
-            continue
-        merged = dict(existing.advanced_stats or {})
-        if mlbam in fastball_velo_final:
-            merged["vFA"] = fastball_velo_final[mlbam]
-        if mlbam in rv100_by_mlbam:
-            merged["PitchRV100"] = rv100_by_mlbam[mlbam]
-        existing.advanced_stats = merged
-        total_updated += 1
+            if existing is None:
+                continue
+            merged = dict(existing.advanced_stats or {})
+            if mlbam in fastball_velo_final:
+                merged["vFA"] = fastball_velo_final[mlbam]
+            if mlbam in rv100_by_mlbam:
+                merged["PitchRV100"] = rv100_by_mlbam[mlbam]
+            existing.advanced_stats = merged
+            total_updated += 1
 
     try:
         db.commit()

@@ -1000,6 +1000,35 @@ def generate_rankings_blurbs(
                     "THIS MONTH PROJECTION RANK" if mode == "month"
                     else "REST-OF-SEASON PROJECTION RANK"
                 )
+
+                # Determine whether key_stats is actual YTD data or Steamer projections.
+                # raw_stats_map uses actual when sample is sufficient (≥20 PA / 5 IP).
+                _proj_raw        = raw_stats_map.get(player.player_id, {})
+                _proj_cnt        = _proj_raw.get("counting", {})
+                _proj_ip_or_pa   = float(_proj_cnt.get("IP") or _proj_cnt.get("PA") or 0)
+                _proj_is_actual  = _proj_ip_or_pa >= (5.0 if stat_type == "pitching" else 20)
+                if _proj_is_actual:
+                    _key_stats_label = (
+                        "2026 ACTUAL STATS (real current-season observations — "
+                        "frame as 'is posting', 'has put up', 'carries a', 'is showing', etc.):"
+                    )
+                    _proj_framing_rule = (
+                        "- Rate/advanced stats shown ARE actual 2026 observations — "
+                        "frame them as such ('is posting a 3.2 xFIP', 'carries a .385 xwOBA'). "
+                        "Do NOT say 'projects for' or 'Steamer projects' for these values.\n"
+                    )
+                else:
+                    _key_stats_label = (
+                        "STEAMER PROJECTIONS + EXPECTED METRICS "
+                        "(projected values — NOT current-season observations):"
+                    )
+                    _proj_framing_rule = (
+                        "- Metrics shown are projected values (Steamer/Statcast models), "
+                        "NOT current season observations. Frame them as projections: "
+                        "'Steamer projects a 128 wRC+', 'the projection calls for...', 'projects for...' — "
+                        "NEVER say 'his 128 wRC+' as if it is an observed current stat.\n"
+                    )
+
                 prompt = (
                 f"{_proj_rank_label} #{player.overall_rank} — {player.name} "
                 f"({full_team}, {'/'.join(positions)})\n\n"
@@ -1015,17 +1044,14 @@ def generate_rankings_blurbs(
                 + ("\n\n" if outperformer_note else "")
                 + _recent_form_block
                 + f"ACTUAL YTD COUNTING STATS (the only counting numbers you may cite):\n{_ytd_counting}\n\n"
-                + f"STEAMER PROJECTIONS + EXPECTED METRICS (projected values — NOT current-season observations):\n{key_stats}\n\n"
-                f"PROJECTED CATEGORY STRENGTH (z-scores vs rest-of-pool — NOT actual counts, do not cite these as real numbers):\n{cat_summary}\n\n"
+                + f"{_key_stats_label}\n{key_stats}\n\n"
+                + f"PROJECTED CATEGORY STRENGTH (z-scores vs rest-of-pool — NOT actual counts, do not cite these as real numbers):\n{cat_summary}\n\n"
                 f"REQUIREMENTS:\n"
                 f"- NEVER cite a specific counting stat (HR, RBI, R, SB, K, W, SV, hits, etc.) "
                 f"unless the exact number appears in ACTUAL YTD COUNTING STATS above.\n"
                 + (f"- RECENT FORM numbers above are real and citable — use 'over the last two weeks' language when referencing them.\n" if _recent_form_block else "")
-                + f"- Metrics in STEAMER PROJECTIONS are projected values (Steamer/Statcast models), "
-                f"NOT current season observations. Frame them as projections: "
-                f"'Steamer projects a 128 wRC+', 'the projection calls for...', 'projects for...' — "
-                f"NEVER say 'his 128 wRC+' as if it is an observed current stat.\n"
-                f"- NEVER make claims about current-season rankings or league leaders "
+                + _proj_framing_rule
+                + f"- NEVER make claims about current-season rankings or league leaders "
                 f"(e.g. 'leading the NL in HRs', 'tops in RBIs') — you do not have that data.\n"
                 f"- If the sample size is small (< 50 PA / < 15 IP), do NOT discuss early-season "
                 f"results as if they are meaningful. Focus on projected profile and underlying metrics.\n"

@@ -1335,7 +1335,11 @@ def _score_steamer_component(
         if mapping is None:
             continue
         _bucket, stat_name = mapping
-        vals = [proj.get(stat_name) or proj.get("K" if stat_name == "SO" else "") for proj in projected]
+        vals = [
+            v if (v := proj.get(stat_name)) is not None
+            else proj.get("K" if stat_name == "SO" else "")
+            for proj in projected
+        ]
         clean = [v for v in vals if v is not None]
         if len(clean) < 2:
             continue

@@ -96,21 +96,38 @@ def build_player_stats_block(
             parts.append("[2026 Steamer/consensus projection — full-season]")
 
         # ── Rate stats ───────────────────────────────────────────────────────
-        def _fmt_rate(k: str, decimals: int = 3) -> Optional[str]:
+        def _fmt_rate(k: str, decimals: int = 3, pct: bool = False) -> Optional[str]:
+            """Format a rate-stat value.
+
+            pct=True: multiply by 100 before display (for FanGraphs fraction-form
+            stats like BB%/K% stored as 0.085 = 8.5%).
+            """
             v = rate.get(k)
             if v is None:
                 return None
             try:
-                return f"{k}: {float(v):.{decimals}f}"
+                fv = float(v)
+                if pct:
+                    return f"{k}: {fv * 100:.1f}%"
+                return f"{k}: {fv:.{decimals}f}"
             except (TypeError, ValueError):
                 return None
 
-        def _fmt_adv(k: str, decimals: int = 3, pct: bool = False) -> Optional[str]:
+        def _fmt_adv(k: str, decimals: int = 3, pct: bool = False, pct_multiply: bool = False) -> Optional[str]:
+            """Format an advanced-stat value.
+
+            pct=True:         display directly with % suffix (Statcast percentage-form
+                              stats like Barrel%/HardHit% stored as 11.0 = 11%).
+            pct_multiply=True: multiply by 100 before display (FanGraphs fraction-form
+                              stats like CSW%/SwStr% stored as 0.30 = 30%).
+            """
             v = adv.get(k)
             if v is None:
                 return None
             try:
                 fv = float(v)
+                if pct_multiply:
+                    return f"{k}: {fv * 100:.1f}%"
                 if pct:
                     return f"{k}: {fv:.1f}%"
                 return f"{k}: {fv:.{decimals}f}"
@@ -126,9 +143,9 @@ def build_player_stats_block(
                 _fmt_adv("xERA", 2),
                 _fmt_adv("xFIP", 2),
                 _fmt_adv("SIERA", 2),
-                _fmt_adv("K-BB%", 1, pct=True),
-                _fmt_adv("CSW%", 1, pct=True),
-                _fmt_adv("SwStr%", 1, pct=True),
+                _fmt_rate("K-BB%", 1, pct=True),       # stored in rate_stats, fraction form
+                _fmt_adv("CSW%", 1, pct_multiply=True), # advanced_stats, fraction form
+                _fmt_adv("SwStr%", 1, pct_multiply=True),
             ]:
                 if item:
                     parts.append(item)

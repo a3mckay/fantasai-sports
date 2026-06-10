@@ -45,8 +45,8 @@ BATTER_COMPOSITES: dict[str, list[tuple[str, bool]]] = {
         ("SwStr%",True),    # lower whiff = better
     ],
     "speed_power": [
-        ("Sprint Speed", False),  # populated via separate Statcast merge
-        ("PulledFB%",    False),  # derived: Pull% × FB% / 100
+        ("SprintSpeed", False),  # populated via separate Statcast merge (stored without space)
+        ("PulledFB%",   False),  # derived: Pull% × FB% / 100
     ],
 }
 
@@ -83,7 +83,7 @@ _BATTER_METRIC_BUCKET: dict[str, str] = {
     "K%":          "rate_stats",
     "BB%":         "rate_stats",
     "SwStr%":      "advanced_stats",
-    "Sprint Speed":"advanced_stats",
+    "SprintSpeed": "advanced_stats",
     "PulledFB%":   "advanced_stats",
 }
 
@@ -98,7 +98,7 @@ _PITCHER_METRIC_BUCKET: dict[str, str] = {
     "SIERA":     "advanced_stats",
     "xERA":      "advanced_stats",
     "xFIP":      "advanced_stats",
-    "K-BB%":      "advanced_stats",
+    "K-BB%":      "rate_stats",     # stored in rate_stats by pipeline, not advanced_stats
     "CSW%":       "advanced_stats",
     "O-Swing%":   "advanced_stats",
     "SwStr%":     "advanced_stats",

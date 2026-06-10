@@ -545,7 +545,7 @@ def project_pitcher_stats(
 
     # ── BB/9 ──────────────────────────────────────────────────────────────────
     talent_bb9: Optional[float] = _steamer_rate(steamer_data, "BB/9")
-    proj_bb9 = max(0.5, min(8.0, talent_bb9 or _safe(rate, "BB/9", default=3.0)))
+    proj_bb9 = max(0.5, min(8.0, _safe(rate, "BB/9", default=3.0) if talent_bb9 is None else talent_bb9))
 
     # ── WHIP ──────────────────────────────────────────────────────────────────
     talent_whip: Optional[float] = _steamer_rate(steamer_data, "WHIP")
