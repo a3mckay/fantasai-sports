@@ -203,33 +203,42 @@ def _availability_multiplier(player: NormalizedPlayerData, config: HorizonConfig
     elif status == "out_for_season":
         il_mult = 0.0
     else:
+        today = date.today()
         return_date = player.injury_return_date
         if return_date is None:
-            # Conservative estimate when no return date is known
-            il_mult = 0.05 if status == "il_60" else 0.25
-        else:
-            today = date.today()
-            if config == HORIZON_CONFIGS[ProjectionHorizon.WEEK]:
-                horizon_end = today + timedelta(days=7)
-                if return_date >= horizon_end:
-                    il_mult = 0.0
-                else:
-                    available = max(0, (horizon_end - max(return_date, today)).days)
-                    il_mult = available / 7.0
-            elif config == HORIZON_CONFIGS[ProjectionHorizon.MONTH]:
-                horizon_end = today + timedelta(days=30)
-                if return_date >= horizon_end:
-                    il_mult = 0.0
-                else:
-                    available = max(0, (horizon_end - max(return_date, today)).days)
-                    il_mult = available / 30.0
-            else:  # SEASON
-                if return_date >= _SEASON_END:
-                    il_mult = 0.0
-                else:
-                    effective_start = max(return_date, _SEASON_START)
-                    available_days = max(0, (_SEASON_END - effective_start).days)
-                    il_mult = available_days / _SEASON_DAYS
+            # Estimate return date from typical IL absence lengths when the exact
+            # date is unknown. This replaces the old flat 0.25 fallback which
+            # crushed mid-season IL players: a June il_10 with no return date was
+            # projected for only 42 IP, even though they'd realistically pitch 150+.
+            if status == "il_60":
+                return_date = today + timedelta(days=75)
+            elif status == "il_15":
+                return_date = today + timedelta(days=20)
+            elif status == "day_to_day":
+                return_date = today + timedelta(days=5)
+            else:  # il_10
+                return_date = today + timedelta(days=14)
+        if config == HORIZON_CONFIGS[ProjectionHorizon.WEEK]:
+            horizon_end = today + timedelta(days=7)
+            if return_date >= horizon_end:
+                il_mult = 0.0
+            else:
+                available = max(0, (horizon_end - max(return_date, today)).days)
+                il_mult = available / 7.0
+        elif config == HORIZON_CONFIGS[ProjectionHorizon.MONTH]:
+            horizon_end = today + timedelta(days=30)
+            if return_date >= horizon_end:
+                il_mult = 0.0
+            else:
+                available = max(0, (horizon_end - max(return_date, today)).days)
+                il_mult = available / 30.0
+        else:  # SEASON
+            if return_date >= _SEASON_END:
+                il_mult = 0.0
+            else:
+                effective_start = max(return_date, _SEASON_START)
+                available_days = max(0, (_SEASON_END - effective_start).days)
+                il_mult = available_days / _SEASON_DAYS
 
     return risk_mult * il_mult
 

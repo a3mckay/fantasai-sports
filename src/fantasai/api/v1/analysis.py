@@ -1597,6 +1597,7 @@ def _generate_league_power_blurb(
     tiers: dict[str, list[int]],
     team_names: dict[int, str],
     roster_notes: Optional[dict[str, dict]] = None,
+    actual_category_strengths: Optional[dict[str, dict[str, float]]] = None,
 ) -> str:
     """Generate a league power rankings narrative via Anthropic API."""
     client = _llm_client()
@@ -1630,6 +1631,22 @@ def _generate_league_power_blurb(
         for tier, ids in tiers.items():
             names = [team_names.get(tid, str(tid)) for tid in ids]
             lines.append(f"  {tier.capitalize()}: {', '.join(names)}")
+        if actual_category_strengths:
+            lines.append("")
+            lines.append(
+                "ACTUAL YTD category strengths (z-score sums vs league — use these to describe "
+                "real current standings, not projected labels):"
+            )
+            for team_name, cat_scores in actual_category_strengths.items():
+                if not cat_scores:
+                    continue
+                sorted_cats = sorted(cat_scores.items(), key=lambda x: -x[1])
+                parts = [f"{c}:{v:+.2f}" for c, v in sorted_cats if c not in _JUNK_CATS]
+                lines.append(f"  {team_name}: {', '.join(parts)}")
+            lines.append(
+                "  NOTE: Positive z-score = above league average. "
+                "A team with SV:+2.1 LEADS in saves. Do NOT contradict actual standings."
+            )
         if roster_notes:
             notable = []
             for tname, notes in roster_notes.items():
@@ -1651,6 +1668,9 @@ def _generate_league_power_blurb(
             "Name specific teams when describing each tier — explain WHY each contender is strong "
             "(which scoring categories they dominate) and WHY rebuilding teams are struggling "
             "(specific weak spots). "
+            "CRITICAL: When ACTUAL YTD category strengths are provided, use those to describe current "
+            "performance — not the projected 'strong/weak' labels. If actual data shows a team leads "
+            "in saves, say they lead in saves, regardless of what projected labels say. "
             "Use the depth score to distinguish teams with one or two stars propping up a thin roster "
             "from rosters with genuine top-to-bottom quality — but translate this into plain language "
             "(e.g. 'deep roster', 'one injury away from trouble', 'genuine top-to-bottom quality') "
@@ -2374,7 +2394,22 @@ def league_power_endpoint(
         league_type=league_type,
     )
 
-    blurb = _generate_league_power_blurb(report, report.tiers, team_names, lp_roster_notes)
+    # Build actual YTD category strengths from lookback rankings so the blurb
+    # reflects real standings, not just Steamer projections. Prevents errors like
+    # calling a team "weak in saves" when they actually lead the league.
+    lp_actual_strengths: Optional[dict[str, dict[str, float]]] = None
+    if lookback:
+        lb_map = {r.player_id: r for r in lookback}
+        lp_actual_strengths = {}
+        for team in league.teams or []:
+            name = team.team_name or team.manager_name or f"Team {team.team_id}"
+            lb_rankings = [lb_map[pid] for pid in (team.roster or []) if pid in lb_map]
+            if lb_rankings:
+                lp_actual_strengths[name] = _compute_team_strengths(lb_rankings, categories)
+
+    blurb = _generate_league_power_blurb(
+        report, report.tiers, team_names, lp_roster_notes, lp_actual_strengths
+    )
 
     return LeaguePowerResponse(
         power_rankings=[_snapshot_to_read(s) for s in report.power_rankings],

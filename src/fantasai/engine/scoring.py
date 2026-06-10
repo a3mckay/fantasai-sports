@@ -464,6 +464,14 @@ class ScoringEngine:
                 pa_or_ip, is_pitcher
             )
 
+            # IL players: zero the accumulated component — their low IP/PA reflects
+            # injury absence, not underperformance. Shift accum weight to Steamer so
+            # injured elite players rank on talent, not games missed.
+            on_il = getattr(p, "injury_status", "active") not in ("active", None, "")
+            if on_il:
+                steamer_w += accum_w
+                accum_w = 0.0
+
             sc = statcast_scores[i] if i < len(statcast_scores) else 0.0
             st = steamer_scores[i]  if i < len(steamer_scores)  else 0.0
             ac = accum_scores[i]    if i < len(accum_scores)    else 0.0
@@ -1142,6 +1150,7 @@ def _bayesian_blend_steamer(
     steamer: NormalizedPlayerData,
     player: NormalizedPlayerData,
     is_pitcher: bool,
+    skip_ip_pace: bool = False,
 ) -> NormalizedPlayerData:
     """Return a Steamer projection blended toward actual in-season performance.
 
@@ -1196,13 +1205,14 @@ def _bayesian_blend_steamer(
         # IP pace blend: bring projected season IP toward the player's actual pace.
         # project_pitcher_stats caps projected IP at steamer_data.counting_stats["IP"],
         # so reducing it here automatically reduces projected K, W, QS volume.
-        # This handles openers (Castillo: ~118 IP pace vs 165 Steamer), injury
-        # returns, and bad pitchers being pulled early (Imai: ~90 IP pace vs 175).
+        # This handles openers (Castillo: ~118 IP pace vs 165 Steamer) and pitchers
+        # underperforming projections (Imai: ~90 IP pace vs 175).
+        # Skip for IL players — their low IP reflects injury absence, not role/talent.
         # We only reduce, never inflate — Steamer is the ceiling.
         from datetime import date as _date
         _days_elapsed = max(1, (_date.today() - _date(2026, 4, 1)).days)
         _season_frac  = min(_days_elapsed / 183.0, 1.0)
-        if _season_frac > 0.05 and original_steamer_ip > 1.0:
+        if not skip_ip_pace and _season_frac > 0.05 and original_steamer_ip > 1.0:
             ip_pace = actual_ip / _season_frac
             blended_ip = steamer_w * original_steamer_ip + actual_w * ip_pace
             if blended_ip < original_steamer_ip:
@@ -1283,7 +1293,8 @@ def _score_steamer_component(
         # proportional to sample size.  At 57 PA the prior still dominates (84%),
         # but the nudge is enough to surface breakouts like Walker above replacement.
         if steamer is not None:
-            steamer = _bayesian_blend_steamer(steamer, p, is_pitcher)
+            on_il = getattr(p, "injury_status", "active") not in ("active", None, "")
+            steamer = _bayesian_blend_steamer(steamer, p, is_pitcher, skip_ip_pace=on_il)
         if is_pitcher:
             player_is_sp = "SP" in (p.positions or [])
             projected.append(project_pitcher_stats(p, steamer_config, is_sp=player_is_sp, steamer_data=steamer))

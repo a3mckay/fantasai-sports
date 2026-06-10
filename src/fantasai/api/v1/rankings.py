@@ -894,6 +894,7 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
     # AND found at least one injured player — protects against accidentally
     # nuking all records if the upstream API returns an empty league-wide IL.
     if fetched_any_team and not errors and still_injured_pids:
+        from fantasai.models.ranking import Ranking
         stale = db.query(InjuryRecord).filter(
             ~InjuryRecord.player_id.in_(still_injured_pids)
         ).all()
@@ -904,6 +905,13 @@ def sync_injuries(db: Session = Depends(get_db)) -> dict:
                 player_obj.risk_flag = None
                 player_obj.risk_note = None
             db.delete(record)
+            # Clear stale blurbs for players returning from IL so they get
+            # regenerated with accurate "back from injury" context rather than
+            # stale "hasn't pitched yet" language.
+            db.query(Ranking).filter(
+                Ranking.player_id == record.player_id,
+                Ranking.blurb.isnot(None),
+            ).update({"blurb": None}, synchronize_session=False)
             cleared += 1
 
     db.commit()
