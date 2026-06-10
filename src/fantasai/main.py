@@ -260,7 +260,7 @@ def _monday_blurb_generation() -> None:
     _log.info("Monday blurb generation starting")
     db = SessionLocal()
     try:
-        for mode in ["season", "current", "week", "month"]:
+        for mode in ["season", "current"]:
             result = generate_rankings_blurbs(db, settings.anthropic_api_key, mode=mode, top_n=300)
             _log.info("Blurb generation: %s", result)
     except Exception:

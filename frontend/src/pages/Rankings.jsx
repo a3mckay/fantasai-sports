@@ -147,13 +147,11 @@ function ShareBlurbButton({ player }) {
 // ---------------------------------------------------------------------------
 
 const MODE_OPTIONS = [
-  { val: 'predictive', label: 'Projected'       },
+  { val: 'predictive', label: 'Projections RoS' },
   { val: 'current',    label: 'Current Season'  },
 ]
 
 const HORIZON_OPTIONS = [
-  { val: 'week',   label: 'This Week'      },
-  { val: 'month',  label: 'This Month'     },
   { val: 'season', label: 'Rest of Season' },
 ]
 
@@ -459,8 +457,8 @@ export default function Rankings() {
         </button>
       </div>
 
-      {/* ── Horizon selector (Projected mode only) ── */}
-      {mode === 'predictive' && (
+      {/* ── Horizon selector (Projected mode only; hidden when only one option) ── */}
+      {mode === 'predictive' && HORIZON_OPTIONS.length > 1 && (
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500 shrink-0">Horizon:</span>
           <div className="flex gap-1.5">
