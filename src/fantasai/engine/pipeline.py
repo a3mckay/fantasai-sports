@@ -388,7 +388,6 @@ def backfill_mlbam_ids(db: Session) -> int:
     if still_missing:
         try:
             import pybaseball as pb
-            import pandas as _pd
             for player in still_missing:
                 parts = player.name.strip().split()
                 if len(parts) < 2:
@@ -568,12 +567,79 @@ def sync_steamer_projections(
     return succeeded
 
 
-def sync_current_season_stats(db: Session, season: int = 2026) -> int:
-    """Fetch current-season stats from FanGraphs via pybaseball and upsert to DB.
+def _fetch_fangraphs_direct(season: int, stats_type: str) -> Optional[list[dict]]:
+    """Fetch FanGraphs leaderboard data from the current JSON API (type=8 dashboard).
 
-    Fetches all batters (qual=0) and all pitchers (qual=0) for the given
-    season, matches each row to an existing Player by FanGraphs IDfg, and
-    upserts a PlayerStats row with week=None.
+    The legacy pybaseball endpoint (leaders-legacy.aspx) returns 403 since early 2026.
+    This function calls the new API directly, normalises column names to match what the
+    rest of the pipeline expects, and returns a plain list of dicts.
+
+    Args:
+        season:     MLB season year (e.g. 2026).
+        stats_type: 'bat' or 'pit'.
+
+    Returns:
+        List of row dicts with IDfg, Name (plain text), Team, and stat columns,
+        or None if the request fails.
+    """
+    import re
+    import json
+    import urllib.request
+
+    url = (
+        "https://www.fangraphs.com/api/leaders/major-league/data"
+        f"?pos=all&stats={stats_type}&lg=all&qual=0&type=8"
+        f"&season={season}&season1={season}&ind=0"
+        "&startdate=&enddate=&team=0&pageitems=2000&pagenum=1"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+    except Exception as exc:
+        logger.error("FanGraphs direct fetch (%s) failed: %s", stats_type, exc)
+        return None
+
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        logger.error("FanGraphs direct fetch (%s): JSON parse error: %s", stats_type, exc)
+        return None
+
+    rows = payload.get("data", [])
+    if not rows:
+        logger.warning("FanGraphs direct fetch (%s): empty data", stats_type)
+        return None
+
+    _html_re = re.compile(r"<[^>]+>")
+
+    def _clean(row: dict) -> dict:
+        """Normalise a raw API row to match legacy pybaseball column names."""
+        # Strip HTML tags from Name (new API wraps names in <a> tags)
+        raw_name = str(row.get("Name") or "")
+        row["Name"] = _html_re.sub("", raw_name).strip()
+        # playerid is the FanGraphs ID — expose it as IDfg for pipeline compatibility
+        row["IDfg"] = row.get("playerid")
+        # C+SwStr% is the new API name for what the pipeline calls CSW%
+        if "C+SwStr%" in row and "CSW%" not in row:
+            row["CSW%"] = row["C+SwStr%"]
+        # xAVG is the new API name for xBA
+        if "xAVG" in row and "xBA" not in row:
+            row["xBA"] = row["xAVG"]
+        return row
+
+    cleaned = [_clean(r) for r in rows]
+    logger.info("FanGraphs direct fetch (%s): %d rows", stats_type, len(cleaned))
+    return cleaned
+
+
+def sync_current_season_stats(db: Session, season: int = 2026) -> int:
+    """Fetch current-season stats from FanGraphs and upsert to DB.
+
+    Uses a direct call to the FanGraphs JSON API (the legacy pybaseball endpoint
+    returns 403 since early 2026).  Fetches all batters and pitchers (qual=0),
+    matches each row to an existing Player by FanGraphs IDfg, and upserts a
+    PlayerStats row with week=None.
 
     Missing columns (not all seasons have every advanced metric) are handled
     gracefully with .get() and None defaults.
@@ -582,18 +648,6 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
         Number of PlayerStats rows upserted.
     """
     import math
-
-    try:
-        import pybaseball
-    except ImportError:
-        logger.error("pybaseball not installed — cannot sync current season stats")
-        return 0
-
-    # Disable pybaseball's disk cache so we always fetch fresh data from FanGraphs.
-    try:
-        pybaseball.cache.disable()
-    except Exception:
-        pass
 
     def _fval(row: dict, key: str) -> Optional[float]:
         """Return a float value from a row dict, or None if missing/NaN/Inf."""
@@ -609,16 +663,14 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
     total_upserted = 0
 
     # ── Batting ──────────────────────────────────────────────────────────────
-    try:
-        bat_df = pybaseball.batting_stats(season, qual=0)
-        logger.info("sync_current_season_stats: fetched %d batter rows", len(bat_df))
-    except Exception:
-        logger.error("batting_stats(%d) fetch failed", season, exc_info=True)
-        bat_df = None
+    bat_rows = _fetch_fangraphs_direct(season, "bat")
+    if bat_rows is None:
+        logger.error("sync_current_season_stats: batting fetch failed — skipping batters")
+    else:
+        logger.info("sync_current_season_stats: fetched %d batter rows", len(bat_rows))
 
-    if bat_df is not None:
-        for _, row in bat_df.iterrows():
-            row_dict = row.to_dict()
+    if bat_rows is not None:
+        for row_dict in bat_rows:
             fg_id = row_dict.get("IDfg")
             if fg_id is None:
                 continue
@@ -717,16 +769,14 @@ def sync_current_season_stats(db: Session, season: int = 2026) -> int:
             logger.error("Failed to commit batting stats batch", exc_info=True)
 
     # ── Pitching ─────────────────────────────────────────────────────────────
-    try:
-        pit_df = pybaseball.pitching_stats(season, qual=0)
-        logger.info("sync_current_season_stats: fetched %d pitcher rows", len(pit_df))
-    except Exception:
-        logger.error("pitching_stats(%d) fetch failed", season, exc_info=True)
-        pit_df = None
+    pit_rows = _fetch_fangraphs_direct(season, "pit")
+    if pit_rows is None:
+        logger.error("sync_current_season_stats: pitching fetch failed — skipping pitchers")
+    else:
+        logger.info("sync_current_season_stats: fetched %d pitcher rows", len(pit_rows))
 
-    if pit_df is not None:
-        for _, row in pit_df.iterrows():
-            row_dict = row.to_dict()
+    if pit_rows is not None:
+        for row_dict in pit_rows:
             fg_id = row_dict.get("IDfg")
             if fg_id is None:
                 continue
@@ -940,7 +990,8 @@ def sync_statcast_advanced_stats(db: Session, season: int = 2026) -> int:
 
     # Bat tracking: bat speed, fast swing rate, blast rate (Hawkeye, 2023+)
     try:
-        import csv, io
+        import csv
+        import io
         import urllib.request
         _bt_url = (
             "https://baseballsavant.mlb.com/leaderboard/bat-tracking"
@@ -1418,6 +1469,8 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
         if not pa:
             continue  # skip players with no plate appearances
 
+        bat_so = _fv(stat, "strikeOuts") or 0.0
+        bat_bb = _fv(stat, "baseOnBalls") or 0.0
         counting_stats = {
             "PA":  pa,
             "AB":  _fv(stat, "atBats"),
@@ -1426,8 +1479,8 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
             "R":   _fv(stat, "runs"),
             "RBI": _fv(stat, "rbi"),
             "SB":  _fv(stat, "stolenBases"),
-            "BB":  _fv(stat, "baseOnBalls"),
-            "SO":  _fv(stat, "strikeOuts"),
+            "BB":  bat_bb,
+            "SO":  bat_so,
             "2B":  _fv(stat, "doubles"),
             "3B":  _fv(stat, "triples"),
         }
@@ -1436,6 +1489,9 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
             "OBP": _fv(stat, "obp"),
             "SLG": _fv(stat, "slg"),
             "OPS": _fv(stat, "ops"),
+            # Derived from counting stats — K% and BB% needed for Statcast composite
+            "K%":  round(bat_so / pa, 4) if pa and pa > 0 else None,
+            "BB%": round(bat_bb / pa, 4) if pa and pa > 0 else None,
         }
 
         existing = (
@@ -1516,12 +1572,15 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
         if ip <= 0:
             continue
 
-        # K/9 and BB/9 computed from raw totals
+        # K/9, BB/9, K%, BB%, K-BB% all derived from raw totals
         so = _fv(stat, "strikeOuts") or 0.0
         bb = _fv(stat, "baseOnBalls") or 0.0
+        bf = _fv(stat, "battersFaced") or None
         k9 = round(so / ip * 9, 2) if ip > 0 else None
         bb9 = round(bb / ip * 9, 2) if ip > 0 else None
-        kbb_pct = round((so - bb) / max(1, _fv(stat, "battersFaced") or 1), 4) if ip > 0 else None
+        kbb_pct = round((so - bb) / max(1, bf or 1), 4) if ip > 0 else None
+        k_pct  = round(so / bf, 4) if bf and bf > 0 else None
+        bb_pct = round(bb / bf, 4) if bf and bf > 0 else None
 
         counting_stats = {
             "IP":  ip,
@@ -1543,6 +1602,10 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
             "K/9":   k9,
             "BB/9":  bb9,
             "K-BB%": kbb_pct,
+            # K% and BB% derived from battersFaced — not used in current pitcher
+            # composites but stored for completeness and future use
+            "K%":    k_pct,
+            "BB%":   bb_pct,
         }
 
         existing = (
@@ -1585,3 +1648,121 @@ def sync_mlb_api_current_season(db: Session, season: int = 2026) -> int:
 
     logger.info("sync_mlb_api_current_season: upserted %d total rows", total_upserted)
     return total_upserted
+
+
+def sync_derived_rate_stats(db: Session, season: int = 2026) -> int:
+    """Backfill K% and BB% into rate_stats for actual rows that are missing them.
+
+    Batters: K% = SO / PA  (exact)
+             BB% = BB / PA  (exact)
+    Pitchers: K% = SO / BF  (exact, BF = battersFaced stored in K-BB% derivation)
+              BB% = BB / BF  (exact)
+              BF is approximated as IP*(3+WHIP) when not available.
+
+    This is needed because FanGraphs is blocked (403) and the MLB Stats API
+    sync only added K%/BB% to rate_stats after June 2026.  Existing rows were
+    stored without them.  This function patches the JSON in-place.
+
+    Idempotent — rows that already have K% and BB% set are skipped.
+
+    Returns:
+        Number of rows patched.
+    """
+    import math
+    from sqlalchemy.orm.attributes import flag_modified
+
+    def _safe_float(v: object) -> Optional[float]:
+        if v is None:
+            return None
+        try:
+            f = float(v)  # type: ignore[arg-type]
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return None
+
+    patched = 0
+
+    # ── Batters ───────────────────────────────────────────────────────────────
+    bat_rows = (
+        db.query(PlayerStats)
+        .filter(
+            and_(
+                PlayerStats.stat_type == "batting",
+                PlayerStats.data_source == "actual",
+                PlayerStats.season == season,
+                PlayerStats.week.is_(None),
+            )
+        )
+        .all()
+    )
+    for row in bat_rows:
+        cs = row.counting_stats or {}
+        rs = row.rate_stats or {}
+        # Only patch if K% or BB% is missing
+        if rs.get("K%") is not None and rs.get("BB%") is not None:
+            continue
+        pa = _safe_float(cs.get("PA"))
+        so = _safe_float(cs.get("SO"))
+        bb = _safe_float(cs.get("BB"))
+        if not pa or pa <= 0:
+            continue
+        new_rs = dict(rs)
+        if new_rs.get("K%") is None and so is not None:
+            new_rs["K%"] = round(so / pa, 4)
+        if new_rs.get("BB%") is None and bb is not None:
+            new_rs["BB%"] = round(bb / pa, 4)
+        row.rate_stats = new_rs
+        flag_modified(row, "rate_stats")
+        patched += 1
+
+    # ── Pitchers ──────────────────────────────────────────────────────────────
+    pit_rows = (
+        db.query(PlayerStats)
+        .filter(
+            and_(
+                PlayerStats.stat_type == "pitching",
+                PlayerStats.data_source == "actual",
+                PlayerStats.season == season,
+                PlayerStats.week.is_(None),
+            )
+        )
+        .all()
+    )
+    for row in pit_rows:
+        cs = row.counting_stats or {}
+        rs = row.rate_stats or {}
+        if rs.get("K%") is not None and rs.get("BB%") is not None:
+            continue
+        so = _safe_float(cs.get("SO")) or _safe_float(cs.get("K"))
+        bb = _safe_float(cs.get("BB"))
+        ip = _safe_float(cs.get("IP"))
+        whip = _safe_float(rs.get("WHIP"))
+        if not ip or ip <= 0 or so is None or bb is None:
+            continue
+        # Approximate BF = IP*(3 + WHIP).  WHIP = (H+BB)/IP → H = WHIP*IP - BB
+        # BF = outs + H + BB = IP*3 + H + BB = IP*(3 + WHIP)
+        if whip is not None and whip > 0:
+            bf = ip * (3.0 + whip)
+        else:
+            # Fallback: use K/9 and BB/9 to estimate BF ≈ IP*4 (rough)
+            bf = ip * 4.0
+        if bf <= 0:
+            continue
+        new_rs = dict(rs)
+        if new_rs.get("K%") is None:
+            new_rs["K%"] = round(so / bf, 4)
+        if new_rs.get("BB%") is None:
+            new_rs["BB%"] = round(bb / bf, 4)
+        row.rate_stats = new_rs
+        flag_modified(row, "rate_stats")
+        patched += 1
+
+    try:
+        db.commit()
+        logger.info("sync_derived_rate_stats: patched %d rows for season %d", patched, season)
+    except Exception:
+        db.rollback()
+        logger.error("sync_derived_rate_stats: commit failed", exc_info=True)
+        return 0
+
+    return patched

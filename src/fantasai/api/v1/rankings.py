@@ -445,7 +445,7 @@ def sync_statcast_now(
     try:
         from fantasai.engine.pipeline import sync_statcast_advanced_stats
         rows_updated = sync_statcast_advanced_stats(db, season=season)
-    except Exception as e:
+    except Exception:
         result["errors"].append(f"Sync error: {traceback.format_exc()}")
         result["status"] = "error"
 
@@ -513,6 +513,37 @@ def sync_current_stats(
     _RANKINGS_RAW_CACHE.clear()
 
     return {"season": season, "rows_upserted": rows, "status": "ok"}
+
+
+@router.post("/sync-derived-rates", tags=["admin"])
+def sync_derived_rates(
+    season: int = Query(default=2026, ge=2020, le=2030),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Backfill K% and BB% into rate_stats for actual rows missing them.
+
+    FanGraphs has been blocked since early 2026, so K% and BB% were never
+    populated for batters (or pitchers) from that source.  This derives them
+    directly from MLB Stats API counting totals already in the DB:
+
+      Batters:  K% = SO / PA  (exact)
+                BB% = BB / PA  (exact)
+      Pitchers: K% = SO / BF  (approximate BF from WHIP)
+                BB% = BB / BF
+
+    Idempotent — skips rows that already have K% and BB% set.
+    Clears rankings cache after completion.
+    Returns the number of rows patched.
+    """
+    from fantasai.engine.pipeline import sync_derived_rate_stats
+
+    patched = sync_derived_rate_stats(db, season=season)
+
+    from fantasai.api.v1.recommendations import _RANKINGS_CACHE, _RANKINGS_RAW_CACHE
+    _RANKINGS_CACHE.clear()
+    _RANKINGS_RAW_CACHE.clear()
+
+    return {"season": season, "rows_patched": patched, "status": "ok"}
 
 
 @router.post("/sync-fangraphs", tags=["admin"])
@@ -587,6 +618,7 @@ def force_full_refresh(
     from fantasai.database import SessionLocal
     from fantasai.engine.pipeline import (
         sync_current_season_stats,
+        sync_derived_rate_stats,
         sync_mlb_api_current_season,
         sync_statcast_advanced_stats,
         sync_steamer_projections,
@@ -603,6 +635,14 @@ def force_full_refresh(
 
             mlb_count = sync_mlb_api_current_season(db, season=season)
             logger.info("force-full-refresh: MLB API upserted %d rows", mlb_count)
+
+            # Derive K%/BB% from counting stats — FanGraphs is blocked so we
+            # compute these from MLB Stats API counting totals instead.
+            try:
+                derived_count = sync_derived_rate_stats(db, season=season)
+                logger.info("force-full-refresh: derived rate stats patched %d rows", derived_count)
+            except Exception:
+                logger.warning("force-full-refresh: derived rate stats failed", exc_info=True)
 
             try:
                 sc_count = sync_statcast_advanced_stats(db, season=season)
