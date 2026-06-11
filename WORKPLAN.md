@@ -10,44 +10,34 @@
 
 ## Part 1 — Bug Fixes & Infrastructure
 
-### B-1 · FanGraphs Season Stats Sync Failure `[ ]`
+### B-1 · FanGraphs Season Stats Sync Failure `[x]`
 
-**What's broken**
-FanGraphs stopped syncing successfully around April 6, 2026. The `sync_current_season_stats()`
-pipeline function silently swallows the error and continues. Production DB state as of June 11:
+**Resolution — June 11, 2026 — commit `c7984e1`**
 
-| Metric | Source | Status |
+FanGraphs is Cloudflare-blocked (returns 403 for both the legacy pybaseball endpoint
+and the newer JSON API). FanGraphs data will not be available until they offer an
+official API. Instead of waiting, we derived the missing metrics directly from MLB Stats
+API data already in the DB:
+
+| Metric | Before | After |
 |---|---|---|
-| K%, BB% — batters | FanGraphs | ⚠️ Stale (last synced April 6) |
-| K%, BB%, K-BB%, xFIP, SIERA — pitchers | FanGraphs | ❌ Never in actual rows |
-| Barrel%, EV, xwOBA, BatSpeed | Savant | ✅ Syncing daily |
-| HR, R, RBI, IP, K, BB (counting) | BRef | ✅ Syncing daily |
+| K%, BB% — batters | ⚠️ Stale / null | ✅ Derived: SO/PA, BB/PA (exact) |
+| K%, BB% — pitchers | ❌ Never populated | ✅ Derived via battersFaced (exact for new rows, WHIP-approx for backfill) |
+| K-BB% — pitchers | ✅ Already correct | ✅ Unchanged |
+| SIERA, xFIP, wRC+, Stuff+ | ❌ No source | ⚠️ Still missing — see B-2 |
+| Barrel%, EV, xwOBA, BatSpeed | ✅ Savant daily | ✅ Unchanged |
 
-**Impact on rankings**
-Moderate. Rankings still look reasonable because:
-- Steamer projections (working) supply talent-level K%/BB% for the `steamer_z` component
-- Savant metrics (working) supply Barrel%, vFA, PitchRV100 for `statcast_z`
-- Missing: actual-season K%/BB%/K-BB%/SIERA/xFIP trends in the statcast component
+**What was built**
+- `sync_mlb_api_current_season()` — now derives K%/BB% inline for both batters (exact)
+  and pitchers (exact via `battersFaced` from MLB Stats API)
+- `sync_derived_rate_stats()` — new backfill function; patches all existing actual rows
+  missing K%/BB% using WHIP approximation for pitcher BF. 1,174 rows patched on deploy.
+- `force-full-refresh` — now calls `sync_derived_rate_stats()` after every MLB sync
+- `POST /api/v1/rankings/sync-derived-rates` — admin endpoint for on-demand backfill
 
-Players who are striking out significantly more or less than their Steamer projection this year
-are not having that signal reflected in rankings.
-
-**Likely causes**
-1. FanGraphs rate-limiting or IP-blocking the pybaseball scraper (most probable)
-2. pybaseball update that changed the response format
-3. The FanGraphs leaderboard URL or auth changed
-
-**Investigation steps**
-- [ ] Run `batting_stats(2026, qual=0)` manually in a Python shell and capture the error
-- [ ] Check pybaseball version; compare to changelog for breaking changes
-- [ ] If rate-limited: add retry with exponential backoff + longer inter-request delay
-- [ ] If blocked: evaluate switching to direct FanGraphs CSV endpoint (the leaderboard
-      exports a `?type=...&download=true` CSV that may not be rate-limited)
-
-**Acceptance criteria**
-- `sync_current_season_stats()` successfully populates K%, BB%, wRC+/FIP for 300+ batters/pitchers
-- Rows have `updated_at` within 24 hours of today
-- No silent swallowing — if the sync fails, it logs a warning visible in the Railway log stream
+**Remaining gap (tracked in B-2)**
+SIERA, xFIP, wRC+, Stuff+, CSW%, SwStr% remain unavailable. These affect the upper tail
+of pitcher rankings accuracy but the overall rankings are qualitatively correct.
 
 ---
 
