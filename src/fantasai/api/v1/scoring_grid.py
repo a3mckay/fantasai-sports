@@ -276,12 +276,12 @@ def get_season_record(
                         records[t2_key]["wins"] += 1
                         records[t1_key]["losses"] += 1
 
-    # Sort: most wins first, then fewest losses
-    standings = sorted(records.values(), key=lambda r: (-r["wins"], r["losses"]))
+    # Sort: most effective wins first (ties worth 0.5), then fewest losses as tiebreak
+    standings = sorted(records.values(), key=lambda r: (-(r["wins"] + 0.5 * r["ties"]), r["losses"]))
     for i, row in enumerate(standings, 1):
         row["rank"] = i
         total = row["wins"] + row["losses"] + row["ties"]
-        row["win_pct"] = round(row["wins"] / total, 3) if total else 0.0
+        row["win_pct"] = round((row["wins"] + 0.5 * row["ties"]) / total, 3) if total else 0.0
 
     return {
         "standings": standings,

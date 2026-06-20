@@ -62,7 +62,7 @@ function SeasonRecord() {
     : `Weeks ${weeks_counted[0]}–${weeks_counted[weeks_counted.length - 1]}`
 
   // leader's wins for GB calculation
-  const leaderWins = standings[0]?.wins ?? 0
+  const leaderEffWins = (standings[0]?.wins ?? 0) + 0.5 * (standings[0]?.ties ?? 0)
 
   return (
     <div className="space-y-3">
@@ -87,7 +87,7 @@ function SeasonRecord() {
           <tbody>
             {standings.map((row, idx) => {
               const isMine = row.team_key === my_team_key
-              const gb = idx === 0 ? '—' : ((leaderWins - row.wins) / 2).toFixed(1)
+              const gb = idx === 0 ? '—' : ((leaderEffWins - (row.wins + 0.5 * row.ties)) / 2).toFixed(1)
               const rowBg = isMine ? 'bg-navy-700/60' : idx % 2 === 0 ? 'bg-navy-900' : 'bg-navy-800/60'
               return (
                 <tr key={row.team_key} className={`border-b border-navy-700/50 ${rowBg}`}>
