@@ -158,8 +158,12 @@ def get_league_visual_data(
         .all()
     )
     pairings_by_week: dict[int, list] = {}
+    _seen_pairs: set = set()
     for ma in stored_matchups:
-        pairings_by_week.setdefault(ma.week, []).append((ma.team1_key, ma.team2_key))
+        pair_key = (ma.week, tuple(sorted([ma.team1_key, ma.team2_key])))
+        if pair_key not in _seen_pairs:
+            _seen_pairs.add(pair_key)
+            pairings_by_week.setdefault(ma.week, []).append((ma.team1_key, ma.team2_key))
 
     # ── Back-fill any weeks with snapshot data but no stored pairings ───────────
     # MatchupAnalysis is only written when the Matchup Analyzer is used, so early

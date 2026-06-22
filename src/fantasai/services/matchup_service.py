@@ -901,7 +901,8 @@ def analyze_league_matchups(
             )
             narrative = None
 
-        # e. Upsert MatchupAnalysis row
+        # e. Upsert MatchupAnalysis row — check both team orderings to avoid
+        #    duplicate rows from concurrent requests or reversed team keys
         try:
             existing: Optional[MatchupAnalysis] = (
                 db.query(MatchupAnalysis)
@@ -909,8 +910,15 @@ def analyze_league_matchups(
                     MatchupAnalysis.league_id == league.league_id,
                     MatchupAnalysis.season == season,
                     MatchupAnalysis.week == week_num,
-                    MatchupAnalysis.team1_key == t1_key,
-                    MatchupAnalysis.team2_key == t2_key,
+                )
+                .filter(
+                    (
+                        (MatchupAnalysis.team1_key == t1_key) &
+                        (MatchupAnalysis.team2_key == t2_key)
+                    ) | (
+                        (MatchupAnalysis.team1_key == t2_key) &
+                        (MatchupAnalysis.team2_key == t1_key)
+                    )
                 )
                 .first()
             )
