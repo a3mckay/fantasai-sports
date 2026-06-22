@@ -486,16 +486,18 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
 
-    # Monday 4am EST — generate fresh AI blurbs for top 300 players in all ranking modes.
+    # Monday 9am EST (14:00 UTC) — generate fresh AI blurbs for top 300 players in all ranking
+    # modes. Delayed from 4:30am to give FanGraphs time to fully ingest Sunday night game stats
+    # before rankings are computed and baked into blurb text.
     # misfire_grace_time=7200: if the server restarts within 2 hours of the scheduled window
-    # (e.g. a deploy lands at 9:45 UTC), APScheduler will still fire the missed job on startup.
+    # (e.g. a deploy lands at 14:15 UTC), APScheduler will still fire the missed job on startup.
     # The startup _recover_missed_monday_blurbs() function handles cases beyond 2 hours.
     scheduler.add_job(
         _monday_blurb_generation,
         trigger="cron",
         day_of_week="mon",
-        hour=9,
-        minute=30,
+        hour=14,
+        minute=0,
         id="monday-blurbs",
         max_instances=1,
         misfire_grace_time=7200,
