@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { Link } from 'react-router-dom'
 import {
   TrendingUp, TrendingDown, Minus, BarChart2, RefreshCw,
@@ -604,9 +604,35 @@ export default function Rankings() {
                 const delta      = getRankDelta(player)
                 const isExpanded = expandedRows.has(key)
                 const hasCats    = Object.keys(player.category_contributions || {}).length > 0
+                const blurbBlock = (
+                  <>
+                    <div className="flex items-start gap-1">
+                      <div className="flex-1 min-w-0">
+                        <Blurb text={player.blurb} />
+                      </div>
+                      <ShareBlurbButton player={player} />
+                    </div>
+                    {isExpanded && player.is_prospect && player.pav_score != null && (
+                      <div className="mt-2 text-xs text-emerald-400/80">
+                        PAV Score: <span className="font-semibold">{player.pav_score.toFixed(1)}</span>/100
+                        <span className="text-slate-500 ml-2">— Prospect Adjusted Value</span>
+                      </div>
+                    )}
+                    {isExpanded && player.stat_type && (
+                      <div className="mt-1 text-[10px] text-slate-600 uppercase tracking-wide">
+                        {player.stat_type === 'batting' ? 'Batting stats' : 'Pitching stats'}
+                      </div>
+                    )}
+                    {isExpanded && hasCats && (
+                      <div className="mt-3 pr-2">
+                        <PercentileBar data={player.category_contributions} />
+                      </div>
+                    )}
+                  </>
+                )
                 return (
+                  <Fragment key={key}>
                   <tr
-                    key={key}
                     className="border-t border-navy-800 transition-colors hover:bg-navy-800/30"
                   >
                     {/* Rank */}
@@ -677,28 +703,10 @@ export default function Rankings() {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-start gap-1">
-                        <div className="flex-1 min-w-0">
-                          <Blurb text={player.blurb} />
-                        </div>
-                        <ShareBlurbButton player={player} />
+                      {/* Desktop: blurb sits under the name inside the Player column */}
+                      <div className="hidden sm:block">
+                        {blurbBlock}
                       </div>
-                      {isExpanded && player.is_prospect && player.pav_score != null && (
-                        <div className="mt-2 text-xs text-emerald-400/80">
-                          PAV Score: <span className="font-semibold">{player.pav_score.toFixed(1)}</span>/100
-                          <span className="text-slate-500 ml-2">— Prospect Adjusted Value</span>
-                        </div>
-                      )}
-                      {isExpanded && player.stat_type && (
-                        <div className="mt-1 text-[10px] text-slate-600 uppercase tracking-wide">
-                          {player.stat_type === 'batting' ? 'Batting stats' : 'Pitching stats'}
-                        </div>
-                      )}
-                      {isExpanded && hasCats && (
-                        <div className="mt-3 pr-2">
-                          <PercentileBar data={player.category_contributions} />
-                        </div>
-                      )}
                     </td>
 
                     {/* Position pills with position rank */}
@@ -740,6 +748,16 @@ export default function Rankings() {
                       )}
                     </td>
                   </tr>
+                  {/* Mobile: blurb + expanded content span the full table width,
+                      so they aren't squeezed into the narrow Player column */}
+                  {(player.blurb || isExpanded) && (
+                    <tr className="sm:hidden">
+                      <td colSpan={6} className="px-4 pb-3 pt-0">
+                        {blurbBlock}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>
